@@ -1,0 +1,28 @@
+# Деплой на Render: Background Worker (работает 24/7)
+# https://render.com/docs/background-workers
+#
+# После push в GitHub: Render Dashboard → New → Blueprint → подключить репозиторий
+# Секреты (токены, пароли) задаются вручную в Environment Variables
+
+services:
+  - type: worker
+    name: kirs-bot
+    runtime: python
+    plan: starter
+    buildCommand: pip install -r requirements.txt
+    startCommand: python main.py
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.8
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: TELEGRAM_CHAT_ID
+        sync: false
+      - key: EMAIL_HOST
+        value: imap.gmail.com
+      - key: EMAIL_PORT
+        value: "993"
+      - key: EMAIL_USER
+        sync: false
+      - key: EMAIL_PASSWORD
+        sync: false

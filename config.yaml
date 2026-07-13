@@ -1,0 +1,31 @@
+bot:
+  # Интервал опроса почты в секундах
+  poll_interval: 60
+
+modules:
+  email_olx:
+    enabled: true
+    # Папка IMAP для чтения (INBOX, [Gmail]/Вся почта и т.д.)
+    imap_folder: INBOX
+    # Только непрочитанные письма
+    only_unseen: true
+    # Помечать письма как прочитанные после обработки
+    mark_as_read: true
+    # Фильтр по отправителю (пусто = все письма)
+    sender_filter: ""
+    # Фильтр по теме (подстрока, регистронезависимо)
+    subject_filter: "olx"
+    # Шаблон сообщения в Telegram
+    message_template: |
+      📩 Новое сообщение на OLX
+
+      📧 Аккаунт: {account_email}
+      💬 Ссылка: {chat_link}
+    # Текст кнопки «Перейти в чат»
+    button_text: "Перейти в чат"
+    # Регулярные выражения для извлечения данных из письма
+    patterns:
+      # Ссылка на чат OLX (ua, pl, ro и др.)
+      chat_link: 'https?://(?:www\.)?olx\.[a-z.]+/[^\s"<>]+'
+      # Email аккаунта OLX в тексте письма
+      account_email: '[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}'
