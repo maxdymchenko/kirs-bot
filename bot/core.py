@@ -70,16 +70,14 @@ class BotContext:
         self,
         text: str,
         notification_id: int,
+        chat_link: str,
         button_text: str,
+        processed_button_text: str,
     ) -> int:
-        reply_markup = InlineKeyboardMarkup(
-            [[
-                InlineKeyboardButton(
-                    button_text,
-                    callback_data=f"open:{notification_id}",
-                )
-            ]]
-        )
+        reply_markup = InlineKeyboardMarkup([
+            [InlineKeyboardButton(button_text, url=chat_link)],
+            [InlineKeyboardButton(processed_button_text, callback_data=f"done:{notification_id}")],
+        ])
 
         message = await self.bot.send_message(
             chat_id=self.settings.telegram_chat_id,

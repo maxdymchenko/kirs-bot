@@ -8,7 +8,7 @@ from bot.storage import NotificationStorage
 
 logger = logging.getLogger(__name__)
 
-OPEN_CALLBACK_PREFIX = "open:"
+DONE_CALLBACK_PREFIX = "done:"
 
 
 def register_handlers(application: Application, ctx: BotContext) -> None:
@@ -17,7 +17,7 @@ def register_handlers(application: Application, ctx: BotContext) -> None:
         application.add_handler(CommandHandler(command, pending_command))
 
     application.add_handler(
-        CallbackQueryHandler(open_chat_callback, pattern=f"^{OPEN_CALLBACK_PREFIX}")
+        CallbackQueryHandler(mark_done_callback, pattern=f"^{DONE_CALLBACK_PREFIX}")
     )
 
 
@@ -39,7 +39,7 @@ async def pending_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     await update.message.reply_text("\n".join(lines).strip(), disable_web_page_preview=True)
 
 
-async def open_chat_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def mark_done_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
     if not query or not query.data:
         return
@@ -48,7 +48,7 @@ async def open_chat_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
     storage: NotificationStorage = ctx.storage
 
     try:
-        notification_id = int(query.data.removeprefix(OPEN_CALLBACK_PREFIX))
+        notification_id = int(query.data.removeprefix(DONE_CALLBACK_PREFIX))
     except ValueError:
         await query.answer("Некорректная кнопка")
         return
@@ -61,24 +61,22 @@ async def open_chat_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
     user = query.from_user
     user_label = f"@{user.username}" if user and user.username else (user.full_name if user else "менеджер")
 
-    if not notification.processed:
-        storage.mark_processed(notification_id, user_label)
-        updated_text = (
-            f"{notification.message_text}\n\n"
-            f"✅ Обработано #{notification.anchor_id} ({user_label})"
-        )
-        await query.edit_message_text(
-            text=updated_text,
-            reply_markup=None,
-            disable_web_page_preview=True,
-        )
-    else:
+    if notification.processed:
+        await query.answer("Уже обработано")
         await query.edit_message_reply_markup(reply_markup=None)
+        return
 
-    try:
-        await query.answer(url=notification.chat_link)
-    except Exception:
-        await query.answer("Ссылка открыта. Если браузер не открылся — используйте ссылку в сообщении.")
+    storage.mark_processed(notification_id, user_label)
+    updated_text = (
+        f"{notification.message_text}\n\n"
+        f"✅ Обработано #{notification.anchor_id} ({user_label})"
+    )
+    await query.edit_message_text(
+        text=updated_text,
+        reply_markup=None,
+        disable_web_page_preview=True,
+    )
+    await query.answer("Отмечено как обработано")
 
     logger.info(
         "Чат #%s отмечен обработанным пользователем %s",

@@ -85,6 +85,7 @@ class EmailOlxModule(BaseModule):
             "💬 Ссылка: {chat_link}",
         )
         button_text = self.config.get("button_text", "Перейти в чат")
+        processed_button_text = self.config.get("processed_button_text", "✅ Обработано")
 
         notification = self.ctx.storage.create(
             email_uid=parsed.uid,
@@ -108,7 +109,9 @@ class EmailOlxModule(BaseModule):
             await self.ctx.send_notification(
                 text=text,
                 notification_id=notification.id,
+                chat_link=parsed.chat_link,
                 button_text=button_text,
+                processed_button_text=processed_button_text,
             )
         except Exception:
             logger.exception("Не удалось отправить уведомление #%s", notification.anchor_id)
