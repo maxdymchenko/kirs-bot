@@ -17,7 +17,6 @@ class EmailOlxModule(BaseModule):
     def __init__(self, config: dict[str, Any], bot_context: "BotContext"):
         super().__init__(config, bot_context)
         self._task: asyncio.Task | None = None
-        self._processed_uids: set[str] = set()
 
     async def start(self) -> None:
         self._task = asyncio.create_task(self._poll_loop())
@@ -52,6 +51,7 @@ class EmailOlxModule(BaseModule):
         )
 
         await asyncio.to_thread(client.connect)
+        processed_uids: list[str] = []
         try:
             emails = await asyncio.to_thread(
                 client.fetch_new_emails,
@@ -64,38 +64,61 @@ class EmailOlxModule(BaseModule):
             )
 
             for parsed in emails:
-                if parsed.uid in self._processed_uids:
+                if self.ctx.storage.get_by_email_uid(parsed.uid):
+                    processed_uids.append(parsed.uid)
                     continue
 
-                await self._send_notification(parsed)
-                self._processed_uids.add(parsed.uid)
+                sent = await self._send_notification(parsed)
+                if sent:
+                    processed_uids.append(parsed.uid)
 
-            if self.config.get("mark_as_read", True) and emails:
-                uids = [e.uid for e in emails]
-                await asyncio.to_thread(client.mark_as_read, uids)
+            if self.config.get("mark_as_read", True) and processed_uids:
+                await asyncio.to_thread(client.mark_as_read, processed_uids)
         finally:
             await asyncio.to_thread(client.disconnect)
 
-    async def _send_notification(self, parsed) -> None:
+    async def _send_notification(self, parsed) -> bool:
         template = self.config.get(
             "message_template",
-            "📩 Новое сообщение на OLX\n\n📧 Аккаунт: {account_email}\n💬 Ссылка: {chat_link}",
+            "📩 Новое сообщение на OLX #{anchor_id}\n\n"
+            "📧 Аккаунт: {account_email}\n"
+            "💬 Ссылка: {chat_link}",
         )
+        button_text = self.config.get("button_text", "Перейти в чат")
+
+        notification = self.ctx.storage.create(
+            email_uid=parsed.uid,
+            account_email=parsed.account_email,
+            chat_link=parsed.chat_link,
+            subject=parsed.subject,
+            message_text="",
+            telegram_chat_id=self.ctx.settings.telegram_chat_id,
+        )
+
         text = template.format(
+            anchor_id=notification.anchor_id,
             account_email=parsed.account_email,
             chat_link=parsed.chat_link,
             subject=parsed.subject,
             from_email=parsed.raw_from,
         )
-        button_text = self.config.get("button_text", "Перейти в чат")
+        self.ctx.storage.update_message_text(notification.id, text)
 
-        await self.ctx.send_message(
-            text=text,
-            button_text=button_text,
-            button_url=parsed.chat_link,
-        )
+        try:
+            await self.ctx.send_notification(
+                text=text,
+                notification_id=notification.id,
+                button_text=button_text,
+            )
+        except Exception:
+            logger.exception("Не удалось отправить уведомление #%s", notification.anchor_id)
+            self.ctx.storage.delete(notification.id)
+            return False
+
         logger.info(
-            "Уведомление отправлено: аккаунт=%s, ссылка=%s",
+            "Уведомление #%s отправлено: аккаунт=%s, ссылка=%s",
+            notification.anchor_id,
             parsed.account_email,
             parsed.chat_link,
         )
+        return True

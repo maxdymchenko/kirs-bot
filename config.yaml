@@ -1,6 +1,10 @@
 bot:
   # Интервал опроса почты в секундах
   poll_interval: 60
+  # Команды для списка необработанных чатов
+  pending_commands:
+    - neobrabotannye
+    - pending
 
 modules:
   email_olx:
@@ -25,7 +29,7 @@ modules:
       - "/myaccount/safedealorders/"
     # Шаблон сообщения в Telegram
     message_template: |
-      📩 Новое сообщение на OLX
+      📩 Новое сообщение на OLX #{anchor_id}
 
       📧 Аккаунт: {account_email}
       💬 Ссылка: {chat_link}

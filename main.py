@@ -5,6 +5,7 @@ import sys
 
 from bot.core import BotContext, load_settings
 from bot.runner import create_modules, run_modules
+from bot.telegram_app import start_telegram_app, stop_telegram_app
 
 logging.basicConfig(
     level=logging.INFO,
@@ -17,10 +18,12 @@ logger = logging.getLogger(__name__)
 async def main() -> None:
     settings = load_settings()
     ctx = BotContext(settings)
+    telegram_app = await start_telegram_app(ctx)
     modules = create_modules(ctx)
 
     if not modules:
         logger.error("Нет активных модулей. Проверьте config.yaml")
+        await stop_telegram_app(telegram_app)
         sys.exit(1)
 
     logger.info("Бот запущен. Активных модулей: %d", len(modules))
@@ -36,7 +39,6 @@ async def main() -> None:
         try:
             loop.add_signal_handler(sig, request_stop)
         except NotImplementedError:
-            # Windows не поддерживает add_signal_handler для SIGTERM
             signal.signal(sig, request_stop)
 
     run_task = asyncio.create_task(run_modules(modules))
@@ -57,6 +59,7 @@ async def main() -> None:
     for module in modules:
         await module.stop()
 
+    await stop_telegram_app(telegram_app)
     logger.info("Бот остановлен")
 
 

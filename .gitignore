@@ -10,6 +10,9 @@ env/
 .env
 Доступы.txt
 
+# Данные бота
+data/
+
 # IDE
 .idea/
 .vscode/

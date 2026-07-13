@@ -1,11 +1,13 @@
 import logging
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import yaml
 from dotenv import load_dotenv
-from telegram import Bot
+from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup
+
+from bot.storage import NotificationStorage
 
 logger = logging.getLogger(__name__)
 
@@ -20,6 +22,7 @@ class Settings:
     email_password: str
     poll_interval: int
     modules_config: dict
+    pending_commands: list[str] = field(default_factory=lambda: ["neobrabotannye", "pending"])
 
 
 def load_settings(config_path: str | Path | None = None) -> Settings:
@@ -41,6 +44,7 @@ def load_settings(config_path: str | Path | None = None) -> Settings:
     if not email_user or not email_password:
         raise ValueError("EMAIL_USER и EMAIL_PASSWORD должны быть заданы (Render Environment или .env)")
 
+    bot_config = config.get("bot", {})
     return Settings(
         telegram_token=token,
         telegram_chat_id=chat_id,
@@ -48,36 +52,41 @@ def load_settings(config_path: str | Path | None = None) -> Settings:
         email_port=int(os.getenv("EMAIL_PORT", "993")),
         email_user=email_user,
         email_password=email_password,
-        poll_interval=config.get("bot", {}).get("poll_interval", 60),
+        poll_interval=bot_config.get("poll_interval", 60),
         modules_config=config.get("modules", {}),
+        pending_commands=bot_config.get("pending_commands", ["neobrabotannye", "pending"]),
     )
 
 
 class BotContext:
     """Общий контекст для всех модулей."""
 
-    def __init__(self, settings: Settings):
+    def __init__(self, settings: Settings, storage: NotificationStorage | None = None):
         self.settings = settings
         self.bot = Bot(token=settings.telegram_token)
+        self.storage = storage or NotificationStorage()
 
-    async def send_message(
+    async def send_notification(
         self,
         text: str,
-        button_text: str | None = None,
-        button_url: str | None = None,
-    ) -> None:
-        from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+        notification_id: int,
+        button_text: str,
+    ) -> int:
+        reply_markup = InlineKeyboardMarkup(
+            [[
+                InlineKeyboardButton(
+                    button_text,
+                    callback_data=f"open:{notification_id}",
+                )
+            ]]
+        )
 
-        reply_markup = None
-        if button_text and button_url:
-            reply_markup = InlineKeyboardMarkup(
-                [[InlineKeyboardButton(button_text, url=button_url)]]
-            )
-
-        await self.bot.send_message(
+        message = await self.bot.send_message(
             chat_id=self.settings.telegram_chat_id,
             text=text,
             reply_markup=reply_markup,
             disable_web_page_preview=True,
         )
-        logger.info("Сообщение отправлено в Telegram")
+        self.storage.set_telegram_message_id(notification_id, message.message_id)
+        logger.info("Уведомление #%s отправлено в Telegram", notification_id)
+        return message.message_id
