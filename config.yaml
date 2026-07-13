@@ -11,10 +11,18 @@ modules:
     only_unseen: true
     # Помечать письма как прочитанные после обработки
     mark_as_read: true
-    # Фильтр по отправителю (пусто = все письма)
-    sender_filter: ""
-    # Фильтр по теме (подстрока, регистронезависимо)
-    subject_filter: "olx"
+    # Фильтр по отправителю
+    sender_filter: "noreply@olx.ua"
+    # Разрешённые темы писем (подстрока, регистронезависимо)
+    allowed_subjects:
+      - "Вам нове повідомлення"
+      - "Вітаємо!"
+      - "Перегляньте повідомлення"
+    # Допустимые пути в ссылках из письма
+    allowed_link_paths:
+      - "/myaccount/answer/"
+      - "/myaccount/answers/"
+      - "/myaccount/safedealorders/"
     # Шаблон сообщения в Telegram
     message_template: |
       📩 Новое сообщение на OLX
@@ -25,7 +33,7 @@ modules:
     button_text: "Перейти в чат"
     # Регулярные выражения для извлечения данных из письма
     patterns:
-      # Ссылка на чат OLX (ua, pl, ro и др.)
+      # Любая ссылка на olx.ua (дальше фильтруется по allowed_link_paths)
       chat_link: 'https?://(?:www\.)?olx\.[a-z.]+/[^\s"<>]+'
       # Email аккаунта OLX в тексте письма
       account_email: '[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}'

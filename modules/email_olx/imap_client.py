@@ -60,6 +60,9 @@ class ImapClient:
         sender_filter: str = "",
         subject_filter: str = "",
         patterns: dict[str, str] | None = None,
+        allowed_subjects: list[str] | None = None,
+        required_sender: str = "",
+        allowed_link_paths: list[str] | None = None,
     ) -> list[ParsedEmail]:
         if not self._connection:
             raise RuntimeError("IMAP не подключён")
@@ -84,13 +87,20 @@ class ImapClient:
             if not isinstance(raw_email, bytes):
                 continue
 
-            parsed = parse_email(raw_email, uid, patterns)
+            parsed = parse_email(
+                raw_email,
+                uid,
+                patterns,
+                allowed_subjects=allowed_subjects,
+                required_sender=required_sender or sender_filter,
+                allowed_link_paths=allowed_link_paths,
+            )
             if parsed:
                 results.append(parsed)
             else:
                 msg = message_from_bytes(raw_email)
                 subject = msg.get("Subject", "")
-                logger.debug("Письмо пропущено (нет ссылки OLX): %s", subject)
+                logger.debug("Письмо пропущено (не подходит под фильтры OLX): %s", subject)
 
         return results
 

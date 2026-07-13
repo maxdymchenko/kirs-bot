@@ -3,12 +3,16 @@ from dataclasses import dataclass
 from email import message_from_bytes
 from email.header import decode_header
 from email.message import Message
-from typing import Any
 
 from bs4 import BeautifulSoup
 
-OLX_CHAT_KEYWORDS = ("message", "messages", "chat", "wiadom", "повідом")
 IGNORE_EMAIL_DOMAINS = ("olx.", "noreply", "no-reply", "mailer", "notification")
+
+DEFAULT_ALLOWED_LINK_PATHS = (
+    "/myaccount/answer/",
+    "/myaccount/answers/",
+    "/myaccount/safedealorders/",
+)
 
 
 @dataclass
@@ -75,17 +79,51 @@ def _is_ignored_email(email: str) -> bool:
     return any(marker in lower for marker in IGNORE_EMAIL_DOMAINS)
 
 
-def _find_chat_link(text: str, pattern: str) -> str:
+def _subject_allowed(subject: str, allowed_subjects: list[str]) -> bool:
+    if not allowed_subjects:
+        return True
+    subject_lower = subject.lower()
+    return any(item.lower() in subject_lower for item in allowed_subjects)
+
+
+def _sender_allowed(raw_from: str, required_sender: str) -> bool:
+    if not required_sender:
+        return True
+    return required_sender.lower() in raw_from.lower()
+
+
+def _link_matches_allowed_paths(link: str, allowed_paths: list[str]) -> bool:
+    lower = link.lower()
+    return any(path.lower() in lower for path in allowed_paths)
+
+
+def _find_chat_link(
+    text: str,
+    pattern: str,
+    allowed_paths: list[str] | None = None,
+) -> str:
+    allowed_paths = allowed_paths or list(DEFAULT_ALLOWED_LINK_PATHS)
     links = re.findall(pattern, text, flags=re.IGNORECASE)
-    if not links:
+    valid = [
+        link.rstrip(".,;)")
+        for link in links
+        if _link_matches_allowed_paths(link, allowed_paths)
+    ]
+    if not valid:
         return ""
 
-    for link in links:
-        lower = link.lower()
-        if any(keyword in lower for keyword in OLX_CHAT_KEYWORDS):
-            return link.rstrip(".,;)")
+    priorities = (
+        lambda link: "/myaccount/answer/" in link.lower() and "my_chat" in link.lower(),
+        lambda link: "/myaccount/answer/" in link.lower(),
+        lambda link: "/myaccount/answers/" in link.lower(),
+        lambda link: "/myaccount/safedealorders/" in link.lower(),
+    )
+    for matcher in priorities:
+        for link in valid:
+            if matcher(link):
+                return link
 
-    return links[0].rstrip(".,;)")
+    return valid[0]
 
 
 def _find_account_email(text: str, pattern: str, fallback_headers: list[str]) -> str:
@@ -115,11 +153,24 @@ def _find_account_email(text: str, pattern: str, fallback_headers: list[str]) ->
     return "не определён"
 
 
-def parse_email(raw_email: bytes, uid: str, patterns: dict[str, str]) -> ParsedEmail | None:
+def parse_email(
+    raw_email: bytes,
+    uid: str,
+    patterns: dict[str, str],
+    allowed_subjects: list[str] | None = None,
+    required_sender: str = "",
+    allowed_link_paths: list[str] | None = None,
+) -> ParsedEmail | None:
     msg = message_from_bytes(raw_email)
 
     subject = _decode_header_value(msg.get("Subject"))
     raw_from = _decode_header_value(msg.get("From"))
+
+    if not _subject_allowed(subject, allowed_subjects or []):
+        return None
+    if not _sender_allowed(raw_from, required_sender):
+        return None
+
     body_text = _extract_text_from_message(msg)
 
     header_values = [
@@ -130,7 +181,11 @@ def parse_email(raw_email: bytes, uid: str, patterns: dict[str, str]) -> ParsedE
         _decode_header_value(msg.get("Envelope-To")),
     ]
 
-    chat_link = _find_chat_link(body_text, patterns["chat_link"])
+    chat_link = _find_chat_link(
+        body_text,
+        patterns["chat_link"],
+        allowed_link_paths,
+    )
     account_email = _find_account_email(
         body_text,
         patterns["account_email"],

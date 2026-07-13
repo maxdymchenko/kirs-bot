@@ -57,8 +57,10 @@ class EmailOlxModule(BaseModule):
                 client.fetch_new_emails,
                 only_unseen=self.config.get("only_unseen", True),
                 sender_filter=self.config.get("sender_filter", ""),
-                subject_filter=self.config.get("subject_filter", ""),
                 patterns=self.config.get("patterns", {}),
+                allowed_subjects=self.config.get("allowed_subjects", []),
+                required_sender=self.config.get("sender_filter", ""),
+                allowed_link_paths=self.config.get("allowed_link_paths", []),
             )
 
             for parsed in emails:
