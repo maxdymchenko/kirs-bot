@@ -1,5 +1,6 @@
 import logging
 
+from telegram import Update
 from telegram.ext import Application
 
 from bot.core import BotContext
@@ -19,8 +20,15 @@ async def start_telegram_app(ctx: BotContext) -> Application:
 
     await application.initialize()
     await application.start()
-    await application.updater.start_polling(drop_pending_updates=False)
-    logger.info("Telegram polling запущен")
+    await application.updater.start_polling(
+        drop_pending_updates=True,
+        allowed_updates=Update.ALL_TYPES,
+    )
+    logger.info(
+        "Telegram polling запущен. drop_order_chats=%s webapp=%s",
+        ctx.settings.drop_order_chat_ids,
+        ctx.settings.webapp_url or "-",
+    )
     return application
 
 
