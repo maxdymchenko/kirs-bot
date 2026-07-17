@@ -6,6 +6,7 @@ from pathlib import Path
 import yaml
 from dotenv import load_dotenv
 from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.constants import ParseMode
 
 from bot.storage import NotificationStorage
 
@@ -82,6 +83,7 @@ class BotContext:
         message = await self.bot.send_message(
             chat_id=self.settings.telegram_chat_id,
             text=text,
+            parse_mode=ParseMode.HTML,
             reply_markup=reply_markup,
             disable_web_page_preview=True,
         )

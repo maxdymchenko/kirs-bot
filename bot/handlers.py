@@ -1,6 +1,8 @@
+import html
 import logging
 
 from telegram import Update
+from telegram.constants import ParseMode
 from telegram.ext import Application, CallbackQueryHandler, CommandHandler, ContextTypes
 
 from bot.core import BotContext
@@ -67,12 +69,16 @@ async def mark_done_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
         return
 
     storage.mark_processed(notification_id, user_label)
+    message_text = notification.message_text
+    if "<b>" not in message_text or "<a href=" not in message_text:
+        message_text = html.escape(message_text)
     updated_text = (
-        f"{notification.message_text}\n\n"
-        f"✅ Обработано #{notification.anchor_id} ({user_label})"
+        f"{message_text}\n\n"
+        f"✅ Обработано #{notification.anchor_id} ({html.escape(user_label)})"
     )
     await query.edit_message_text(
         text=updated_text,
+        parse_mode=ParseMode.HTML,
         reply_markup=None,
         disable_web_page_preview=True,
     )

@@ -29,7 +29,7 @@ modules:
       - "/myaccount/safedealorders/"
     # Шаблон сообщения в Telegram
     message_template: |
-      📩 Новое сообщение на OLX #{anchor_id}
+      <b>📩 Новое сообщение на OLX <a href="{chat_link}">#{anchor_id}</a></b>
 
       📧 Аккаунт: {account_email}
       💬 Ссылка: {chat_link}

@@ -1,4 +1,5 @@
 import asyncio
+import html
 import logging
 from typing import TYPE_CHECKING, Any
 
@@ -80,7 +81,8 @@ class EmailOlxModule(BaseModule):
     async def _send_notification(self, parsed) -> bool:
         template = self.config.get(
             "message_template",
-            "📩 Новое сообщение на OLX #{anchor_id}\n\n"
+            '<b>📩 Новое сообщение на OLX '
+            '<a href="{chat_link}">#{anchor_id}</a></b>\n\n'
             "📧 Аккаунт: {account_email}\n"
             "💬 Ссылка: {chat_link}",
         )
@@ -98,10 +100,10 @@ class EmailOlxModule(BaseModule):
 
         text = template.format(
             anchor_id=notification.anchor_id,
-            account_email=parsed.account_email,
-            chat_link=parsed.chat_link,
-            subject=parsed.subject,
-            from_email=parsed.raw_from,
+            account_email=html.escape(parsed.account_email),
+            chat_link=html.escape(parsed.chat_link, quote=True),
+            subject=html.escape(parsed.subject),
+            from_email=html.escape(parsed.raw_from),
         )
         self.ctx.storage.update_message_text(notification.id, text)
 
