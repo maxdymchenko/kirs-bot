@@ -9,6 +9,11 @@ env/
 # Секреты
 .env
 Доступы.txt
+*.json
+!package.json
+!tsconfig.json
+midyear-respect-*.json
+credentials/
 
 # Данные бота
 data/

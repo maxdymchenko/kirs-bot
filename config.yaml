@@ -5,6 +5,9 @@ bot:
   pending_commands:
     - neobrabotannye
     - pending
+  # Чаты, где доступно меню оформления заказа (Mini App)
+  drop_order_chat_ids:
+    - "-5396872628"  # Test_Kirs_bot
 
 modules:
   email_olx:

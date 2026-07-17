@@ -1,11 +1,16 @@
 import asyncio
 import logging
+import os
 import signal
 import sys
 
+import uvicorn
+
+from bot.catalog import CatalogService
 from bot.core import BotContext, load_settings
 from bot.runner import create_modules, run_modules
 from bot.telegram_app import start_telegram_app, stop_telegram_app
+from bot.webapp import create_web_app
 
 logging.basicConfig(
     level=logging.INFO,
@@ -18,15 +23,35 @@ logger = logging.getLogger(__name__)
 async def main() -> None:
     settings = load_settings()
     ctx = BotContext(settings)
+    catalog = CatalogService()
+
+    # Прогрев каталога (не падаем, если Sheets временно недоступен)
+    try:
+        await asyncio.to_thread(catalog.refresh, True)
+    except Exception:
+        logger.exception("Не удалось заранее загрузить каталог — поиск попробует позже")
+
+    web = create_web_app(catalog)
+    port = int(os.getenv("PORT", "8000"))
+    config = uvicorn.Config(web, host="0.0.0.0", port=port, log_level="info")
+    server = uvicorn.Server(config)
+    web_task = asyncio.create_task(server.serve(), name="web")
+
     telegram_app = await start_telegram_app(ctx)
     modules = create_modules(ctx)
 
     if not modules:
         logger.error("Нет активных модулей. Проверьте config.yaml")
+        server.should_exit = True
+        await web_task
         await stop_telegram_app(telegram_app)
         sys.exit(1)
 
-    logger.info("Бот запущен. Активных модулей: %d", len(modules))
+    logger.info(
+        "Бот запущен. Модулей: %d. Mini App: %s",
+        len(modules),
+        settings.webapp_url or f"http://0.0.0.0:{port}",
+    )
 
     stop_event = asyncio.Event()
 
@@ -41,15 +66,16 @@ async def main() -> None:
         except NotImplementedError:
             signal.signal(sig, request_stop)
 
-    run_task = asyncio.create_task(run_modules(modules))
-    stop_task = asyncio.create_task(stop_event.wait())
+    run_task = asyncio.create_task(run_modules(modules), name="modules")
+    stop_task = asyncio.create_task(stop_event.wait(), name="stop")
 
     done, _ = await asyncio.wait(
-        {run_task, stop_task},
+        {run_task, stop_task, web_task},
         return_when=asyncio.FIRST_COMPLETED,
     )
 
-    if stop_task in done:
+    server.should_exit = True
+    if stop_task in done or web_task in done:
         run_task.cancel()
         try:
             await run_task
@@ -60,6 +86,8 @@ async def main() -> None:
         await module.stop()
 
     await stop_telegram_app(telegram_app)
+    if not web_task.done():
+        await web_task
     logger.info("Бот остановлен")
 
 

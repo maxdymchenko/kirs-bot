@@ -24,6 +24,8 @@ class Settings:
     poll_interval: int
     modules_config: dict
     pending_commands: list[str] = field(default_factory=lambda: ["neobrabotannye", "pending"])
+    drop_order_chat_ids: list[str] = field(default_factory=list)
+    webapp_url: str = ""
 
 
 def load_settings(config_path: str | Path | None = None) -> Settings:
@@ -46,6 +48,14 @@ def load_settings(config_path: str | Path | None = None) -> Settings:
         raise ValueError("EMAIL_USER и EMAIL_PASSWORD должны быть заданы (Render Environment или .env)")
 
     bot_config = config.get("bot", {})
+    drop_chats = bot_config.get("drop_order_chat_ids") or []
+    drop_chats = [str(c).strip() for c in drop_chats if str(c).strip()]
+
+    webapp_url = (
+        os.getenv("WEBAPP_URL", "").strip().rstrip("/")
+        or os.getenv("RENDER_EXTERNAL_URL", "").strip().rstrip("/")
+    )
+
     return Settings(
         telegram_token=token,
         telegram_chat_id=chat_id,
@@ -56,6 +66,8 @@ def load_settings(config_path: str | Path | None = None) -> Settings:
         poll_interval=bot_config.get("poll_interval", 60),
         modules_config=config.get("modules", {}),
         pending_commands=bot_config.get("pending_commands", ["neobrabotannye", "pending"]),
+        drop_order_chat_ids=drop_chats,
+        webapp_url=webapp_url,
     )
 
 

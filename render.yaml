@@ -1,16 +1,16 @@
-# Деплой на Render: Background Worker (работает 24/7)
-# https://render.com/docs/background-workers
+# Деплой на Render: Web Service (Mini App + бот + OLX)
+# https://render.com/docs/web-services
 #
-# После push в GitHub: Render Dashboard → New → Blueprint → подключить репозиторий
-# Секреты (токены, пароли) задаются вручную в Environment Variables
+# Секреты задаются в Environment Variables вручную.
 
 services:
-  - type: worker
+  - type: web
     name: kirs-bot
     runtime: python
     plan: starter
     buildCommand: pip install -r requirements.txt
     startCommand: python main.py
+    healthCheckPath: /health
     envVars:
       - key: PYTHON_VERSION
         value: 3.12.8
@@ -25,4 +25,10 @@ services:
       - key: EMAIL_USER
         sync: false
       - key: EMAIL_PASSWORD
+        sync: false
+      - key: STOCK_SPREADSHEET_ID
+        value: 1HE1HmyuSevSIYBvk3UiRkoYZgRSdmGqH7ZvK6BFBBCg
+      - key: GOOGLE_CREDENTIALS_JSON
+        sync: false
+      - key: WEBAPP_URL
         sync: false
