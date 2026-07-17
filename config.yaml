@@ -22,17 +22,34 @@ modules:
       - "Вам нове повідомлення"
       - "Вітаємо!"
       - "Перегляньте повідомлення"
+      - "У вас купили"
     # Допустимые пути в ссылках из письма
     allowed_link_paths:
       - "/myaccount/answer/"
       - "/myaccount/answers/"
       - "/myaccount/safedealorders/"
-    # Шаблон сообщения в Telegram
+    # Правила заголовка в Telegram (проверяются сверху вниз)
+    # Первое совпадение subject_contains → title в сообщении
+    title_rules:
+      - subject_contains:
+          - "угода завершена"
+          - "угода завершена успішно"
+        title: "ОЛХ доставка получена"
+      - subject_contains:
+          - "У вас купили товар"
+          - "У вас купили"
+        title: "Оформлена ОЛХ доставка"
+      - subject_contains:
+          - "Вам нове повідомлення"
+          - "Перегляньте повідомлення"
+        title: "Вам нове повідомлення"
+    # Заголовок, если ни одно правило не подошло
+    default_title: "Повідомлення OLX"
+    # Шаблон сообщения в Telegram (HTML)
     message_template: |
-      <b>📩 Новое сообщение на OLX <a href="{chat_link}">#{anchor_id}</a></b>
+      <b>📩 {title} <a href="{chat_link}">#{anchor_id}</a></b>
 
       📧 Аккаунт: {account_email}
-      💬 Ссылка: {chat_link}
     # Текст кнопки «Перейти в чат»
     button_text: "Перейти в чат"
     # Текст кнопки «Отметить обработанным»

@@ -78,13 +78,23 @@ class EmailOlxModule(BaseModule):
         finally:
             await asyncio.to_thread(client.disconnect)
 
+    def _resolve_title(self, subject: str) -> str:
+        subject_lower = subject.lower()
+        for rule in self.config.get("title_rules", []):
+            needles = rule.get("subject_contains") or []
+            if isinstance(needles, str):
+                needles = [needles]
+            for needle in needles:
+                if needle and needle.lower() in subject_lower:
+                    return str(rule.get("title") or self.config.get("default_title", "Повідомлення OLX"))
+        return str(self.config.get("default_title", "Повідомлення OLX"))
+
     async def _send_notification(self, parsed) -> bool:
+        title = self._resolve_title(parsed.subject)
         template = self.config.get(
             "message_template",
-            '<b>📩 Новое сообщение на OLX '
-            '<a href="{chat_link}">#{anchor_id}</a></b>\n\n'
-            "📧 Аккаунт: {account_email}\n"
-            "💬 Ссылка: {chat_link}",
+            '<b>📩 {title} <a href="{chat_link}">#{anchor_id}</a></b>\n\n'
+            "📧 Аккаунт: {account_email}",
         )
         button_text = self.config.get("button_text", "Перейти в чат")
         processed_button_text = self.config.get("processed_button_text", "✅ Обработано")
@@ -99,6 +109,7 @@ class EmailOlxModule(BaseModule):
         )
 
         text = template.format(
+            title=html.escape(title),
             anchor_id=notification.anchor_id,
             account_email=html.escape(parsed.account_email),
             chat_link=html.escape(parsed.chat_link, quote=True),
@@ -121,9 +132,9 @@ class EmailOlxModule(BaseModule):
             return False
 
         logger.info(
-            "Уведомление #%s отправлено: аккаунт=%s, ссылка=%s",
+            "Уведомление #%s отправлено: title=%s, аккаунт=%s",
             notification.anchor_id,
+            title,
             parsed.account_email,
-            parsed.chat_link,
         )
         return True
