@@ -126,28 +126,29 @@
             </label>
 
             <div id="ttnFields" class="hidden">
-              <div class="info-box">
-                Поля для відправки за вашою ТТН з’являться після фіналізації цього режиму.
-              </div>
+              <label class="field">
+                <span class="field-label">Номер ТТН Нової Пошти</span>
+                <input id="ttnNumber" name="ttnNumber" type="text" inputmode="numeric" placeholder="Вкажіть ТТН" />
+              </label>
             </div>
           </div>
 
           <div class="form-section">
             <h2 class="section-title">Спосіб оплати</h2>
-            <div class="info-box">
+            <div class="info-box" id="codPaymentHint">
               При виборі «Оплата при отриманні», поштовій компанії буде вказано Оголошену вартість
               та Суму зворотної доставки згідно суми «Разом» (з врахуванням передплати) на замовлення.
             </div>
 
             <div class="choice-list" role="radiogroup" aria-label="Спосіб оплати">
-              <label class="choice-card">
+              <label class="choice-card" id="codPaymentCard">
                 <input type="radio" name="paymentMethod" value="cod" checked />
                 <span class="choice-body">
                   <span class="choice-title">Оплата при отриманні</span>
                   <span class="choice-sub">Оплата при отриманні</span>
                 </span>
               </label>
-              <label class="choice-card">
+              <label class="choice-card" id="requisitesPaymentCard">
                 <input type="radio" name="paymentMethod" value="requisites" />
                 <span class="choice-body">
                   <span class="choice-title">Оплата на реквізити</span>
@@ -156,18 +157,35 @@
               </label>
             </div>
 
-            <div class="info-box" id="prepayHint">
-              Якщо отримувач вніс передплату, вкажіть суму яку необхідно вирахувати із накладеного
-              платежу замовлення. Сума не може перевищувати суму «Разом»
-              (<span id="prepayMaxLabel">0</span> грн).
-            </div>
-            <label class="field">
-              <span class="field-label">Сума передплати</span>
-              <div class="input-with-prefix">
-                <span class="input-prefix">₴</span>
-                <input id="prepay" name="prepay" type="number" min="0" step="1" inputmode="numeric" placeholder="Сума передплати" />
+            <div id="prepayBlock">
+              <div class="info-box" id="prepayHint">
+                Якщо отримувач вніс передплату, вкажіть суму яку необхідно вирахувати із накладеного
+                платежу замовлення. Сума не може перевищувати суму «Разом»
+                (<span id="prepayMaxLabel">0</span> грн).
               </div>
-            </label>
+              <label class="field">
+                <span class="field-label">Сума передплати</span>
+                <div class="input-with-prefix">
+                  <span class="input-prefix">₴</span>
+                  <input id="prepay" name="prepay" type="number" min="0" step="1" inputmode="numeric" placeholder="Сума передплати" />
+                </div>
+              </label>
+            </div>
+
+            <div id="requisitesBlock" class="hidden">
+              <div class="requisites-box">
+                <p>
+                  Виконайте оплату в розмірі <strong id="payAmountLabel">0 грн</strong> за реквізитами
+                  та завантажте фото/скрін квитанції про оплату.
+                </p>
+                <p class="requisites-warn">Зверніть увагу! Реквізити було оновлено.</p>
+                <div class="requisites-details" id="requisitesDetails"></div>
+              </div>
+              <label class="field">
+                <span class="field-label">Квитанція про оплату</span>
+                <input id="paymentReceipt" name="paymentReceipt" type="file" accept="image/*,.pdf" />
+              </label>
+            </div>
           </div>
 
           <div class="form-section">

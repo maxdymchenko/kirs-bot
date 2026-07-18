@@ -7,6 +7,15 @@
 
   const CART_KEY = "kirs_cart_v1";
 
+  // Реквізити для оплати — підставте реальні дані бізнесу
+  const PAYMENT_REQUISITES = {
+    recipient: "ФОП (вкажіть отримувача)",
+    edrpou: "0000000000",
+    iban: "UA000000000000000000000000000",
+    bank: "АТ КБ «ПРИВАТБАНК»",
+    purpose: "Назва товару, скорочено",
+  };
+
   const els = {
     searchForm: document.getElementById("searchForm"),
     searchInput: document.getElementById("searchInput"),
@@ -29,13 +38,21 @@
     checkoutForm: document.getElementById("checkoutForm"),
     checkoutError: document.getElementById("checkoutError"),
     ownTtn: document.getElementById("ownTtn"),
-    npDeliveryFields: document.getElementById("npDeliveryFields"),
     ttnFields: document.getElementById("ttnFields"),
+    ttnNumber: document.getElementById("ttnNumber"),
     warehouseField: document.getElementById("warehouseField"),
     addressField: document.getElementById("addressField"),
     warehouseLabel: document.getElementById("warehouseLabel"),
+    codPaymentHint: document.getElementById("codPaymentHint"),
+    codPaymentCard: document.getElementById("codPaymentCard"),
+    requisitesPaymentCard: document.getElementById("requisitesPaymentCard"),
+    prepayBlock: document.getElementById("prepayBlock"),
     prepayMaxLabel: document.getElementById("prepayMaxLabel"),
     prepay: document.getElementById("prepay"),
+    requisitesBlock: document.getElementById("requisitesBlock"),
+    requisitesDetails: document.getElementById("requisitesDetails"),
+    payAmountLabel: document.getElementById("payAmountLabel"),
+    paymentReceipt: document.getElementById("paymentReceipt"),
   };
 
   function loadCart() {
@@ -120,9 +137,9 @@
     els.checkoutView.classList.remove("hidden");
     els.mainTabs.classList.add("hidden");
     document.querySelectorAll(".tab").forEach((tab) => tab.classList.remove("active"));
+    renderRequisitesDetails();
     syncDeliveryFields();
-    syncTtnMode();
-    updatePrepayHint();
+    syncPaymentAndTtn();
     setCheckoutError("");
     window.scrollTo({ top: 0, behavior: "smooth" });
   }
@@ -139,16 +156,47 @@
       : "Відділення/поштомат Нової Пошти";
   }
 
-  function syncTtnMode() {
-    const own = Boolean(els.ownTtn.checked);
-    els.npDeliveryFields.classList.toggle("hidden", own);
-    els.ttnFields.classList.toggle("hidden", !own);
+  function renderRequisitesDetails() {
+    els.requisitesDetails.innerHTML = `
+      <div><strong>Отримувач:</strong> ${escapeHtml(PAYMENT_REQUISITES.recipient)}</div>
+      <div><strong>ЄДРПОУ:</strong> ${escapeHtml(PAYMENT_REQUISITES.edrpou)}</div>
+      <div><strong>Рахунок IBAN:</strong> ${escapeHtml(PAYMENT_REQUISITES.iban)}</div>
+      <div><strong>Банк:</strong> ${escapeHtml(PAYMENT_REQUISITES.bank)}</div>
+      <div><strong>Призначення:</strong> ${escapeHtml(PAYMENT_REQUISITES.purpose)}</div>
+    `;
   }
 
-  function updatePrepayHint() {
-    const max = Math.round(cartMoneyTotal());
-    els.prepayMaxLabel.textContent = String(max);
-    els.prepay.max = String(max);
+  function selectedPaymentMethod() {
+    return (
+      els.checkoutForm.querySelector('input[name="paymentMethod"]:checked')?.value ||
+      "cod"
+    );
+  }
+
+  function syncPaymentAndTtn() {
+    const ownTtn = Boolean(els.ownTtn.checked);
+    els.ttnFields.classList.toggle("hidden", !ownTtn);
+
+    // При власній ТТН — лише оплата на реквізити
+    els.codPaymentCard.classList.toggle("hidden", ownTtn);
+    els.codPaymentHint.classList.toggle("hidden", ownTtn);
+
+    if (ownTtn) {
+      const req = els.checkoutForm.querySelector('input[name="paymentMethod"][value="requisites"]');
+      if (req) req.checked = true;
+    }
+
+    const payment = selectedPaymentMethod();
+    const showRequisites = payment === "requisites";
+    const showPrepay = !ownTtn && payment === "cod";
+
+    els.prepayBlock.classList.toggle("hidden", !showPrepay);
+    els.requisitesBlock.classList.toggle("hidden", !showRequisites);
+
+    const total = Math.round(cartMoneyTotal());
+    els.prepayMaxLabel.textContent = String(total);
+    els.prepay.max = String(total);
+    els.payAmountLabel.textContent = `${total} грн`;
   }
 
   function stockLabel(stock) {
@@ -261,6 +309,7 @@
       form.querySelector('input[name="deliveryMethod"]:checked')?.value || "";
     const paymentMethod =
       form.querySelector('input[name="paymentMethod"]:checked')?.value || "";
+    const receiptFile = els.paymentReceipt?.files?.[0] || null;
     return {
       firstName: form.firstName.value.trim(),
       lastName: form.lastName.value.trim(),
@@ -270,10 +319,13 @@
       warehouse: form.warehouse.value.trim(),
       address: form.address.value.trim(),
       ownTtn: Boolean(form.ownTtn.checked),
+      ttnNumber: form.ttnNumber?.value.trim() || "",
       paymentMethod,
       prepay: form.prepay.value.trim(),
       comment: form.comment.value.trim(),
       rulesAccepted: Boolean(form.rulesAccepted.checked),
+      receiptName: receiptFile ? receiptFile.name : "",
+      receiptFile,
       cart: loadCart(),
       total: cartMoneyTotal(),
     };
@@ -285,24 +337,33 @@
     if (!data.phone || data.phone.replace(/\D/g, "").length < 10) {
       return "Вкажіть коректний телефон";
     }
-    if (!data.ownTtn) {
-      if (!data.city) return "Вкажіть населений пункт";
-      if (data.deliveryMethod === "np_warehouse" && !data.warehouse) {
-        return "Вкажіть відділення або поштомат";
+    if (!data.city) return "Вкажіть населений пункт";
+    if (data.deliveryMethod === "np_warehouse" && !data.warehouse) {
+      return "Вкажіть відділення або поштомат";
+    }
+    if (data.deliveryMethod === "np_courier" && !data.address) {
+      return "Вкажіть адресу доставки";
+    }
+    if (data.ownTtn) {
+      if (!data.ttnNumber) return "Вкажіть номер ТТН";
+      if (data.paymentMethod !== "requisites") {
+        return "При власній ТТН доступна лише оплата на реквізити";
       }
-      if (data.deliveryMethod === "np_courier" && !data.address) {
-        return "Вкажіть адресу доставки";
-      }
+    }
+    if (data.paymentMethod === "requisites" && !data.receiptFile) {
+      return "Завантажте фото/скрін квитанції про оплату";
     }
     if (!data.rulesAccepted) {
       return "Підтвердіть ознайомлення з правилами";
     }
-    const prepay = data.prepay === "" ? 0 : Number(data.prepay);
-    if (Number.isNaN(prepay) || prepay < 0) {
-      return "Некоректна сума передплати";
-    }
-    if (prepay > data.total) {
-      return `Передплата не може перевищувати ${Math.round(data.total)} грн`;
+    if (!data.ownTtn && data.paymentMethod === "cod") {
+      const prepay = data.prepay === "" ? 0 : Number(data.prepay);
+      if (Number.isNaN(prepay) || prepay < 0) {
+        return "Некоректна сума передплати";
+      }
+      if (prepay > data.total) {
+        return `Передплата не може перевищувати ${Math.round(data.total)} грн`;
+      }
     }
     return "";
   }
@@ -375,7 +436,9 @@
 
   els.checkoutForm.addEventListener("change", (event) => {
     if (event.target.name === "deliveryMethod") syncDeliveryFields();
-    if (event.target.id === "ownTtn") syncTtnMode();
+    if (event.target.id === "ownTtn" || event.target.name === "paymentMethod") {
+      syncPaymentAndTtn();
+    }
   });
 
   els.checkoutForm.addEventListener("submit", (event) => {

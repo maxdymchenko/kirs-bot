@@ -420,6 +420,41 @@ textarea {
   flex-shrink: 0;
 }
 
+.requisites-box {
+  background: #fff6d6;
+  border: 1px solid #f0d98a;
+  border-radius: 12px;
+  padding: 14px;
+  font-size: 13px;
+  line-height: 1.5;
+  margin-bottom: 14px;
+  color: #3a3418;
+}
+
+.requisites-box p {
+  margin: 0 0 10px;
+}
+
+.requisites-warn {
+  font-weight: 700;
+  color: #8a5a00;
+}
+
+.requisites-details {
+  margin-top: 8px;
+  display: grid;
+  gap: 4px;
+}
+
+.requisites-details div strong {
+  font-weight: 700;
+}
+
+input[type="file"] {
+  padding: 10px;
+  background: #fff;
+}
+
 .form-error {
   color: var(--danger);
   font-size: 14px;
