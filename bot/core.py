@@ -39,9 +39,11 @@ class Settings:
     modules_config: dict
     pending_commands: list[str] = field(default_factory=lambda: ["neobrabotannye", "pending"])
     owner_chat_ids: list[str] = field(default_factory=list)
+    owner_user_ids: list[str] = field(default_factory=list)
     drop_order_chat_ids: list[str] = field(default_factory=list)
     droppers: dict[str, DropperConfig] = field(default_factory=dict)
     webapp_url: str = ""
+    app_data_dir: str = ""
 
 
 def load_settings(config_path: str | Path | None = None) -> Settings:
@@ -70,6 +72,16 @@ def load_settings(config_path: str | Path | None = None) -> Settings:
     if not owner_chats:
         owner_chats = ["-5396872628"]
 
+    owner_users = bot_config.get("owner_user_ids") or []
+    owner_users = [str(u).strip() for u in owner_users if str(u).strip()]
+    # Env можно задать через запятую: OWNER_USER_IDS=123,456
+    env_owners = os.getenv("OWNER_USER_IDS", "").strip()
+    if env_owners:
+        for part in env_owners.split(","):
+            uid = part.strip()
+            if uid and uid not in owner_users:
+                owner_users.append(uid)
+
     drop_chats = bot_config.get("drop_order_chat_ids") or []
     drop_chats = [str(c).strip() for c in drop_chats if str(c).strip()]
 
@@ -94,6 +106,7 @@ def load_settings(config_path: str | Path | None = None) -> Settings:
         os.getenv("WEBAPP_URL", "").strip().rstrip("/")
         or os.getenv("RENDER_EXTERNAL_URL", "").strip().rstrip("/")
     )
+    app_data = (os.getenv("APP_DATA_DIR") or "").strip()
 
     return Settings(
         telegram_token=token,
@@ -106,9 +119,11 @@ def load_settings(config_path: str | Path | None = None) -> Settings:
         modules_config=config.get("modules", {}),
         pending_commands=bot_config.get("pending_commands", ["neobrabotannye", "pending"]),
         owner_chat_ids=owner_chats,
+        owner_user_ids=owner_users,
         drop_order_chat_ids=drop_chats,
         droppers=droppers,
         webapp_url=webapp_url,
+        app_data_dir=app_data,
     )
 
 

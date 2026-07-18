@@ -3,7 +3,14 @@ import logging
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update, WebAppInfo
 from telegram.constants import ParseMode
-from telegram.ext import Application, CallbackQueryHandler, CommandHandler, ContextTypes
+from telegram.ext import (
+    Application,
+    CallbackQueryHandler,
+    CommandHandler,
+    ContextTypes,
+    MessageHandler,
+    filters,
+)
 
 from bot.core import BotContext
 from bot.roles import resolve_session
@@ -21,6 +28,12 @@ def register_handlers(application: Application, ctx: BotContext) -> None:
 
     application.add_handler(CommandHandler(["menu", "start"], order_menu_command))
     application.add_handler(CommandHandler("chatid", chat_id_command))
+    application.add_handler(
+        MessageHandler(
+            filters.StatusUpdate.MIGRATE,
+            chat_migrated_handler,
+        )
+    )
     application.add_handler(
         CallbackQueryHandler(stub_balance_callback, pattern=r"^stub:balance$")
     )
@@ -58,12 +71,98 @@ async def chat_id_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     if not update.effective_chat or not update.message:
         return
     chat = update.effective_chat
+    user = update.effective_user
+    user_line = ""
+    if user:
+        user_line = (
+            f"\nваш user_id: `{user.id}` "
+            f"(це постійний id — його додають у owner_user_ids)"
+        )
     await update.message.reply_text(
         f"chat_id: `{chat.id}`\n"
         f"type: {chat.type}\n"
-        f"title: {chat.title or '-'}",
+        f"title: {chat.title or '-'}"
+        f"{user_line}",
         parse_mode=ParseMode.MARKDOWN,
     )
+
+
+async def chat_migrated_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Автоперепис chat_id при апгрейде group → supergroup."""
+    message = update.effective_message
+    if not message:
+        return
+
+    ctx: BotContext = context.bot_data["ctx"]
+    old_id: int | None = None
+    new_id: int | None = None
+
+    if message.migrate_to_chat_id:
+        old_id = message.chat_id
+        new_id = message.migrate_to_chat_id
+    elif message.migrate_from_chat_id:
+        old_id = message.migrate_from_chat_id
+        new_id = message.chat_id
+
+    if old_id is None or new_id is None:
+        return
+
+    result = ctx.app_storage.migrate_chat_id(old_id, new_id)
+    logger.info("Telegram migrate event: %s", result)
+
+    # Обновить TELEGRAM_CHAT_ID в рантайме, если это OLX-чат
+    if str(ctx.settings.telegram_chat_id).strip() == str(old_id):
+        ctx.settings.telegram_chat_id = str(new_id)
+        logger.info("Обновлён settings.telegram_chat_id → %s", new_id)
+
+    # Обновить owner_chat_ids в рантайме
+    updated_owners: list[str] = []
+    for chat in ctx.settings.owner_chat_ids:
+        if str(chat).strip() == str(old_id):
+            updated_owners.append(str(new_id))
+        else:
+            updated_owners.append(chat)
+    ctx.settings.owner_chat_ids = updated_owners
+
+    # Обновить yaml-droppers ключ в рантайме
+    if str(old_id) in ctx.settings.droppers:
+        cfg = ctx.settings.droppers.pop(str(old_id))
+        cfg.chat_id = str(new_id)
+        ctx.settings.droppers[str(new_id)] = cfg
+
+    notify_text = (
+        "♻️ Чат оновлено (group → supergroup).\n"
+        f"Старий chat_id: `{old_id}`\n"
+        f"Новий chat_id: `{new_id}`\n"
+        "Базу оновлено автоматично, нічого вручну міняти не потрібно."
+    )
+    try:
+        await context.bot.send_message(
+            chat_id=new_id,
+            text=notify_text,
+            parse_mode=ParseMode.MARKDOWN,
+        )
+    except Exception:
+        logger.exception("Не удалось уведомить чат о миграции %s → %s", old_id, new_id)
+
+    for owner_chat in ctx.settings.owner_chat_ids:
+        try:
+            await context.bot.send_message(
+                chat_id=owner_chat,
+                text=notify_text,
+                parse_mode=ParseMode.MARKDOWN,
+            )
+        except Exception:
+            logger.exception("Не удалось уведомить owner %s о миграции", owner_chat)
+    for owner_user in ctx.settings.owner_user_ids:
+        try:
+            await context.bot.send_message(
+                chat_id=owner_user,
+                text=notify_text,
+                parse_mode=ParseMode.MARKDOWN,
+            )
+        except Exception:
+            logger.exception("Не удалось уведомить owner user %s о миграции", owner_user)
 
 
 async def order_menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:

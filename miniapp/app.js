@@ -1137,14 +1137,31 @@
     }
   });
 
-  async function renderOwnerCabinet() {
+  function ownerAuthParams() {
     const chatId = currentTelegramChatId();
+    const userId = currentTelegramUser().user_id;
+    const params = new URLSearchParams();
+    if (chatId) params.set("owner_chat_id", chatId);
+    if (userId) params.set("owner_user_id", userId);
+    return params.toString();
+  }
+
+  function ownerAuthBody(extra = {}) {
+    return {
+      owner_chat_id: currentTelegramChatId(),
+      owner_user_id: currentTelegramUser().user_id,
+      ...extra,
+    };
+  }
+
+  async function renderOwnerCabinet() {
     els.ownerDroppers.innerHTML = `<div class="ac-loading">Завантаження дропперів...</div>`;
     els.ownerStaff.innerHTML = "";
     try {
+      const auth = ownerAuthParams();
       const [droppersRes, staffRes] = await Promise.all([
-        fetch(`/api/owner/droppers?owner_chat_id=${encodeURIComponent(chatId)}`),
-        fetch(`/api/owner/staff?owner_chat_id=${encodeURIComponent(chatId)}`),
+        fetch(`/api/owner/droppers?${auth}`),
+        fetch(`/api/owner/staff?${auth}`),
       ]);
       const droppersData = await droppersRes.json();
       const staffData = await staffRes.json();
@@ -1306,7 +1323,7 @@
       event.preventDefault();
       els.staffError.classList.add("hidden");
       const payload = {
-        owner_chat_id: currentTelegramChatId(),
+        ...ownerAuthBody(),
         telegram_user_id: document.getElementById("staffUserId").value.trim(),
         full_name: document.getElementById("staffName").value.trim(),
         role: document.getElementById("staffRole").value,
@@ -1343,10 +1360,11 @@
           {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              owner_chat_id: currentTelegramChatId(),
-              require_full_payment: Boolean(input.checked),
-            }),
+            body: JSON.stringify(
+              ownerAuthBody({
+                require_full_payment: Boolean(input.checked),
+              })
+            ),
           }
         );
         const data = await response.json();

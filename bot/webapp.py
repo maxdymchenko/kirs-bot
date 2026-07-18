@@ -17,7 +17,7 @@ from bot.accounts import AppStorage
 from bot.catalog import CatalogService
 from bot.core import DropperConfig, Settings
 from bot.novaposhta import NovaPoshtaClient, NovaPoshtaError
-from bot.roles import is_owner_chat, resolve_session
+from bot.roles import is_owner, is_owner_chat, resolve_session
 
 logger = logging.getLogger(__name__)
 
@@ -39,12 +39,14 @@ class StaffCreateRequest(BaseModel):
     role: str = Field(..., min_length=3, max_length=32)
     full_name: str = Field("", max_length=120)
     username: str = Field("", max_length=64)
-    owner_chat_id: str = Field(..., min_length=2, max_length=64)
+    owner_chat_id: str = Field("", max_length=64)
+    owner_user_id: str = Field("", max_length=64)
     created_by_user_id: str = Field("", max_length=64)
 
 
 class DropperPaymentFlagRequest(BaseModel):
-    owner_chat_id: str = Field(..., min_length=2, max_length=64)
+    owner_chat_id: str = Field("", max_length=64)
+    owner_user_id: str = Field("", max_length=64)
     require_full_payment: bool
 
 
@@ -63,10 +65,19 @@ def create_web_app(
             raise HTTPException(status_code=503, detail="Settings не ініціалізовано")
         return app_settings
 
+    def _require_owner(owner_chat_id: str = "", owner_user_id: str = "") -> Settings:
+        cfg = _require_settings()
+        if not is_owner(cfg, owner_chat_id, owner_user_id, storage):
+            raise HTTPException(status_code=403, detail="Доступ лише для власника")
+        return cfg
+
     def _yaml_dropper(chat_id: str) -> DropperConfig | None:
-        key = str(chat_id or "").strip()
+        key = storage.resolve_chat_id(str(chat_id or "").strip())
         if app_settings and key in app_settings.droppers:
             return app_settings.droppers[key]
+        raw = str(chat_id or "").strip()
+        if app_settings and raw in app_settings.droppers:
+            return app_settings.droppers[raw]
         return None
 
     async def _notify(chat_id: str, text: str) -> None:
@@ -99,6 +110,19 @@ def create_web_app(
             await asyncio.to_thread(_send)
         except Exception:
             logger.exception("Не удалось отправить Telegram сообщение в %s", chat_id)
+
+    async def _notify_owners(text: str) -> None:
+        cfg = _require_settings()
+        targets: list[str] = []
+        for chat in cfg.owner_chat_ids:
+            resolved = storage.resolve_chat_id(chat) or chat
+            if resolved and resolved not in targets:
+                targets.append(resolved)
+        for user in cfg.owner_user_ids:
+            if user and user not in targets:
+                targets.append(user)
+        for target in targets:
+            await _notify(target, text)
 
     @app.get("/health")
     async def health() -> dict:
@@ -143,7 +167,7 @@ def create_web_app(
                 status_code=400,
                 detail="Реєстрація дроппера доступна лише з групи Telegram",
             )
-        if is_owner_chat(cfg, chat_id):
+        if is_owner_chat(cfg, chat_id, storage):
             raise HTTPException(
                 status_code=400,
                 detail="Цей чат є кабінетом власника, реєстрація дроппера тут не потрібна",
@@ -201,32 +225,31 @@ def create_web_app(
         )
 
         await _notify(chat_id, group_text)
-        for owner_chat in cfg.owner_chat_ids:
-            await _notify(owner_chat, owner_text)
+        await _notify_owners(owner_text)
 
         return {"ok": True, "already_registered": False, "dropper": dropper.to_dict()}
 
     @app.get("/api/owner/droppers")
-    async def owner_list_droppers(owner_chat_id: str = Query(..., max_length=64)) -> dict:
-        cfg = _require_settings()
-        if not is_owner_chat(cfg, owner_chat_id):
-            raise HTTPException(status_code=403, detail="Доступ лише для власника")
+    async def owner_list_droppers(
+        owner_chat_id: str = Query("", max_length=64),
+        owner_user_id: str = Query("", max_length=64),
+    ) -> dict:
+        _require_owner(owner_chat_id, owner_user_id)
         items = [d.to_dict() for d in storage.list_droppers()]
         return {"count": len(items), "items": items}
 
     @app.get("/api/owner/staff")
-    async def owner_list_staff(owner_chat_id: str = Query(..., max_length=64)) -> dict:
-        cfg = _require_settings()
-        if not is_owner_chat(cfg, owner_chat_id):
-            raise HTTPException(status_code=403, detail="Доступ лише для власника")
+    async def owner_list_staff(
+        owner_chat_id: str = Query("", max_length=64),
+        owner_user_id: str = Query("", max_length=64),
+    ) -> dict:
+        _require_owner(owner_chat_id, owner_user_id)
         items = [s.to_dict() for s in storage.list_staff()]
         return {"count": len(items), "items": items}
 
     @app.post("/api/owner/staff")
     async def owner_add_staff(payload: StaffCreateRequest) -> dict:
-        cfg = _require_settings()
-        if not is_owner_chat(cfg, payload.owner_chat_id):
-            raise HTTPException(status_code=403, detail="Доступ лише для власника")
+        _require_owner(payload.owner_chat_id, payload.owner_user_id or payload.created_by_user_id)
         try:
             member = storage.upsert_staff(
                 telegram_user_id=payload.telegram_user_id,
@@ -244,9 +267,7 @@ def create_web_app(
         chat_id: str,
         payload: DropperPaymentFlagRequest,
     ) -> dict:
-        cfg = _require_settings()
-        if not is_owner_chat(cfg, payload.owner_chat_id):
-            raise HTTPException(status_code=403, detail="Доступ лише для власника")
+        _require_owner(payload.owner_chat_id, payload.owner_user_id)
         dropper = storage.set_dropper_require_full_payment(
             chat_id, payload.require_full_payment
         )

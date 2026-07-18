@@ -3,6 +3,8 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
+from bot.paths import notifications_db_path
+
 
 @dataclass
 class Notification:
@@ -23,7 +25,7 @@ class Notification:
 
 class NotificationStorage:
     def __init__(self, db_path: str | Path | None = None):
-        self.db_path = Path(db_path or Path(__file__).resolve().parent.parent / "data" / "notifications.db")
+        self.db_path = Path(db_path or notifications_db_path())
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._init_db()
 

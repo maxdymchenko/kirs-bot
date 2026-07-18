@@ -51,9 +51,10 @@ async def main() -> None:
         sys.exit(1)
 
     logger.info(
-        "Бот запущен. Модулей: %d. Mini App: %s",
+        "Бот запущен. Модулей: %d. Mini App: %s. Data: %s",
         len(modules),
         settings.webapp_url or f"http://0.0.0.0:{port}",
+        app_storage.db_path.parent,
     )
 
     stop_event = asyncio.Event()

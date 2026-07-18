@@ -1,12 +1,17 @@
-"""SQLite: дропперы, сотрудники, сессии ролей."""
+"""SQLite: дропперы, сотрудники, миграции chat_id."""
 
 from __future__ import annotations
 
+import logging
 import sqlite3
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+from bot.paths import app_db_path
+
+logger = logging.getLogger(__name__)
 
 
 def _now() -> str:
@@ -69,10 +74,7 @@ class StaffMember:
 
 class AppStorage:
     def __init__(self, db_path: str | Path | None = None):
-        self.db_path = Path(
-            db_path
-            or Path(__file__).resolve().parent.parent / "data" / "app.db"
-        )
+        self.db_path = Path(db_path or app_db_path())
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._init_db()
 
@@ -114,6 +116,21 @@ class AppStorage:
                 )
                 """
             )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS chat_migrations (
+                    old_chat_id TEXT PRIMARY KEY,
+                    new_chat_id TEXT NOT NULL,
+                    migrated_at TEXT NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_chat_migrations_new
+                ON chat_migrations(new_chat_id)
+                """
+            )
             conn.commit()
 
     def _row_dropper(self, row: sqlite3.Row) -> Dropper:
@@ -143,15 +160,114 @@ class AppStorage:
             created_by_user_id=row["created_by_user_id"] or "",
         )
 
-    def get_dropper_by_chat(self, chat_id: str) -> Dropper | None:
+    def resolve_chat_id(self, chat_id: str | int | None) -> str:
+        """Вернуть актуальный chat_id с учётом миграций group → supergroup."""
         key = str(chat_id or "").strip()
         if not key:
-            return None
+            return ""
+        seen: set[str] = set()
         with self._connect() as conn:
-            row = conn.execute(
-                "SELECT * FROM droppers WHERE chat_id = ?", (key,)
+            while key and key not in seen:
+                seen.add(key)
+                row = conn.execute(
+                    "SELECT new_chat_id FROM chat_migrations WHERE old_chat_id = ?",
+                    (key,),
+                ).fetchone()
+                if not row:
+                    break
+                key = str(row["new_chat_id"]).strip()
+        return key
+
+    def migrate_chat_id(self, old_chat_id: str | int, new_chat_id: str | int) -> dict[str, Any]:
+        """
+        Переписать все ссылки со старого chat_id на новый.
+        Безопасно при повторном вызове (идемпотентно).
+        """
+        old_id = str(old_chat_id).strip()
+        new_id = str(new_chat_id).strip()
+        if not old_id or not new_id or old_id == new_id:
+            return {"ok": False, "reason": "invalid", "old": old_id, "new": new_id}
+
+        now = _now()
+        updated_dropper = False
+        with self._connect() as conn:
+            existing = conn.execute(
+                "SELECT new_chat_id FROM chat_migrations WHERE old_chat_id = ?",
+                (old_id,),
             ).fetchone()
-        return self._row_dropper(row) if row else None
+            if existing and str(existing["new_chat_id"]) == new_id:
+                # Уже записано — всё равно убедимся, что dropper на новом id
+                pass
+            else:
+                conn.execute(
+                    """
+                    INSERT INTO chat_migrations (old_chat_id, new_chat_id, migrated_at)
+                    VALUES (?, ?, ?)
+                    ON CONFLICT(old_chat_id) DO UPDATE SET
+                        new_chat_id = excluded.new_chat_id,
+                        migrated_at = excluded.migrated_at
+                    """,
+                    (old_id, new_id, now),
+                )
+
+            old_row = conn.execute(
+                "SELECT id FROM droppers WHERE chat_id = ?", (old_id,)
+            ).fetchone()
+            new_row = conn.execute(
+                "SELECT id FROM droppers WHERE chat_id = ?", (new_id,)
+            ).fetchone()
+
+            if old_row and not new_row:
+                conn.execute(
+                    "UPDATE droppers SET chat_id = ? WHERE chat_id = ?",
+                    (new_id, old_id),
+                )
+                updated_dropper = True
+            elif old_row and new_row:
+                # Конфликт крайне редкий: оставляем запись на new_id, старую деактивируем
+                conn.execute(
+                    "UPDATE droppers SET status = 'migrated_duplicate' WHERE chat_id = ?",
+                    (old_id,),
+                )
+                logger.warning(
+                    "Миграция chat_id: оба id уже в droppers old=%s new=%s",
+                    old_id,
+                    new_id,
+                )
+
+            conn.commit()
+
+        logger.info(
+            "Миграция chat_id: %s → %s (dropper_updated=%s)",
+            old_id,
+            new_id,
+            updated_dropper,
+        )
+        return {
+            "ok": True,
+            "old": old_id,
+            "new": new_id,
+            "dropper_updated": updated_dropper,
+        }
+
+    def get_dropper_by_chat(self, chat_id: str) -> Dropper | None:
+        raw = str(chat_id or "").strip()
+        if not raw:
+            return None
+        candidates = []
+        resolved = self.resolve_chat_id(raw)
+        for key in (resolved, raw):
+            if key and key not in candidates:
+                candidates.append(key)
+
+        with self._connect() as conn:
+            for key in candidates:
+                row = conn.execute(
+                    "SELECT * FROM droppers WHERE chat_id = ?", (key,)
+                ).fetchone()
+                if row:
+                    return self._row_dropper(row)
+        return None
 
     def list_droppers(self) -> list[Dropper]:
         with self._connect() as conn:
@@ -203,20 +319,36 @@ class AppStorage:
     def set_dropper_require_full_payment(
         self, chat_id: str, require_full_payment: bool
     ) -> Dropper | None:
+        raw = str(chat_id).strip()
+        key = self.resolve_chat_id(raw) or raw
         with self._connect() as conn:
-            conn.execute(
+            cur = conn.execute(
                 """
                 UPDATE droppers
                 SET require_full_payment = ?
                 WHERE chat_id = ?
                 """,
-                (1 if require_full_payment else 0, str(chat_id).strip()),
+                (1 if require_full_payment else 0, key),
             )
+            if cur.rowcount == 0 and key != raw:
+                conn.execute(
+                    """
+                    UPDATE droppers
+                    SET require_full_payment = ?
+                    WHERE chat_id = ?
+                    """,
+                    (1 if require_full_payment else 0, raw),
+                )
             conn.commit()
             row = conn.execute(
                 "SELECT * FROM droppers WHERE chat_id = ?",
-                (str(chat_id).strip(),),
+                (key,),
             ).fetchone()
+            if not row and key != raw:
+                row = conn.execute(
+                    "SELECT * FROM droppers WHERE chat_id = ?",
+                    (raw,),
+                ).fetchone()
         return self._row_dropper(row) if row else None
 
     def get_staff_by_user(self, telegram_user_id: str) -> StaffMember | None:
