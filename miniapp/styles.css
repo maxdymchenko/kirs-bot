@@ -320,6 +320,18 @@ textarea {
   outline-offset: 1px;
 }
 
+.field-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+
+@media (max-width: 420px) {
+  .field-row {
+    grid-template-columns: 1fr;
+  }
+}
+
 .field-hint {
   margin: 6px 0 0;
   font-size: 12px;

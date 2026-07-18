@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
   <title>Kirs — Замовлення</title>
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
-  <link rel="stylesheet" href="/static/styles.css?v=20260718e" />
+  <link rel="stylesheet" href="/static/styles.css?v=20260718j" />
 </head>
 <body>
   <div class="app">
@@ -70,19 +70,24 @@
               <input id="firstName" name="firstName" type="text" autocomplete="given-name" placeholder="Ім'я замовника" required />
             </label>
             <label class="field">
+              <span class="field-label">По батькові</span>
+              <input id="patronymic" name="patronymic" type="text" autocomplete="additional-name" placeholder="По батькові" />
+              <p class="field-hint" id="patronymicHint">Необовʼязково (для курʼєра — обовʼязково)</p>
+            </label>
+            <label class="field">
               <span class="field-label">Прізвище</span>
               <input id="lastName" name="lastName" type="text" autocomplete="family-name" placeholder="Прізвище замовника" required />
             </label>
             <label class="field">
               <span class="field-label">Телефон</span>
               <div class="phone-field">
-                <span class="phone-ghost" id="phoneGhost" aria-hidden="true">+38(099)999-99-99</span>
+                <span class="phone-ghost" id="phoneGhost" aria-hidden="true">+380(99)999-99-99</span>
                 <input
                   id="phone"
                   name="phone"
                   class="phone-input"
                   type="tel"
-                  inputmode="numeric"
+                  inputmode="tel"
                   autocomplete="tel"
                   maxlength="18"
                   placeholder=""
@@ -145,10 +150,34 @@
                 </div>
                 <p class="field-hint">Оберіть зі списку (обовʼязково)</p>
               </label>
-              <label class="field hidden" id="addressField">
-                <span class="field-label">Адреса доставки</span>
-                <input id="address" name="address" type="text" placeholder="Вулиця, будинок, квартира" />
-              </label>
+              <div id="courierAddressFields" class="hidden">
+                <label class="field">
+                  <span class="field-label">Вулиця</span>
+                  <div class="ac-field" data-ac="street">
+                    <input
+                      id="street"
+                      name="street"
+                      type="text"
+                      autocomplete="off"
+                      placeholder="Почніть вводити назву вулиці"
+                      disabled
+                    />
+                    <input type="hidden" id="streetRef" name="streetRef" value="" />
+                    <div class="ac-dropdown hidden" id="streetDropdown" role="listbox"></div>
+                  </div>
+                  <p class="field-hint">Оберіть вулицю зі списку Нової Пошти (обовʼязково)</p>
+                </label>
+                <div class="field-row">
+                  <label class="field">
+                    <span class="field-label">Будинок</span>
+                    <input id="house" name="house" type="text" autocomplete="off" placeholder="№ будинку" />
+                  </label>
+                  <label class="field">
+                    <span class="field-label">Квартира</span>
+                    <input id="apartment" name="apartment" type="text" autocomplete="off" placeholder="Необовʼязково" />
+                  </label>
+                </div>
+              </div>
             </div>
 
             <label class="toggle-row">
@@ -245,6 +274,6 @@
     </main>
   </div>
 
-  <script src="/static/app.js?v=20260718e"></script>
+  <script src="/static/app.js?v=20260718j"></script>
 </body>
 </html>

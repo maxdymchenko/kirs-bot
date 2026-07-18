@@ -37,12 +37,21 @@
     checkoutBack: document.getElementById("checkoutBack"),
     checkoutForm: document.getElementById("checkoutForm"),
     checkoutError: document.getElementById("checkoutError"),
+    firstName: document.getElementById("firstName"),
+    patronymic: document.getElementById("patronymic"),
+    patronymicHint: document.getElementById("patronymicHint"),
+    lastName: document.getElementById("lastName"),
     ownTtn: document.getElementById("ownTtn"),
     ttnFields: document.getElementById("ttnFields"),
     ttnNumber: document.getElementById("ttnNumber"),
     warehouseField: document.getElementById("warehouseField"),
-    addressField: document.getElementById("addressField"),
+    courierAddressFields: document.getElementById("courierAddressFields"),
     warehouseLabel: document.getElementById("warehouseLabel"),
+    street: document.getElementById("street"),
+    streetRef: document.getElementById("streetRef"),
+    streetDropdown: document.getElementById("streetDropdown"),
+    house: document.getElementById("house"),
+    apartment: document.getElementById("apartment"),
     codPaymentHint: document.getElementById("codPaymentHint"),
     codPaymentCard: document.getElementById("codPaymentCard"),
     requisitesPaymentCard: document.getElementById("requisitesPaymentCard"),
@@ -66,16 +75,21 @@
     warehouseDropdown: document.getElementById("warehouseDropdown"),
   };
 
-  const PHONE_EXAMPLE = "+38(099)999-99-99";
+  const PHONE_EXAMPLE = "+380(99)999-99-99";
+  const PHONE_PREFIX_DIGITS = "380";
   const PHONE_MAX_DIGITS = 12;
+  const PHONE_PREFIX_DISPLAY = "+380(";
 
   const npState = {
     city: null,
     warehouse: null,
+    street: null,
     cityTimer: null,
     warehouseTimer: null,
+    streetTimer: null,
     cityReq: 0,
     warehouseReq: 0,
+    streetReq: 0,
   };
 
   function loadCart() {
@@ -123,40 +137,44 @@
     els.cartChipText.textContent = qty ? `${qty} | ${formatMoney(sum)}` : "0";
   }
 
+  let phoneDigits = PHONE_PREFIX_DIGITS;
+
   function normalizePhoneDigits(raw) {
     let digits = String(raw || "").replace(/\D/g, "");
-    if (!digits) return "";
+    if (!digits) return PHONE_PREFIX_DIGITS;
 
     if (digits.startsWith("380")) {
-      return digits.slice(0, PHONE_MAX_DIGITS);
+      digits = digits.slice(0, PHONE_MAX_DIGITS);
+    } else if (digits.startsWith("38")) {
+      digits = digits.slice(0, PHONE_MAX_DIGITS);
+      if (digits.length < 3) digits = PHONE_PREFIX_DIGITS;
+    } else if (digits.startsWith("0")) {
+      digits = ("38" + digits).slice(0, PHONE_MAX_DIGITS);
+    } else {
+      digits = (PHONE_PREFIX_DIGITS + digits).slice(0, PHONE_MAX_DIGITS);
     }
-    if (digits.startsWith("38")) {
-      return digits.slice(0, PHONE_MAX_DIGITS);
+
+    if (!digits.startsWith("380") || digits.length < 3) {
+      return PHONE_PREFIX_DIGITS;
     }
-    if (digits.startsWith("0")) {
-      return ("38" + digits).slice(0, PHONE_MAX_DIGITS);
-    }
-    // 67xxxxxxx / 9 цифр без нуля
-    return ("380" + digits).slice(0, PHONE_MAX_DIGITS);
+    return digits;
   }
 
   function formatPhonePartial(digits) {
-    if (!digits) return "";
+    const d = digits && digits.length >= 3 ? digits : PHONE_PREFIX_DIGITS;
+    // +380(XX)XXX-XX-XX
+    let result = "+380(";
+    if (d.length <= 3) return result;
 
-    let result = "";
-    if (digits.length >= 1) result = "+" + digits.slice(0, Math.min(2, digits.length));
-    if (digits.length >= 2) result = "+38";
-    if (digits.length > 2) {
-      result += "(" + digits.slice(2, Math.min(5, digits.length));
-      if (digits.length >= 5) {
-        result += ")";
-        if (digits.length > 5) {
-          result += digits.slice(5, Math.min(8, digits.length));
-          if (digits.length >= 8) {
-            result += "-" + digits.slice(8, Math.min(10, digits.length));
-            if (digits.length >= 10) {
-              result += "-" + digits.slice(10, Math.min(12, digits.length));
-            }
+    result += d.slice(3, Math.min(5, d.length));
+    if (d.length >= 5) {
+      result += ")";
+      if (d.length > 5) {
+        result += d.slice(5, Math.min(8, d.length));
+        if (d.length >= 8) {
+          result += "-" + d.slice(8, Math.min(10, d.length));
+          if (d.length >= 10) {
+            result += "-" + d.slice(10, Math.min(12, d.length));
           }
         }
       }
@@ -164,19 +182,36 @@
     return result;
   }
 
-  function applyPhoneMask(rawValue) {
-    const digits = normalizePhoneDigits(rawValue);
-    const formatted = formatPhonePartial(digits);
-    els.phone.value = formatted;
-    if (els.phoneGhost) {
-      els.phoneGhost.textContent = PHONE_EXAMPLE;
-      els.phoneGhost.classList.toggle("hidden", false);
+  function updatePhoneGhost(formatted) {
+    if (!els.phoneGhost) return;
+    if (!formatted || formatted.length >= PHONE_EXAMPLE.length) {
+      els.phoneGhost.textContent = "";
+      return;
     }
-    return { digits, formatted };
+    els.phoneGhost.textContent =
+      "\u00A0".repeat(formatted.length) + PHONE_EXAMPLE.slice(formatted.length);
   }
 
-  function isPhoneComplete(value) {
-    return normalizePhoneDigits(value).length === PHONE_MAX_DIGITS;
+  function setPhoneDigits(rawDigits) {
+    phoneDigits = normalizePhoneDigits(rawDigits);
+    const formatted = formatPhonePartial(phoneDigits);
+    els.phone.value = formatted;
+    updatePhoneGhost(formatted);
+    try {
+      const pos = formatted.length;
+      els.phone.setSelectionRange(pos, pos);
+    } catch {
+      /* ignore */
+    }
+    return formatted;
+  }
+
+  function resetPhoneField() {
+    setPhoneDigits(PHONE_PREFIX_DIGITS);
+  }
+
+  function isPhoneComplete() {
+    return phoneDigits.length === PHONE_MAX_DIGITS;
   }
 
   function showToast(text) {
@@ -219,6 +254,7 @@
     renderRequisitesDetails();
     syncDeliveryFields();
     syncPaymentAndTtn();
+    resetPhoneField();
     setCheckoutError("");
     window.scrollTo({ top: 0, behavior: "smooth" });
   }
@@ -229,11 +265,17 @@
       "np_warehouse";
     const isCourier = method === "np_courier";
     els.warehouseField.classList.toggle("hidden", isCourier);
-    els.addressField.classList.toggle("hidden", !isCourier);
+    els.courierAddressFields.classList.toggle("hidden", !isCourier);
     if (!isCourier) {
       els.warehouseLabel.textContent = "Відділення/поштомат Нової Пошти";
     }
+    if (els.patronymicHint) {
+      els.patronymicHint.textContent = isCourier
+        ? "Обовʼязково для доставки курʼєром"
+        : "Необовʼязково (для курʼєра — обовʼязково)";
+    }
     syncWarehouseEnabled();
+    syncStreetEnabled();
   }
 
   function syncWarehouseEnabled() {
@@ -241,6 +283,14 @@
     els.warehouse.disabled = !hasCity;
     if (!hasCity) {
       clearWarehouseSelection({ keepText: false });
+    }
+  }
+
+  function syncStreetEnabled() {
+    const hasCity = Boolean(npState.city?.settlement_ref || npState.city?.city_ref);
+    els.street.disabled = !hasCity;
+    if (!hasCity) {
+      clearStreetSelection({ keepText: false });
     }
   }
 
@@ -265,7 +315,9 @@
     if (!keepText) els.city.value = "";
     markSelected(els.city, false);
     clearWarehouseSelection({ keepText: false });
+    clearStreetSelection({ keepText: false });
     syncWarehouseEnabled();
+    syncStreetEnabled();
   }
 
   function clearWarehouseSelection({ keepText = true } = {}) {
@@ -276,6 +328,14 @@
     hideDropdown(els.warehouseDropdown);
   }
 
+  function clearStreetSelection({ keepText = true } = {}) {
+    npState.street = null;
+    els.streetRef.value = "";
+    if (!keepText) els.street.value = "";
+    markSelected(els.street, false);
+    hideDropdown(els.streetDropdown);
+  }
+
   function selectCity(item) {
     npState.city = item;
     els.city.value = item.label || item.present || item.main_description || "";
@@ -284,8 +344,18 @@
     markSelected(els.city, true);
     hideDropdown(els.cityDropdown);
     clearWarehouseSelection({ keepText: false });
+    clearStreetSelection({ keepText: false });
     syncWarehouseEnabled();
-    els.warehouse.focus();
+    syncStreetEnabled();
+
+    const method =
+      els.checkoutForm.querySelector('input[name="deliveryMethod"]:checked')?.value ||
+      "np_warehouse";
+    if (method === "np_courier") {
+      els.street.focus();
+    } else {
+      els.warehouse.focus();
+    }
   }
 
   function selectWarehouse(item) {
@@ -294,6 +364,15 @@
     els.warehouseRef.value = item.ref || "";
     markSelected(els.warehouse, true);
     hideDropdown(els.warehouseDropdown);
+  }
+
+  function selectStreet(item) {
+    npState.street = item;
+    els.street.value = item.label || item.present || item.description || "";
+    els.streetRef.value = item.ref || "";
+    markSelected(els.street, true);
+    hideDropdown(els.streetDropdown);
+    els.house.focus();
   }
 
   function renderCityOptions(items) {
@@ -410,6 +489,67 @@
       return;
     }
     npState.warehouseTimer = setTimeout(() => searchWarehouses(query), 300);
+  }
+
+  function renderStreetOptions(items) {
+    if (!items.length) {
+      showDropdownMessage(els.streetDropdown, "Нічого не знайдено. Спробуйте іншу назву.");
+      return;
+    }
+    els.streetDropdown.innerHTML = items
+      .map((item, index) => {
+        const title = item.label || item.present || item.description || "";
+        return `
+          <button type="button" class="ac-option" role="option" data-street-index="${index}">
+            <span>${escapeHtml(title)}</span>
+          </button>
+        `;
+      })
+      .join("");
+    els.streetDropdown.dataset.items = JSON.stringify(items);
+    els.streetDropdown.classList.remove("hidden");
+  }
+
+  async function searchStreets(query) {
+    const settlementRef = npState.city?.settlement_ref || els.settlementRef.value;
+    const cityRef = npState.city?.city_ref || els.cityRef.value;
+    if (!settlementRef && !cityRef) return;
+    const reqId = ++npState.streetReq;
+    showDropdownMessage(els.streetDropdown, "Шукаємо...", "ac-loading");
+    try {
+      const params = new URLSearchParams({
+        q: query,
+        limit: "20",
+      });
+      if (settlementRef) params.set("settlement_ref", settlementRef);
+      if (cityRef) params.set("city_ref", cityRef);
+      const response = await fetch(`/api/np/streets?${params.toString()}`);
+      const data = await response.json();
+      if (reqId !== npState.streetReq) return;
+      if (!response.ok) {
+        throw new Error(
+          typeof data.detail === "string" ? data.detail : "Помилка пошуку вулиць"
+        );
+      }
+      renderStreetOptions(data.items || []);
+    } catch (error) {
+      if (reqId !== npState.streetReq) return;
+      showDropdownMessage(
+        els.streetDropdown,
+        error.message || "Не вдалося завантажити вулиці"
+      );
+    }
+  }
+
+  function scheduleStreetSearch(value) {
+    clearTimeout(npState.streetTimer);
+    const query = value.trim();
+    if (!(npState.city?.settlement_ref || npState.city?.city_ref)) return;
+    if (query.length < 2) {
+      hideDropdown(els.streetDropdown);
+      return;
+    }
+    npState.streetTimer = setTimeout(() => searchStreets(query), 300);
   }
 
   function renderRequisitesDetails() {
@@ -570,6 +710,7 @@
     const ttnPdfFile = els.ttnPdf?.files?.[0] || null;
     return {
       firstName: form.firstName.value.trim(),
+      patronymic: form.patronymic.value.trim(),
       lastName: form.lastName.value.trim(),
       phone: form.phone.value.trim(),
       deliveryMethod,
@@ -578,9 +719,13 @@
       settlementRef: form.settlementRef.value.trim(),
       warehouse: form.warehouse.value.trim(),
       warehouseRef: form.warehouseRef.value.trim(),
-      address: form.address.value.trim(),
+      street: form.street.value.trim(),
+      streetRef: form.streetRef.value.trim(),
+      house: form.house.value.trim(),
+      apartment: form.apartment.value.trim(),
       npCity: npState.city,
       npWarehouse: npState.warehouse,
+      npStreet: npState.street,
       ownTtn: Boolean(form.ownTtn.checked),
       ttnNumber: form.ttnNumber?.value.trim() || "",
       paymentMethod,
@@ -599,8 +744,8 @@
   function validateCheckout(data) {
     if (!data.firstName) return "Вкажіть ім'я отримувача";
     if (!data.lastName) return "Вкажіть прізвище отримувача";
-    if (!data.phone || !isPhoneComplete(data.phone)) {
-      return "Вкажіть повний телефон у форматі +38(0XX)XXX-XX-XX";
+    if (!data.phone || !isPhoneComplete()) {
+      return "Вкажіть повний телефон у форматі +380(XX)XXX-XX-XX";
     }
     if (!data.cityRef || !npState.city) {
       return "Оберіть населений пункт зі списку Нової Пошти";
@@ -608,8 +753,12 @@
     if (data.deliveryMethod === "np_warehouse" && (!data.warehouseRef || !npState.warehouse)) {
       return "Оберіть відділення/поштомат зі списку Нової Пошти";
     }
-    if (data.deliveryMethod === "np_courier" && !data.address) {
-      return "Вкажіть адресу доставки";
+    if (data.deliveryMethod === "np_courier") {
+      if (!data.patronymic) return "Для курʼєра вкажіть по батькові";
+      if (!data.streetRef || !npState.street) {
+        return "Оберіть вулицю зі списку Нової Пошти";
+      }
+      if (!data.house) return "Вкажіть номер будинку";
     }
     if (data.ownTtn) {
       if (!data.ttnNumber) return "Вкажіть номер ТТН";
@@ -712,25 +861,62 @@
   els.checkoutBtn.addEventListener("click", openCheckout);
   els.checkoutBack.addEventListener("click", () => switchTab("cart"));
 
-  els.phone.addEventListener("input", () => {
-    const { formatted } = applyPhoneMask(els.phone.value);
-    const pos = formatted.length;
-    try {
-      els.phone.setSelectionRange(pos, pos);
-    } catch {
-      /* ignore */
+  els.phone.addEventListener("keydown", (event) => {
+    if (event.key === "Backspace" || event.key === "Delete") {
+      event.preventDefault();
+      if (phoneDigits.length > 3) {
+        setPhoneDigits(phoneDigits.slice(0, -1));
+      } else {
+        resetPhoneField();
+      }
+      return;
+    }
+
+    if (/^\d$/.test(event.key)) {
+      event.preventDefault();
+      if (phoneDigits.length < PHONE_MAX_DIGITS) {
+        setPhoneDigits(phoneDigits + event.key);
+      }
+      return;
+    }
+
+    // Дозволяємо службові клавіші (Tab, стрілки тощо)
+    if (event.key.length === 1 && !event.ctrlKey && !event.metaKey && !event.altKey) {
+      event.preventDefault();
+    }
+  });
+
+  els.phone.addEventListener("beforeinput", (event) => {
+    // Мобільні клавіатури часто шлють цифри через beforeinput
+    if (event.inputType === "insertText" && event.data && /^\d+$/.test(event.data)) {
+      event.preventDefault();
+      setPhoneDigits(phoneDigits + event.data);
+      return;
+    }
+    if (
+      event.inputType === "deleteContentBackward" ||
+      event.inputType === "deleteContentForward"
+    ) {
+      event.preventDefault();
+      if (phoneDigits.length > 3) {
+        setPhoneDigits(phoneDigits.slice(0, -1));
+      } else {
+        resetPhoneField();
+      }
     }
   });
 
   els.phone.addEventListener("paste", (event) => {
     event.preventDefault();
     const text = event.clipboardData?.getData("text") || "";
-    const { formatted } = applyPhoneMask(text);
-    const pos = formatted.length;
-    try {
-      els.phone.setSelectionRange(pos, pos);
-    } catch {
-      /* ignore */
+    setPhoneDigits(text);
+  });
+
+  els.phone.addEventListener("focus", () => {
+    if (phoneDigits.length <= 3) {
+      resetPhoneField();
+    } else {
+      setPhoneDigits(phoneDigits);
     }
   });
 
@@ -782,12 +968,39 @@
     }
   });
 
+  els.street.addEventListener("input", () => {
+    clearStreetSelection({ keepText: true });
+    scheduleStreetSearch(els.street.value);
+  });
+
+  els.street.addEventListener("focus", () => {
+    if (!els.street.disabled && els.street.value.trim().length >= 2 && !npState.street) {
+      scheduleStreetSearch(els.street.value);
+    }
+  });
+
+  els.streetDropdown.addEventListener("mousedown", (event) => {
+    const btn = event.target.closest("[data-street-index]");
+    if (!btn) return;
+    event.preventDefault();
+    try {
+      const items = JSON.parse(els.streetDropdown.dataset.items || "[]");
+      const item = items[Number(btn.dataset.streetIndex)];
+      if (item) selectStreet(item);
+    } catch {
+      showToast("Не вдалося обрати вулицю");
+    }
+  });
+
   document.addEventListener("click", (event) => {
     if (!event.target.closest('[data-ac="city"]')) {
       hideDropdown(els.cityDropdown);
     }
     if (!event.target.closest('[data-ac="warehouse"]')) {
       hideDropdown(els.warehouseDropdown);
+    }
+    if (!event.target.closest('[data-ac="street"]')) {
+      hideDropdown(els.streetDropdown);
     }
   });
 

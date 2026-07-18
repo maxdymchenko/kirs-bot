@@ -91,6 +91,46 @@ def create_web_app(catalog: CatalogService) -> FastAPI:
             "items": [i.to_dict() for i in items],
         }
 
+    @app.get("/api/np/streets")
+    async def search_streets(
+        q: str = Query(..., min_length=2, max_length=100),
+        settlement_ref: str = Query("", max_length=64),
+        city_ref: str = Query("", max_length=64),
+        limit: int = Query(20, ge=1, le=50),
+    ) -> dict:
+        if not np_client.configured():
+            raise HTTPException(
+                status_code=503,
+                detail="NOVA_POSHTA_API_KEY не налаштовано",
+            )
+        if not settlement_ref.strip() and not city_ref.strip():
+            raise HTTPException(
+                status_code=400,
+                detail="Потрібен settlement_ref або city_ref",
+            )
+        try:
+            items = await asyncio.to_thread(
+                np_client.search_streets,
+                settlement_ref,
+                q,
+                city_ref,
+                limit,
+            )
+        except NovaPoshtaError as exc:
+            logger.warning("NP streets error: %s", exc)
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+        except Exception:
+            logger.exception("NP streets failed")
+            raise HTTPException(status_code=502, detail="Помилка пошуку вулиць") from None
+
+        return {
+            "query": q.strip(),
+            "settlement_ref": settlement_ref.strip(),
+            "city_ref": city_ref.strip(),
+            "count": len(items),
+            "items": [i.to_dict() for i in items],
+        }
+
     @app.get("/")
     async def miniapp_index() -> FileResponse:
         index = MINIAPP_DIR / "index.html"
