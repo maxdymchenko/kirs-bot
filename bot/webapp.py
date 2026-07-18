@@ -32,6 +32,7 @@ class DropperRegisterRequest(BaseModel):
     comment: str = Field("", max_length=500)
     user_id: str = Field("", max_length=64)
     username: str = Field("", max_length=64)
+    referral_code: str = Field("", max_length=32)
 
 
 class StaffCreateRequest(BaseModel):
@@ -49,6 +50,35 @@ class DropperPaymentFlagRequest(BaseModel):
     owner_user_id: str = Field("", max_length=64)
     require_full_payment: bool
 
+
+class DropperSettingsUpdateRequest(BaseModel):
+    owner_chat_id: str = Field("", max_length=64)
+    owner_user_id: str = Field("", max_length=64)
+    require_full_payment: bool | None = None
+    allow_balance_payment: bool | None = None
+    allow_negative_balance: bool | None = None
+    negative_balance_limit: float | None = None
+    extra_discount_percent: float | None = None
+    orders_disabled: bool | None = None
+    referral_percent: float | None = None
+
+
+def _apply_dropper_discount(price_raw: str, percent: float) -> tuple[str, str | None]:
+    """Повертає (ціна_для_показу, оригінал_або_None)."""
+    if not percent or percent <= 0:
+        return price_raw, None
+    try:
+        price = float(str(price_raw).replace(",", ".").strip())
+    except (TypeError, ValueError):
+        return price_raw, None
+    discounted = price * (1.0 - float(percent) / 100.0)
+    if discounted < 0:
+        discounted = 0.0
+    if abs(discounted - round(discounted)) < 1e-9:
+        shown = str(int(round(discounted)))
+    else:
+        shown = f"{discounted:.2f}".rstrip("0").rstrip(".")
+    return shown, str(price_raw)
 
 def create_web_app(
     catalog: CatalogService,
@@ -140,12 +170,31 @@ def create_web_app(
     async def dropper_settings(chat_id: str = Query("", max_length=64)) -> dict:
         db_dropper = storage.get_dropper_by_chat(chat_id)
         if db_dropper:
-            return {
-                "chat_id": db_dropper.chat_id,
-                "name": db_dropper.company_name,
-                "require_full_payment": db_dropper.require_full_payment,
-                "source": "db",
-            }
+            data = db_dropper.to_dict()
+            data["name"] = db_dropper.company_name
+            data["source"] = "db"
+            if db_dropper.referred_by_dropper_id:
+                referrer = storage.get_dropper_by_id(db_dropper.referred_by_dropper_id)
+                data["referred_by"] = (
+                    {
+                        "id": referrer.id,
+                        "company_name": referrer.company_name,
+                        "referral_code": referrer.referral_code,
+                    }
+                    if referrer
+                    else None
+                )
+            else:
+                data["referred_by"] = None
+            data["referrals"] = [
+                {
+                    "id": r.id,
+                    "company_name": r.company_name,
+                    "chat_id": r.chat_id,
+                }
+                for r in storage.list_referrals(db_dropper.id)
+            ]
+            return data
         yaml_dropper = _yaml_dropper(chat_id)
         if yaml_dropper:
             data = yaml_dropper.to_public_dict()
@@ -155,6 +204,12 @@ def create_web_app(
             "chat_id": str(chat_id or "").strip(),
             "name": "",
             "require_full_payment": False,
+            "allow_balance_payment": False,
+            "allow_negative_balance": False,
+            "negative_balance_limit": 0,
+            "extra_discount_percent": 0,
+            "orders_disabled": False,
+            "referral_percent": 0,
             "source": "default",
         }
 
@@ -185,6 +240,13 @@ def create_web_app(
             raise HTTPException(status_code=400, detail="Некоректний телефон")
         phone = phone_digits
 
+        if payload.referral_code.strip():
+            if not storage.get_dropper_by_referral_code(payload.referral_code):
+                raise HTTPException(
+                    status_code=400,
+                    detail="Реферальний код не знайдено. Перевірте або залиште поле порожнім.",
+                )
+
         try:
             dropper = storage.create_dropper(
                 chat_id=chat_id,
@@ -194,6 +256,7 @@ def create_web_app(
                 comment=payload.comment,
                 registered_by_user_id=payload.user_id,
                 registered_by_username=payload.username,
+                referral_code_used=payload.referral_code,
             )
         except Exception as exc:
             logger.exception("register dropper failed")
@@ -208,7 +271,8 @@ def create_web_app(
             f"Компанія: {dropper.company_name}\n"
             f"Контакт: {dropper.contact_name}\n"
             f"Телефон: {dropper.phone}\n"
-            f"chat_id цієї групи: {dropper.chat_id}\n\n"
+            f"chat_id цієї групи: {dropper.chat_id}\n"
+            f"Ваш реферальний код: {dropper.referral_code}\n\n"
             "Тепер можна оформлювати замовлення через /menu."
         )
         owner_text = (
@@ -218,10 +282,15 @@ def create_web_app(
             f"Телефон: {dropper.phone}\n"
             f"Коментар: {dropper.comment or '—'}\n"
             f"chat_id групи: `{dropper.chat_id}`\n"
+            f"Реферальний код: `{dropper.referral_code}`\n"
             f"Хто зареєстрував: @{dropper.registered_by_username or '—'} "
             f"(user_id={dropper.registered_by_user_id or '—'})\n\n"
             "Дроппер уже активний у базі (SQLite)."
         )
+        if dropper.referred_by_dropper_id:
+            referrer = storage.get_dropper_by_id(dropper.referred_by_dropper_id)
+            if referrer:
+                owner_text += f"\nЗапросив: {referrer.company_name} ({referrer.referral_code})"
 
         await _notify(chat_id, group_text)
         await _notify_owners(owner_text)
@@ -234,7 +303,16 @@ def create_web_app(
         owner_user_id: str = Query("", max_length=64),
     ) -> dict:
         _require_owner(owner_chat_id, owner_user_id)
-        items = [d.to_dict() for d in storage.list_droppers()]
+        items = []
+        for d in storage.list_droppers():
+            data = d.to_dict()
+            data["referrals_count"] = len(storage.list_referrals(d.id))
+            if d.referred_by_dropper_id:
+                ref = storage.get_dropper_by_id(d.referred_by_dropper_id)
+                data["referred_by_name"] = ref.company_name if ref else ""
+            else:
+                data["referred_by_name"] = ""
+            items.append(data)
         return {"count": len(items), "items": items}
 
     @app.get("/api/owner/staff")
@@ -274,18 +352,70 @@ def create_web_app(
             raise HTTPException(status_code=404, detail="Дроппера не знайдено")
         return {"ok": True, "dropper": dropper.to_dict()}
 
-    @app.get("/api/products/search")
-    async def search_products(code: str = Query(..., min_length=1, max_length=64)) -> dict:
+    @app.post("/api/owner/droppers/{chat_id}/settings")
+    async def owner_update_dropper_settings(
+        chat_id: str,
+        payload: DropperSettingsUpdateRequest,
+    ) -> dict:
+        _require_owner(payload.owner_chat_id, payload.owner_user_id)
+        dropper = storage.update_dropper_settings(
+            chat_id,
+            require_full_payment=payload.require_full_payment,
+            allow_balance_payment=payload.allow_balance_payment,
+            allow_negative_balance=payload.allow_negative_balance,
+            negative_balance_limit=payload.negative_balance_limit,
+            extra_discount_percent=payload.extra_discount_percent,
+            orders_disabled=payload.orders_disabled,
+            referral_percent=payload.referral_percent,
+        )
+        if not dropper:
+            raise HTTPException(status_code=404, detail="Дроппера не знайдено")
+        return {"ok": True, "dropper": dropper.to_dict()}
+
+    @app.get("/api/products/colors")
+    async def product_colors() -> dict:
         try:
-            variants = catalog.search_by_code(code)
+            colors = catalog.list_colors()
         except Exception:
-            logger.exception("Ошибка поиска по коду %s", code)
+            logger.exception("Ошибка чтения цветов каталога")
+            raise HTTPException(status_code=500, detail="Не удалось прочитать каталог") from None
+        return {"count": len(colors), "items": colors}
+
+    @app.get("/api/products/search")
+    async def search_products(
+        q: str = Query("", max_length=120),
+        code: str = Query("", max_length=64),
+        color: str = Query("", max_length=64),
+        chat_id: str = Query("", max_length=64),
+        limit: int = Query(80, ge=1, le=200),
+    ) -> dict:
+        query = (q or code or "").strip()
+        color_q = color.strip()
+        if not query and not color_q:
+            raise HTTPException(status_code=400, detail="Вкажіть пошуковий запит або колір")
+        try:
+            variants = catalog.search(query=query, color=color_q, limit=limit)
+        except Exception:
+            logger.exception("Ошибка поиска query=%s color=%s", query, color_q)
             raise HTTPException(status_code=500, detail="Не удалось прочитать каталог") from None
 
+        dropper = storage.get_dropper_by_chat(chat_id) if chat_id else None
+        discount = float(dropper.extra_discount_percent) if dropper else 0.0
+        items = []
+        for v in variants:
+            data = v.to_dict()
+            shown, original = _apply_dropper_discount(data.get("drop_price") or "", discount)
+            data["drop_price"] = shown
+            if original is not None:
+                data["drop_price_original"] = original
+                data["extra_discount_percent"] = discount
+            items.append(data)
+
         return {
-            "query": code.strip(),
-            "count": len(variants),
-            "items": [v.to_dict() for v in variants],
+            "query": query,
+            "color": color_q,
+            "count": len(items),
+            "items": items,
         }
 
     @app.get("/api/np/settlements")
@@ -308,7 +438,7 @@ def create_web_app(
     async def search_warehouses(
         city_ref: str = Query(..., min_length=10, max_length=64),
         q: str = Query("", max_length=100),
-        limit: int = Query(50, ge=1, le=100),
+        limit: int = Query(200, ge=1, le=500),
     ) -> dict:
         if not np_client.configured():
             raise HTTPException(status_code=503, detail="NOVA_POSHTA_API_KEY не налаштовано")

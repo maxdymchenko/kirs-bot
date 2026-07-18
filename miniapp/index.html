@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
   <title>Kirs — Замовлення</title>
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
-  <link rel="stylesheet" href="/static/styles.css?v=20260718s" />
+  <link rel="stylesheet" href="/static/styles.css?v=20260718t" />
 </head>
 <body>
   <div class="app">
@@ -38,6 +38,10 @@
         <label class="field">
           <span class="field-label">Коментар</span>
           <textarea id="regComment" name="comment" rows="2" placeholder="Необовʼязково"></textarea>
+        </label>
+        <label class="field">
+          <span class="field-label">Реферальний код (якщо вас запросили)</span>
+          <input id="regReferral" name="referral_code" type="text" placeholder="Напр. A1B2C3" />
         </label>
         <p id="registerError" class="form-error hidden"></p>
         <button type="submit" class="btn primary block">Зареєструвати</button>
@@ -101,17 +105,24 @@
     <main id="orderMain" class="hidden">
       <section id="catalogView" class="view">
         <h1 class="title">Оформити замовлення</h1>
-        <p class="hint">Введіть код товару і натисніть «Пошук»</p>
+        <p class="hint">Пошук за кодом або назвою. Колір — додатковий фільтр.</p>
 
-        <form id="searchForm" class="search-row">
-          <input
-            id="searchInput"
-            type="text"
-            inputmode="numeric"
-            autocomplete="off"
-            placeholder="Код товару, наприклад 010"
-          />
-          <button type="submit" class="btn primary">Пошук</button>
+        <form id="searchForm" class="search-block">
+          <div class="search-row">
+            <input
+              id="searchInput"
+              type="text"
+              autocomplete="off"
+              placeholder="Код або назва, напр. Geneva"
+            />
+            <button type="submit" class="btn primary">Пошук</button>
+          </div>
+          <label class="field compact-field">
+            <span class="field-label">Фільтр за кольором</span>
+            <select id="colorFilter">
+              <option value="">Усі кольори</option>
+            </select>
+          </label>
         </form>
 
         <div id="status" class="status"></div>
@@ -358,6 +369,6 @@
     </main>
   </div>
 
-  <script src="/static/app.js?v=20260718s"></script>
+  <script src="/static/app.js?v=20260718t"></script>
 </body>
 </html>

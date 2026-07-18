@@ -46,9 +46,15 @@ class WarehouseOption:
     number: str
     city_ref: str
     category: str
+    category_label: str = ""
 
     def to_dict(self) -> dict:
         label = self.description or self.description_ru or self.number
+        cat = self.category_label or self.category
+        if cat and label and not label.lower().startswith(cat.lower()):
+            display = f"[{cat}] {label}"
+        else:
+            display = label
         return {
             "ref": self.ref,
             "description": self.description,
@@ -56,8 +62,38 @@ class WarehouseOption:
             "number": self.number,
             "city_ref": self.city_ref,
             "category": self.category,
-            "label": label,
+            "category_label": cat,
+            "label": display,
         }
+
+
+def _warehouse_category_label(raw: str) -> str:
+    key = (raw or "").strip().casefold()
+    mapping = {
+        "branch": "Відділення",
+        "postomat": "Поштомат",
+        "store": "Пункт видачі/прийому",
+        "mobile": "Мобільне відділення",
+        "cargo": "Вантажне відділення",
+        "postoffice": "Відділення",
+    }
+    for needle, label in mapping.items():
+        if needle in key:
+            return label
+    if not raw:
+        return "Відділення"
+    return raw
+
+
+def _warehouse_is_selectable(row: dict) -> bool:
+    """Відсікаємо явно недоступні точки, решту (в т.ч. пункти прийому) показуємо."""
+    deny = str(row.get("DenyToSelect") or "").strip().lower()
+    if deny in {"1", "true", "yes"}:
+        return False
+    status = str(row.get("WarehouseStatus") or row.get("Status") or "").strip().casefold()
+    if status in {"inoperative", "closed", "не працює", "закрыт"}:
+        return False
+    return True
 
 
 @dataclass
@@ -179,41 +215,72 @@ class NovaPoshtaClient:
         self,
         city_ref: str,
         query: str = "",
-        limit: int = 50,
+        limit: int = 200,
     ) -> list[WarehouseOption]:
         city_ref = (city_ref or "").strip()
         if not city_ref:
             return []
 
-        props: dict[str, Any] = {
-            "CityRef": city_ref,
-            "Limit": str(max(1, min(limit, 100))),
-            "Page": "1",
-        }
         q = (query or "").strip()
-        if q:
-            props["FindByString"] = q
-
-        data = self._request("Address", "getWarehouses", props)
+        max_items = max(1, min(int(limit or 200), 500))
+        page_size = 50
+        page = 1
         results: list[WarehouseOption] = []
-        for row in data:
-            ref = str(row.get("Ref") or "").strip()
-            if not ref:
-                continue
-            results.append(
-                WarehouseOption(
-                    ref=ref,
-                    description=str(row.get("Description") or "").strip(),
-                    description_ru=str(row.get("DescriptionRu") or "").strip(),
-                    number=str(row.get("Number") or "").strip(),
-                    city_ref=str(row.get("CityRef") or city_ref).strip(),
-                    category=str(
-                        row.get("CategoryOfWarehouse")
-                        or row.get("TypeOfWarehouse")
-                        or ""
-                    ).strip(),
+        seen: set[str] = set()
+
+        while len(results) < max_items:
+            props: dict[str, Any] = {
+                "CityRef": city_ref,
+                "Limit": str(page_size),
+                "Page": str(page),
+            }
+            if q:
+                props["FindByString"] = q
+
+            data = self._request("Address", "getWarehouses", props)
+            if not data:
+                break
+
+            for row in data:
+                if not isinstance(row, dict):
+                    continue
+                if not _warehouse_is_selectable(row):
+                    continue
+                ref = str(row.get("Ref") or "").strip()
+                if not ref or ref in seen:
+                    continue
+                seen.add(ref)
+                category = str(
+                    row.get("CategoryOfWarehouse")
+                    or row.get("TypeOfWarehouse")
+                    or ""
+                ).strip()
+                # Мобільні / пункти прийому часто в Description або Category
+                desc = str(row.get("Description") or "").strip()
+                if "мобільн" in desc.casefold() or "мобильн" in desc.casefold():
+                    category_label = "Мобільне відділення"
+                else:
+                    category_label = _warehouse_category_label(category)
+                results.append(
+                    WarehouseOption(
+                        ref=ref,
+                        description=desc,
+                        description_ru=str(row.get("DescriptionRu") or "").strip(),
+                        number=str(row.get("Number") or "").strip(),
+                        city_ref=str(row.get("CityRef") or city_ref).strip(),
+                        category=category,
+                        category_label=category_label,
+                    )
                 )
-            )
+                if len(results) >= max_items:
+                    break
+
+            if len(data) < page_size:
+                break
+            page += 1
+            if page > 20:
+                break
+
         return results
 
     def search_streets(

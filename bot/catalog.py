@@ -58,6 +58,10 @@ def _parse_stock(raw: str) -> int | None:
         return None
 
 
+def _norm_text(value: str) -> str:
+    return " ".join(str(value or "").casefold().split())
+
+
 class CatalogService:
     def __init__(
         self,
@@ -136,16 +140,77 @@ class CatalogService:
             self._loaded_at = now
             logger.info("Каталог загружен: %d позиций", len(variants))
 
-    def search_by_code(self, query: str) -> list[ProductVariant]:
+    def list_colors(self) -> list[str]:
         self.refresh()
-        needle = _normalize_code(query)
-        if not needle:
+        with self._lock:
+            colors = sorted(
+                {v.color.strip() for v in self._variants if v.color and v.color.strip()},
+                key=lambda c: c.casefold(),
+            )
+        return colors
+
+    def search_by_code(self, query: str) -> list[ProductVariant]:
+        """Совместимость: точный поиск по коду."""
+        return self.search(query=query, color="", mode="code")
+
+    def search(
+        self,
+        query: str = "",
+        color: str = "",
+        limit: int = 80,
+        mode: str = "auto",
+    ) -> list[ProductVariant]:
+        """
+        Гибридный поиск:
+        - по коду (точное совпадение после нормализации нулей)
+        - по названию (полное и частичное, регистронезависимо)
+        - опциональный фильтр по цвету
+        """
+        self.refresh()
+        needle = _norm_text(query)
+        color_needle = _norm_text(color)
+        if not needle and not color_needle:
             return []
 
         with self._lock:
-            results = [
-                v
-                for v in self._variants
-                if _normalize_code(v.code) == needle
-            ]
+            variants = list(self._variants)
+
+        code_hits: list[ProductVariant] = []
+        name_exact: list[ProductVariant] = []
+        name_partial: list[ProductVariant] = []
+
+        for v in variants:
+            if color_needle and color_needle not in _norm_text(v.color):
+                continue
+
+            if not needle:
+                name_partial.append(v)
+                continue
+
+            code_norm = _normalize_code(v.code)
+            query_code = _normalize_code(query)
+            name_norm = _norm_text(v.name)
+
+            if mode in {"auto", "code"} and query_code and code_norm == query_code:
+                code_hits.append(v)
+                continue
+
+            if mode in {"auto", "name"}:
+                if name_norm == needle:
+                    name_exact.append(v)
+                elif needle in name_norm:
+                    name_partial.append(v)
+
+        # Приоритет: точный код → точное имя → частичное имя
+        seen: set[str] = set()
+        results: list[ProductVariant] = []
+        for group in (code_hits, name_exact, name_partial):
+            for item in group:
+                key = f"{item.product_id}|{item.code}|{item.color}"
+                if key in seen:
+                    continue
+                seen.add(key)
+                results.append(item)
+                if len(results) >= max(1, min(limit, 200)):
+                    return results
         return results

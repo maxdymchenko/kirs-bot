@@ -279,6 +279,13 @@ async def order_menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await update.message.reply_text("Меню:", reply_markup=keyboard)
         return
 
+    if role == "dropper_blocked":
+        await update.message.reply_text(
+            "⛔ Вас заблоковано для повного погашення боргу.\n"
+            "Передача замовлень недоступна. Звʼяжіться з власником."
+        )
+        return
+
     if need_registration:
         keyboard = InlineKeyboardMarkup(
             [

@@ -123,6 +123,64 @@ body {
   margin: 14px 0 10px;
 }
 
+.search-block {
+  display: grid;
+  gap: 8px;
+  margin: 14px 0 10px;
+}
+
+.search-block .search-row {
+  margin: 0;
+}
+
+.compact-field {
+  margin: 0;
+}
+
+.compact-field .field-label {
+  font-size: 12px;
+}
+
+.rule-grid {
+  display: grid;
+  gap: 10px;
+  margin-top: 6px;
+}
+
+.rule-row {
+  display: grid;
+  gap: 6px;
+  font-size: 14px;
+}
+
+.rule-row-inline {
+  display: grid;
+  grid-template-columns: 1fr minmax(90px, 110px);
+  gap: 8px;
+  align-items: center;
+}
+
+.rule-row input[type="number"] {
+  padding: 8px 10px;
+  font-size: 14px;
+}
+
+.meta-soft {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.blocked-box {
+  margin-top: 18px;
+  padding: 16px;
+  border-radius: 14px;
+  background: #fff4f4;
+  border: 1px solid #f0c2c2;
+  color: #8a1f1f;
+  font-weight: 700;
+  line-height: 1.4;
+}
+
 select {
   width: 100%;
   border: 1px solid var(--line);

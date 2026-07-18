@@ -52,6 +52,7 @@
     orderMain: document.getElementById("orderMain"),
     searchForm: document.getElementById("searchForm"),
     searchInput: document.getElementById("searchInput"),
+    colorFilter: document.getElementById("colorFilter"),
     status: document.getElementById("status"),
     results: document.getElementById("results"),
     catalogView: document.getElementById("catalogView"),
@@ -113,6 +114,13 @@
   const dropperSettings = {
     chat_id: "",
     require_full_payment: false,
+    allow_balance_payment: false,
+    allow_negative_balance: false,
+    negative_balance_limit: 0,
+    extra_discount_percent: 0,
+    orders_disabled: false,
+    referral_code: "",
+    referral_percent: 0,
   };
 
   const sessionState = {
@@ -502,7 +510,7 @@
     showDropdownMessage(els.warehouseDropdown, "Шукаємо...", "ac-loading");
     try {
       const response = await fetch(
-        `/api/np/warehouses?city_ref=${encodeURIComponent(cityRef)}&q=${encodeURIComponent(query)}&limit=50`
+        `/api/np/warehouses?city_ref=${encodeURIComponent(cityRef)}&q=${encodeURIComponent(query)}&limit=200`
       );
       const data = await response.json();
       if (reqId !== npState.warehouseReq) return;
@@ -534,12 +542,9 @@
   function scheduleWarehouseSearch(value) {
     clearTimeout(npState.warehouseTimer);
     const query = value.trim();
-    if (!npState.city?.city_ref) return;
-    if (query.length < 1) {
-      hideDropdown(els.warehouseDropdown);
-      return;
-    }
-    npState.warehouseTimer = setTimeout(() => searchWarehouses(query), 300);
+    if (!npState.city?.city_ref && !els.cityRef.value) return;
+    // Порожній запит = показати всі доступні відділення в місті
+    npState.warehouseTimer = setTimeout(() => searchWarehouses(query), query ? 280 : 0);
   }
 
   function renderStreetOptions(items) {
@@ -660,10 +665,41 @@
         throw new Error(data.detail || "settings error");
       }
       dropperSettings.require_full_payment = Boolean(data.require_full_payment);
+      dropperSettings.allow_balance_payment = Boolean(data.allow_balance_payment);
+      dropperSettings.allow_negative_balance = Boolean(data.allow_negative_balance);
+      dropperSettings.negative_balance_limit = Number(data.negative_balance_limit || 0);
+      dropperSettings.extra_discount_percent = Number(data.extra_discount_percent || 0);
+      dropperSettings.orders_disabled = Boolean(data.orders_disabled);
+      dropperSettings.referral_code = data.referral_code || "";
+      dropperSettings.referral_percent = Number(data.referral_percent || 0);
       if (data.chat_id) dropperSettings.chat_id = String(data.chat_id);
     } catch (error) {
       console.warn("dropper settings", error);
       dropperSettings.require_full_payment = false;
+      dropperSettings.allow_balance_payment = false;
+      dropperSettings.allow_negative_balance = false;
+      dropperSettings.negative_balance_limit = 0;
+      dropperSettings.extra_discount_percent = 0;
+      dropperSettings.orders_disabled = false;
+    }
+  }
+
+  async function loadColorOptions() {
+    if (!els.colorFilter) return;
+    try {
+      const response = await fetch("/api/products/colors");
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.detail || "colors error");
+      const current = els.colorFilter.value;
+      const colors = data.items || [];
+      els.colorFilter.innerHTML =
+        `<option value="">Усі кольори</option>` +
+        colors
+          .map((c) => `<option value="${escapeHtml(c)}">${escapeHtml(c)}</option>`)
+          .join("");
+      if (current) els.colorFilter.value = current;
+    } catch (error) {
+      console.warn("colors", error);
     }
   }
 
@@ -767,6 +803,12 @@
       .map((item) => {
         const photo = item.photo_url || "";
         const price = item.drop_price ? `${item.drop_price} ₴` : "—";
+        const priceExtra =
+          item.drop_price_original != null
+            ? `<div class="meta-soft">було ${escapeHtml(String(item.drop_price_original))} ₴ (−${escapeHtml(
+                String(item.extra_discount_percent || 0)
+              )}%)</div>`
+            : "";
         const inCart = cart.find((row) => cartKey(row) === cartKey(item));
         const currentQty = inCart?.qty || 0;
         const outOfStock = stockNumber(item.stock) === 0;
@@ -781,6 +823,7 @@
               <div class="row-actions">
                 <div>
                   <div class="price">${escapeHtml(price)}</div>
+                  ${priceExtra}
                   ${stockLabel(item.stock)}
                 </div>
                 <button class="icon-btn" data-add="${encodeURIComponent(JSON.stringify(item))}" ${disabled} title="В кошик">🛒</button>
@@ -995,14 +1038,23 @@
 
   els.searchForm.addEventListener("submit", async (event) => {
     event.preventDefault();
-    const code = els.searchInput.value.trim();
-    if (!code) return;
+    const query = els.searchInput.value.trim();
+    const color = els.colorFilter?.value?.trim() || "";
+    if (!query && !color) {
+      els.status.textContent = "Введіть код/назву або оберіть колір";
+      return;
+    }
 
     els.status.textContent = "Шукаємо...";
     els.results.innerHTML = "";
 
     try {
-      const response = await fetch(`/api/products/search?code=${encodeURIComponent(code)}`);
+      const params = new URLSearchParams();
+      if (query) params.set("q", query);
+      if (color) params.set("color", color);
+      const chatId = currentTelegramChatId();
+      if (chatId) params.set("chat_id", chatId);
+      const response = await fetch(`/api/products/search?${params.toString()}`);
       const data = await response.json();
       if (!response.ok) {
         throw new Error(data.detail || "Помилка пошуку");
@@ -1012,6 +1064,14 @@
       els.status.textContent = error.message || "Помилка пошуку";
     }
   });
+
+  if (els.colorFilter) {
+    els.colorFilter.addEventListener("change", () => {
+      if (els.searchInput.value.trim() || els.colorFilter.value) {
+        els.searchForm.requestSubmit();
+      }
+    });
+  }
 
   els.results.addEventListener("click", (event) => {
     const btn = event.target.closest("[data-add]");
@@ -1175,8 +1235,8 @@
   });
 
   els.warehouse.addEventListener("focus", () => {
-    if (!els.warehouse.disabled && els.warehouse.value.trim().length >= 1 && !npState.warehouse) {
-      scheduleWarehouseSearch(els.warehouse.value);
+    if (!els.warehouse.disabled) {
+      scheduleWarehouseSearch(els.warehouse.value || "");
     }
   });
 
@@ -1303,12 +1363,29 @@
     if (els.cartChip) els.cartChip.classList.toggle("hidden", !showOrder);
 
     if (showOrder) {
+      loadColorOptions();
       loadDropperSettings().then(() => {
         syncPaymentAndTtn();
         updateCartIndicators();
         switchTab("catalog");
       });
     }
+  }
+
+  async function saveDropperSetting(chatId, patch) {
+    const response = await fetch(
+      `/api/owner/droppers/${encodeURIComponent(chatId)}/settings`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(ownerAuthBody(patch)),
+      }
+    );
+    const data = await response.json();
+    if (!response.ok) {
+      throw new Error(typeof data.detail === "string" ? data.detail : "Помилка збереження");
+    }
+    return data.dropper;
   }
 
   async function renderOwnerCabinet() {
@@ -1330,16 +1407,57 @@
         ? droppers
             .map(
               (d) => `
-          <article class="owner-card">
+          <article class="owner-card" data-dropper-chat="${escapeHtml(d.chat_id)}">
             <div class="owner-card-title">${escapeHtml(d.company_name)}</div>
             <div class="meta">${escapeHtml(d.contact_name)} · ${escapeHtml(d.phone)}</div>
             <div class="meta">chat_id: <b>${escapeHtml(d.chat_id)}</b></div>
-            <label class="switch-row">
-              <span>Лише після повної оплати</span>
-              <input type="checkbox" data-pay-flag="${escapeHtml(d.chat_id)}" ${
-                d.require_full_payment ? "checked" : ""
-              } />
-            </label>
+            <div class="meta-soft">Реф. код: <b>${escapeHtml(d.referral_code || "—")}</b>
+              ${d.referred_by_name ? ` · запрошений: ${escapeHtml(d.referred_by_name)}` : ""}
+              ${d.referrals_count ? ` · привів: ${escapeHtml(String(d.referrals_count))}` : ""}
+            </div>
+            <div class="rule-grid">
+              <label class="switch-row">
+                <span>Лише після повної оплати</span>
+                <input type="checkbox" data-rule="require_full_payment" ${
+                  d.require_full_payment ? "checked" : ""
+                } />
+              </label>
+              <label class="switch-row">
+                <span>В рахунок балансу</span>
+                <input type="checkbox" data-rule="allow_balance_payment" ${
+                  d.allow_balance_payment ? "checked" : ""
+                } />
+              </label>
+              <div class="rule-row">
+                <label class="switch-row">
+                  <span>Мінус-баланс дозволено</span>
+                  <input type="checkbox" data-rule="allow_negative_balance" ${
+                    d.allow_negative_balance ? "checked" : ""
+                  } />
+                </label>
+                <div class="rule-row-inline">
+                  <span class="meta">Ліміт мінусу, ₴</span>
+                  <input type="number" min="0" step="1" data-rule-num="negative_balance_limit"
+                    value="${escapeHtml(String(d.negative_balance_limit || 0))}" />
+                </div>
+              </div>
+              <div class="rule-row-inline">
+                <span>Додаткова знижка, %</span>
+                <input type="number" min="0" max="100" step="0.1" data-rule-num="extra_discount_percent"
+                  value="${escapeHtml(String(d.extra_discount_percent || 0))}" />
+              </div>
+              <div class="rule-row-inline">
+                <span>Реферальний % з приведених</span>
+                <input type="number" min="0" max="100" step="0.1" data-rule-num="referral_percent"
+                  value="${escapeHtml(String(d.referral_percent || 0))}" />
+              </div>
+              <label class="switch-row">
+                <span>Відключити передачу замовлень</span>
+                <input type="checkbox" data-rule="orders_disabled" ${
+                  d.orders_disabled ? "checked" : ""
+                } />
+              </label>
+            </div>
           </article>`
             )
             .join("")
@@ -1388,7 +1506,17 @@
       els.orderMain.classList.remove("hidden");
       els.mainTabs.classList.remove("hidden");
       els.cartChip.classList.remove("hidden");
-      updateCartIndicators();
+      loadColorOptions();
+      loadDropperSettings().then(() => {
+        syncPaymentAndTtn();
+        updateCartIndicators();
+      });
+      return;
+    }
+    if (mode === "dropper_blocked") {
+      els.bootStatus.classList.remove("hidden");
+      els.bootStatus.innerHTML =
+        `<div class="blocked-box">Вас заблоковано для повного погашення боргу.<br/>Передача замовлень недоступна. Звʼяжіться з власником.</div>`;
       return;
     }
     els.bootStatus.classList.remove("hidden");
@@ -1418,6 +1546,10 @@
 
       if (sessionState.role === "owner") {
         showMode("owner");
+        return;
+      }
+      if (sessionState.role === "dropper_blocked") {
+        showMode("dropper_blocked");
         return;
       }
       if (sessionState.role === "dropper") {
@@ -1450,6 +1582,7 @@
         contact_name: document.getElementById("regContact").value.trim(),
         phone: document.getElementById("regPhone").value.trim(),
         comment: document.getElementById("regComment").value.trim(),
+        referral_code: (document.getElementById("regReferral")?.value || "").trim(),
         user_id: currentTelegramUser().user_id,
         username: currentTelegramUser().username,
       };
@@ -1517,31 +1650,39 @@
   }
 
   if (els.ownerDroppers) {
-    els.ownerDroppers.addEventListener("change", async (event) => {
-      const input = event.target.closest("[data-pay-flag]");
-      if (!input) return;
-      const chatId = input.getAttribute("data-pay-flag");
+    const persistRule = async (card, patch, rollback) => {
+      const chatId = card.getAttribute("data-dropper-chat");
       try {
-        const response = await fetch(
-          `/api/owner/droppers/${encodeURIComponent(chatId)}/payment-flag`,
-          {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(
-              ownerAuthBody({
-                require_full_payment: Boolean(input.checked),
-              })
-            ),
-          }
-        );
-        const data = await response.json();
-        if (!response.ok) {
-          throw new Error(typeof data.detail === "string" ? data.detail : "Помилка");
-        }
+        await saveDropperSetting(chatId, patch);
         showToast("Налаштування збережено");
       } catch (error) {
         showToast(error.message || "Не вдалося зберегти");
-        input.checked = !input.checked;
+        if (typeof rollback === "function") rollback();
+      }
+    };
+
+    els.ownerDroppers.addEventListener("change", async (event) => {
+      const card = event.target.closest("[data-dropper-chat]");
+      if (!card) return;
+      const check = event.target.closest("[data-rule]");
+      const num = event.target.closest("[data-rule-num]");
+      if (check) {
+        const key = check.getAttribute("data-rule");
+        const prev = !check.checked;
+        await persistRule(card, { [key]: Boolean(check.checked) }, () => {
+          check.checked = prev;
+        });
+        return;
+      }
+      if (num) {
+        const key = num.getAttribute("data-rule-num");
+        const value = Number(num.value);
+        const prev = num.defaultValue;
+        num.defaultValue = String(num.value);
+        await persistRule(card, { [key]: Number.isFinite(value) ? value : 0 }, () => {
+          num.value = prev;
+          num.defaultValue = prev;
+        });
       }
     });
   }

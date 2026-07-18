@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import secrets
 import sqlite3
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -18,6 +19,10 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _gen_referral_code() -> str:
+    return secrets.token_hex(3).upper()
+
+
 @dataclass
 class Dropper:
     id: int
@@ -27,6 +32,14 @@ class Dropper:
     phone: str
     comment: str
     require_full_payment: bool
+    allow_balance_payment: bool
+    allow_negative_balance: bool
+    negative_balance_limit: float
+    extra_discount_percent: float
+    orders_disabled: bool
+    referral_code: str
+    referred_by_dropper_id: int | None
+    referral_percent: float
     status: str
     registered_by_user_id: str
     registered_by_username: str
@@ -41,6 +54,14 @@ class Dropper:
             "phone": self.phone,
             "comment": self.comment,
             "require_full_payment": self.require_full_payment,
+            "allow_balance_payment": self.allow_balance_payment,
+            "allow_negative_balance": self.allow_negative_balance,
+            "negative_balance_limit": self.negative_balance_limit,
+            "extra_discount_percent": self.extra_discount_percent,
+            "orders_disabled": self.orders_disabled,
+            "referral_code": self.referral_code,
+            "referred_by_dropper_id": self.referred_by_dropper_id,
+            "referral_percent": self.referral_percent,
             "status": self.status,
             "registered_by_user_id": self.registered_by_user_id,
             "registered_by_username": self.registered_by_username,
@@ -83,6 +104,14 @@ class AppStorage:
         conn.row_factory = sqlite3.Row
         return conn
 
+    def _ensure_column(self, conn: sqlite3.Connection, table: str, column: str, ddl: str) -> None:
+        cols = {
+            str(r["name"])
+            for r in conn.execute(f"PRAGMA table_info({table})").fetchall()
+        }
+        if column not in cols:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {ddl}")
+
     def _init_db(self) -> None:
         with self._connect() as conn:
             conn.execute(
@@ -102,6 +131,42 @@ class AppStorage:
                 )
                 """
             )
+            for column, ddl in (
+                ("allow_balance_payment", "allow_balance_payment INTEGER NOT NULL DEFAULT 0"),
+                ("allow_negative_balance", "allow_negative_balance INTEGER NOT NULL DEFAULT 0"),
+                ("negative_balance_limit", "negative_balance_limit REAL NOT NULL DEFAULT 0"),
+                ("extra_discount_percent", "extra_discount_percent REAL NOT NULL DEFAULT 0"),
+                ("orders_disabled", "orders_disabled INTEGER NOT NULL DEFAULT 0"),
+                ("referral_code", "referral_code TEXT NOT NULL DEFAULT ''"),
+                ("referred_by_dropper_id", "referred_by_dropper_id INTEGER"),
+                ("referral_percent", "referral_percent REAL NOT NULL DEFAULT 0"),
+            ):
+                self._ensure_column(conn, "droppers", column, ddl)
+
+            conn.execute(
+                """
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_droppers_referral_code
+                ON droppers(referral_code)
+                WHERE referral_code != ''
+                """
+            )
+
+            # Згенерувати referral_code для старих записів
+            rows = conn.execute(
+                "SELECT id FROM droppers WHERE referral_code IS NULL OR referral_code = ''"
+            ).fetchall()
+            for row in rows:
+                for _ in range(8):
+                    code = _gen_referral_code()
+                    try:
+                        conn.execute(
+                            "UPDATE droppers SET referral_code = ? WHERE id = ?",
+                            (code, row["id"]),
+                        )
+                        break
+                    except sqlite3.IntegrityError:
+                        continue
+
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS staff (
@@ -133,7 +198,14 @@ class AppStorage:
             )
             conn.commit()
 
+    def _row_get(self, row: sqlite3.Row, key: str, default: Any = None) -> Any:
+        try:
+            return row[key]
+        except (IndexError, KeyError):
+            return default
+
     def _row_dropper(self, row: sqlite3.Row) -> Dropper:
+        ref_by = self._row_get(row, "referred_by_dropper_id")
         return Dropper(
             id=row["id"],
             chat_id=row["chat_id"],
@@ -142,6 +214,14 @@ class AppStorage:
             phone=row["phone"],
             comment=row["comment"] or "",
             require_full_payment=bool(row["require_full_payment"]),
+            allow_balance_payment=bool(self._row_get(row, "allow_balance_payment", 0)),
+            allow_negative_balance=bool(self._row_get(row, "allow_negative_balance", 0)),
+            negative_balance_limit=float(self._row_get(row, "negative_balance_limit", 0) or 0),
+            extra_discount_percent=float(self._row_get(row, "extra_discount_percent", 0) or 0),
+            orders_disabled=bool(self._row_get(row, "orders_disabled", 0)),
+            referral_code=str(self._row_get(row, "referral_code", "") or ""),
+            referred_by_dropper_id=int(ref_by) if ref_by not in (None, "") else None,
+            referral_percent=float(self._row_get(row, "referral_percent", 0) or 0),
             status=row["status"],
             registered_by_user_id=row["registered_by_user_id"] or "",
             registered_by_username=row["registered_by_username"] or "",
@@ -161,7 +241,6 @@ class AppStorage:
         )
 
     def resolve_chat_id(self, chat_id: str | int | None) -> str:
-        """Вернуть актуальный chat_id с учётом миграций group → supergroup."""
         key = str(chat_id or "").strip()
         if not key:
             return ""
@@ -179,10 +258,6 @@ class AppStorage:
         return key
 
     def migrate_chat_id(self, old_chat_id: str | int, new_chat_id: str | int) -> dict[str, Any]:
-        """
-        Переписать все ссылки со старого chat_id на новый.
-        Безопасно при повторном вызове (идемпотентно).
-        """
         old_id = str(old_chat_id).strip()
         new_id = str(new_chat_id).strip()
         if not old_id or not new_id or old_id == new_id:
@@ -195,10 +270,7 @@ class AppStorage:
                 "SELECT new_chat_id FROM chat_migrations WHERE old_chat_id = ?",
                 (old_id,),
             ).fetchone()
-            if existing and str(existing["new_chat_id"]) == new_id:
-                # Уже записано — всё равно убедимся, что dropper на новом id
-                pass
-            else:
+            if not (existing and str(existing["new_chat_id"]) == new_id):
                 conn.execute(
                     """
                     INSERT INTO chat_migrations (old_chat_id, new_chat_id, migrated_at)
@@ -224,7 +296,6 @@ class AppStorage:
                 )
                 updated_dropper = True
             elif old_row and new_row:
-                # Конфликт крайне редкий: оставляем запись на new_id, старую деактивируем
                 conn.execute(
                     "UPDATE droppers SET status = 'migrated_duplicate' WHERE chat_id = ?",
                     (old_id,),
@@ -269,6 +340,35 @@ class AppStorage:
                     return self._row_dropper(row)
         return None
 
+    def get_dropper_by_id(self, dropper_id: int) -> Dropper | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM droppers WHERE id = ?", (int(dropper_id),)
+            ).fetchone()
+        return self._row_dropper(row) if row else None
+
+    def get_dropper_by_referral_code(self, code: str) -> Dropper | None:
+        key = str(code or "").strip().upper()
+        if not key:
+            return None
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM droppers WHERE upper(referral_code) = ?", (key,)
+            ).fetchone()
+        return self._row_dropper(row) if row else None
+
+    def list_referrals(self, dropper_id: int) -> list[Dropper]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT * FROM droppers
+                WHERE referred_by_dropper_id = ?
+                ORDER BY id DESC
+                """,
+                (int(dropper_id),),
+            ).fetchall()
+        return [self._row_dropper(r) for r in rows]
+
     def list_droppers(self) -> list[Dropper]:
         with self._connect() as conn:
             rows = conn.execute(
@@ -286,70 +386,115 @@ class AppStorage:
         registered_by_user_id: str = "",
         registered_by_username: str = "",
         require_full_payment: bool = False,
+        referral_code_used: str = "",
     ) -> Dropper:
         now = _now()
+        referrer = self.get_dropper_by_referral_code(referral_code_used)
+        referred_by = referrer.id if referrer else None
+
         with self._connect() as conn:
-            cur = conn.execute(
-                """
-                INSERT INTO droppers (
-                    chat_id, company_name, contact_name, phone, comment,
-                    require_full_payment, status,
-                    registered_by_user_id, registered_by_username, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, 'active', ?, ?, ?)
-                """,
-                (
-                    str(chat_id).strip(),
-                    company_name.strip(),
-                    contact_name.strip(),
-                    phone.strip(),
-                    (comment or "").strip(),
-                    1 if require_full_payment else 0,
-                    str(registered_by_user_id or ""),
-                    str(registered_by_username or ""),
-                    now,
-                ),
-            )
-            dropper_id = int(cur.lastrowid)
+            dropper_id = None
+            code = ""
+            for _ in range(10):
+                code = _gen_referral_code()
+                try:
+                    cur = conn.execute(
+                        """
+                        INSERT INTO droppers (
+                            chat_id, company_name, contact_name, phone, comment,
+                            require_full_payment, status,
+                            registered_by_user_id, registered_by_username, created_at,
+                            referral_code, referred_by_dropper_id
+                        ) VALUES (?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            str(chat_id).strip(),
+                            company_name.strip(),
+                            contact_name.strip(),
+                            phone.strip(),
+                            (comment or "").strip(),
+                            1 if require_full_payment else 0,
+                            str(registered_by_user_id or ""),
+                            str(registered_by_username or ""),
+                            now,
+                            code,
+                            referred_by,
+                        ),
+                    )
+                    dropper_id = int(cur.lastrowid)
+                    break
+                except sqlite3.IntegrityError as exc:
+                    if "referral_code" in str(exc).lower():
+                        continue
+                    raise
+            if dropper_id is None:
+                raise RuntimeError("Не вдалося створити referral_code")
             conn.commit()
             row = conn.execute(
                 "SELECT * FROM droppers WHERE id = ?", (dropper_id,)
             ).fetchone()
         return self._row_dropper(row)
 
-    def set_dropper_require_full_payment(
-        self, chat_id: str, require_full_payment: bool
+    def update_dropper_settings(
+        self,
+        chat_id: str,
+        *,
+        require_full_payment: bool | None = None,
+        allow_balance_payment: bool | None = None,
+        allow_negative_balance: bool | None = None,
+        negative_balance_limit: float | None = None,
+        extra_discount_percent: float | None = None,
+        orders_disabled: bool | None = None,
+        referral_percent: float | None = None,
     ) -> Dropper | None:
         raw = str(chat_id).strip()
         key = self.resolve_chat_id(raw) or raw
-        with self._connect() as conn:
-            cur = conn.execute(
-                """
-                UPDATE droppers
-                SET require_full_payment = ?
-                WHERE chat_id = ?
-                """,
-                (1 if require_full_payment else 0, key),
+        current = self.get_dropper_by_chat(key)
+        if not current:
+            return None
+
+        fields: dict[str, Any] = {}
+        if require_full_payment is not None:
+            fields["require_full_payment"] = 1 if require_full_payment else 0
+        if allow_balance_payment is not None:
+            fields["allow_balance_payment"] = 1 if allow_balance_payment else 0
+        if allow_negative_balance is not None:
+            fields["allow_negative_balance"] = 1 if allow_negative_balance else 0
+        if negative_balance_limit is not None:
+            fields["negative_balance_limit"] = max(0.0, float(negative_balance_limit))
+        if extra_discount_percent is not None:
+            fields["extra_discount_percent"] = max(
+                0.0, min(100.0, float(extra_discount_percent))
             )
-            if cur.rowcount == 0 and key != raw:
+        if orders_disabled is not None:
+            fields["orders_disabled"] = 1 if orders_disabled else 0
+        if referral_percent is not None:
+            fields["referral_percent"] = max(0.0, min(100.0, float(referral_percent)))
+
+        if not fields:
+            return current
+
+        assignments = ", ".join(f"{k} = ?" for k in fields)
+        values = list(fields.values()) + [key]
+        with self._connect() as conn:
+            conn.execute(
+                f"UPDATE droppers SET {assignments} WHERE chat_id = ?",
+                values,
+            )
+            if conn.total_changes == 0 and key != raw:
                 conn.execute(
-                    """
-                    UPDATE droppers
-                    SET require_full_payment = ?
-                    WHERE chat_id = ?
-                    """,
-                    (1 if require_full_payment else 0, raw),
+                    f"UPDATE droppers SET {assignments} WHERE chat_id = ?",
+                    list(fields.values()) + [raw],
                 )
             conn.commit()
-            row = conn.execute(
-                "SELECT * FROM droppers WHERE chat_id = ?",
-                (key,),
-            ).fetchone()
-            if not row and key != raw:
-                row = conn.execute(
-                    "SELECT * FROM droppers WHERE chat_id = ?",
-                    (raw,),
-                ).fetchone()
-        return self._row_dropper(row) if row else None
+        return self.get_dropper_by_chat(key)
+
+    def set_dropper_require_full_payment(
+        self, chat_id: str, require_full_payment: bool
+    ) -> Dropper | None:
+        return self.update_dropper_settings(
+            chat_id, require_full_payment=require_full_payment
+        )
 
     def get_staff_by_user(self, telegram_user_id: str) -> StaffMember | None:
         key = str(telegram_user_id or "").strip()
