@@ -14,14 +14,28 @@
     results: document.getElementById("results"),
     catalogView: document.getElementById("catalogView"),
     cartView: document.getElementById("cartView"),
+    checkoutView: document.getElementById("checkoutView"),
+    mainTabs: document.getElementById("mainTabs"),
     cartList: document.getElementById("cartList"),
     cartEmpty: document.getElementById("cartEmpty"),
     cartFooter: document.getElementById("cartFooter"),
     cartCount: document.getElementById("cartCount"),
+    cartSum: document.getElementById("cartSum"),
     cartBadge: document.getElementById("cartBadge"),
     cartChipText: document.getElementById("cartChipText"),
     cartChip: document.getElementById("cartChip"),
     checkoutBtn: document.getElementById("checkoutBtn"),
+    checkoutBack: document.getElementById("checkoutBack"),
+    checkoutForm: document.getElementById("checkoutForm"),
+    checkoutError: document.getElementById("checkoutError"),
+    ownTtn: document.getElementById("ownTtn"),
+    npDeliveryFields: document.getElementById("npDeliveryFields"),
+    ttnFields: document.getElementById("ttnFields"),
+    warehouseField: document.getElementById("warehouseField"),
+    addressField: document.getElementById("addressField"),
+    warehouseLabel: document.getElementById("warehouseLabel"),
+    prepayMaxLabel: document.getElementById("prepayMaxLabel"),
+    prepay: document.getElementById("prepay"),
   };
 
   function loadCart() {
@@ -41,14 +55,32 @@
     return `${item.product_id || ""}|${item.code}|${item.color || ""}`;
   }
 
+  function parsePrice(value) {
+    const n = Number(String(value ?? "").replace(",", ".").replace(/[^\d.]/g, ""));
+    return Number.isFinite(n) ? n : 0;
+  }
+
   function cartQtyTotal(cart = loadCart()) {
     return cart.reduce((sum, item) => sum + (item.qty || 1), 0);
   }
 
+  function cartMoneyTotal(cart = loadCart()) {
+    return cart.reduce(
+      (sum, item) => sum + parsePrice(item.drop_price) * (item.qty || 1),
+      0
+    );
+  }
+
+  function formatMoney(amount) {
+    return `${Math.round(amount)} ₴`;
+  }
+
   function updateCartIndicators() {
-    const total = cartQtyTotal();
-    els.cartBadge.textContent = String(total);
-    els.cartChipText.textContent = String(total);
+    const cart = loadCart();
+    const qty = cartQtyTotal(cart);
+    const sum = cartMoneyTotal(cart);
+    els.cartBadge.textContent = String(qty);
+    els.cartChipText.textContent = qty ? `${qty} | ${formatMoney(sum)}` : "0";
   }
 
   function showToast(text) {
@@ -56,16 +88,67 @@
     node.className = "toast";
     node.textContent = text;
     document.body.appendChild(node);
-    setTimeout(() => node.remove(), 1800);
+    setTimeout(() => node.remove(), 2200);
+  }
+
+  function setCheckoutError(message) {
+    if (!message) {
+      els.checkoutError.classList.add("hidden");
+      els.checkoutError.textContent = "";
+      return;
+    }
+    els.checkoutError.textContent = message;
+    els.checkoutError.classList.remove("hidden");
   }
 
   function switchTab(name) {
     document.querySelectorAll(".tab").forEach((tab) => {
       tab.classList.toggle("active", tab.dataset.tab === name);
     });
+    els.mainTabs.classList.remove("hidden");
     els.catalogView.classList.toggle("hidden", name !== "catalog");
     els.cartView.classList.toggle("hidden", name !== "cart");
+    els.checkoutView.classList.add("hidden");
     if (name === "cart") renderCart();
+  }
+
+  function openCheckout() {
+    const cart = loadCart();
+    if (!cart.length) return;
+    els.catalogView.classList.add("hidden");
+    els.cartView.classList.add("hidden");
+    els.checkoutView.classList.remove("hidden");
+    els.mainTabs.classList.add("hidden");
+    document.querySelectorAll(".tab").forEach((tab) => tab.classList.remove("active"));
+    syncDeliveryFields();
+    syncTtnMode();
+    updatePrepayHint();
+    setCheckoutError("");
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  }
+
+  function syncDeliveryFields() {
+    const method =
+      els.checkoutForm.querySelector('input[name="deliveryMethod"]:checked')?.value ||
+      "np_warehouse";
+    const isCourier = method === "np_courier";
+    els.warehouseField.classList.toggle("hidden", isCourier);
+    els.addressField.classList.toggle("hidden", !isCourier);
+    els.warehouseLabel.textContent = isCourier
+      ? "Адреса доставки"
+      : "Відділення/поштомат Нової Пошти";
+  }
+
+  function syncTtnMode() {
+    const own = Boolean(els.ownTtn.checked);
+    els.npDeliveryFields.classList.toggle("hidden", own);
+    els.ttnFields.classList.toggle("hidden", !own);
+  }
+
+  function updatePrepayHint() {
+    const max = Math.round(cartMoneyTotal());
+    els.prepayMaxLabel.textContent = String(max);
+    els.prepay.max = String(max);
   }
 
   function stockLabel(stock) {
@@ -123,6 +206,7 @@
     els.cartEmpty.classList.add("hidden");
     els.cartFooter.classList.remove("hidden");
     els.cartCount.textContent = String(cartQtyTotal(cart));
+    els.cartSum.textContent = formatMoney(cartMoneyTotal(cart));
 
     els.cartList.innerHTML = cart
       .map((item, index) => {
@@ -171,8 +255,56 @@
       .replaceAll('"', "&quot;");
   }
 
-  function escapeAttr(value) {
-    return escapeHtml(value).replaceAll("'", "&#39;");
+  function collectCheckoutData() {
+    const form = els.checkoutForm;
+    const deliveryMethod =
+      form.querySelector('input[name="deliveryMethod"]:checked')?.value || "";
+    const paymentMethod =
+      form.querySelector('input[name="paymentMethod"]:checked')?.value || "";
+    return {
+      firstName: form.firstName.value.trim(),
+      lastName: form.lastName.value.trim(),
+      phone: form.phone.value.trim(),
+      deliveryMethod,
+      city: form.city.value.trim(),
+      warehouse: form.warehouse.value.trim(),
+      address: form.address.value.trim(),
+      ownTtn: Boolean(form.ownTtn.checked),
+      paymentMethod,
+      prepay: form.prepay.value.trim(),
+      comment: form.comment.value.trim(),
+      rulesAccepted: Boolean(form.rulesAccepted.checked),
+      cart: loadCart(),
+      total: cartMoneyTotal(),
+    };
+  }
+
+  function validateCheckout(data) {
+    if (!data.firstName) return "Вкажіть ім'я отримувача";
+    if (!data.lastName) return "Вкажіть прізвище отримувача";
+    if (!data.phone || data.phone.replace(/\D/g, "").length < 10) {
+      return "Вкажіть коректний телефон";
+    }
+    if (!data.ownTtn) {
+      if (!data.city) return "Вкажіть населений пункт";
+      if (data.deliveryMethod === "np_warehouse" && !data.warehouse) {
+        return "Вкажіть відділення або поштомат";
+      }
+      if (data.deliveryMethod === "np_courier" && !data.address) {
+        return "Вкажіть адресу доставки";
+      }
+    }
+    if (!data.rulesAccepted) {
+      return "Підтвердіть ознайомлення з правилами";
+    }
+    const prepay = data.prepay === "" ? 0 : Number(data.prepay);
+    if (Number.isNaN(prepay) || prepay < 0) {
+      return "Некоректна сума передплати";
+    }
+    if (prepay > data.total) {
+      return `Передплата не може перевищувати ${Math.round(data.total)} грн`;
+    }
+    return "";
   }
 
   els.searchForm.addEventListener("submit", async (event) => {
@@ -238,13 +370,30 @@
   });
 
   els.cartChip.addEventListener("click", () => switchTab("cart"));
+  els.checkoutBtn.addEventListener("click", openCheckout);
+  els.checkoutBack.addEventListener("click", () => switchTab("cart"));
 
-  els.checkoutBtn.addEventListener("click", () => {
-    const cart = loadCart();
-    if (!cart.length) return;
-    showToast("Оформлення даних клієнта — наступний етап");
+  els.checkoutForm.addEventListener("change", (event) => {
+    if (event.target.name === "deliveryMethod") syncDeliveryFields();
+    if (event.target.id === "ownTtn") syncTtnMode();
+  });
+
+  els.checkoutForm.addEventListener("submit", (event) => {
+    event.preventDefault();
+    const data = collectCheckoutData();
+    const error = validateCheckout(data);
+    if (error) {
+      setCheckoutError(error);
+      return;
+    }
+    setCheckoutError("");
+    // Поки що тільки збираємо дані; відправка на бекенд — наступний етап
+    console.log("checkout draft", data);
+    showToast("Дані зібрано. Підтвердження замовлення — наступний етап");
     if (tg?.showAlert) {
-      tg.showAlert("Кошик зібрано. Оформлення замовлення (дані клієнта / ТТН) додамо наступним кроком.");
+      tg.showAlert(
+        "Форма заповнена. Далі додамо підтвердження та відправку замовлення."
+      );
     }
   });
 

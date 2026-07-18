@@ -17,7 +17,7 @@
       </button>
     </header>
 
-    <nav class="tabs">
+    <nav class="tabs" id="mainTabs">
       <button type="button" class="tab active" data-tab="catalog">Каталог</button>
       <button type="button" class="tab" data-tab="cart">Кошик <span class="badge" id="cartBadge">0</span></button>
     </nav>
@@ -47,10 +47,145 @@
         <div id="cartEmpty" class="empty">Кошик порожній. Знайдіть товар за кодом і додайте його.</div>
         <div id="cartList" class="cart-list"></div>
         <div id="cartFooter" class="cart-footer hidden">
-          <div class="cart-total">Позицій: <strong id="cartCount">0</strong></div>
+          <div class="cart-total">
+            Позицій: <strong id="cartCount">0</strong>
+            · Разом: <strong id="cartSum">0 ₴</strong>
+          </div>
           <button type="button" class="btn primary block" id="checkoutBtn">Оформити замовлення</button>
-          <p class="footnote">Оформлення даних клієнта / ТТН — наступний етап</p>
         </div>
+      </section>
+
+      <section id="checkoutView" class="view hidden">
+        <button type="button" class="back-link" id="checkoutBack">← Назад до кошика</button>
+        <h1 class="title">Оформлення замовлення</h1>
+
+        <form id="checkoutForm" novalidate>
+          <div class="form-section">
+            <h2 class="section-title">Дані отримувача</h2>
+            <div class="info-box">
+              Вкажіть дані отримувача, якому буде відправлено замовлення.
+            </div>
+            <label class="field">
+              <span class="field-label">Ім'я</span>
+              <input id="firstName" name="firstName" type="text" autocomplete="given-name" placeholder="Ім'я замовника" required />
+            </label>
+            <label class="field">
+              <span class="field-label">Прізвище</span>
+              <input id="lastName" name="lastName" type="text" autocomplete="family-name" placeholder="Прізвище замовника" required />
+            </label>
+            <label class="field">
+              <span class="field-label">Телефон</span>
+              <input id="phone" name="phone" type="tel" inputmode="tel" autocomplete="tel" placeholder="+38(099)999-99-99" required />
+            </label>
+          </div>
+
+          <div class="form-section">
+            <h2 class="section-title">Спосіб доставки</h2>
+
+            <div class="choice-list" role="radiogroup" aria-label="Спосіб доставки">
+              <label class="choice-card">
+                <input type="radio" name="deliveryMethod" value="np_warehouse" checked />
+                <span class="choice-body">
+                  <span class="choice-title">Відділення/поштомат Нової Пошти</span>
+                  <span class="choice-sub">За тарифами перевізника</span>
+                </span>
+              </label>
+              <label class="choice-card">
+                <input type="radio" name="deliveryMethod" value="np_courier" />
+                <span class="choice-body">
+                  <span class="choice-title">Кур'єр Нової Пошти</span>
+                  <span class="choice-sub">За тарифами перевізника</span>
+                </span>
+              </label>
+            </div>
+
+            <div id="npDeliveryFields">
+              <label class="field">
+                <span class="field-label">Населений пункт</span>
+                <input id="city" name="city" type="text" placeholder="Назва населеного пункту" />
+              </label>
+              <label class="field" id="warehouseField">
+                <span class="field-label" id="warehouseLabel">Відділення/поштомат Нової Пошти</span>
+                <input
+                  id="warehouse"
+                  name="warehouse"
+                  type="text"
+                  placeholder="Введіть адресу або номер відділення/поштомату"
+                />
+              </label>
+              <label class="field hidden" id="addressField">
+                <span class="field-label">Адреса доставки</span>
+                <input id="address" name="address" type="text" placeholder="Вулиця, будинок, квартира" />
+              </label>
+            </div>
+
+            <label class="toggle-row">
+              <span class="toggle-text">Відправити замовлення за моєю ТТН</span>
+              <input type="checkbox" id="ownTtn" name="ownTtn" class="toggle-input" />
+              <span class="toggle-ui" aria-hidden="true"></span>
+            </label>
+
+            <div id="ttnFields" class="hidden">
+              <div class="info-box">
+                Поля для відправки за вашою ТТН з’являться після фіналізації цього режиму.
+              </div>
+            </div>
+          </div>
+
+          <div class="form-section">
+            <h2 class="section-title">Спосіб оплати</h2>
+            <div class="info-box">
+              При виборі «Оплата при отриманні», поштовій компанії буде вказано Оголошену вартість
+              та Суму зворотної доставки згідно суми «Разом» (з врахуванням передплати) на замовлення.
+            </div>
+
+            <div class="choice-list" role="radiogroup" aria-label="Спосіб оплати">
+              <label class="choice-card">
+                <input type="radio" name="paymentMethod" value="cod" checked />
+                <span class="choice-body">
+                  <span class="choice-title">Оплата при отриманні</span>
+                  <span class="choice-sub">Оплата при отриманні</span>
+                </span>
+              </label>
+              <label class="choice-card">
+                <input type="radio" name="paymentMethod" value="requisites" />
+                <span class="choice-body">
+                  <span class="choice-title">Оплата на реквізити</span>
+                  <span class="choice-sub">Оплата на реквізити</span>
+                </span>
+              </label>
+            </div>
+
+            <div class="info-box" id="prepayHint">
+              Якщо отримувач вніс передплату, вкажіть суму яку необхідно вирахувати із накладеного
+              платежу замовлення. Сума не може перевищувати суму «Разом»
+              (<span id="prepayMaxLabel">0</span> грн).
+            </div>
+            <label class="field">
+              <span class="field-label">Сума передплати</span>
+              <div class="input-with-prefix">
+                <span class="input-prefix">₴</span>
+                <input id="prepay" name="prepay" type="number" min="0" step="1" inputmode="numeric" placeholder="Сума передплати" />
+              </div>
+            </label>
+          </div>
+
+          <div class="form-section">
+            <h2 class="section-title">Додатково</h2>
+            <p class="hint">Ви можете залишити коментар до вашого замовлення</p>
+            <label class="field">
+              <textarea id="comment" name="comment" rows="3" placeholder="Коментар"></textarea>
+            </label>
+
+            <label class="check-row">
+              <input type="checkbox" id="rulesAccepted" name="rulesAccepted" checked />
+              <span>Підтверджую ознайомлення із Правилами створення замовлення</span>
+            </label>
+          </div>
+
+          <p id="checkoutError" class="form-error hidden"></p>
+          <button type="submit" class="btn primary block" id="checkoutContinue">Продовжити</button>
+        </form>
       </section>
     </main>
   </div>
