@@ -25,6 +25,7 @@
     ownerTabs: document.getElementById("ownerTabs"),
     ownerTabDroppers: document.getElementById("ownerTabDroppers"),
     ownerTabStaff: document.getElementById("ownerTabStaff"),
+    ownerTabOrder: document.getElementById("ownerTabOrder"),
     ownerDroppers: document.getElementById("ownerDroppers"),
     ownerStaff: document.getElementById("ownerStaff"),
     staffForm: document.getElementById("staffForm"),
@@ -261,9 +262,11 @@
   }
 
   function switchTab(name) {
-    document.querySelectorAll(".tab").forEach((tab) => {
-      tab.classList.toggle("active", tab.dataset.tab === name);
-    });
+    if (els.mainTabs) {
+      els.mainTabs.querySelectorAll("[data-tab]").forEach((tab) => {
+        tab.classList.toggle("active", tab.dataset.tab === name);
+      });
+    }
     els.mainTabs.classList.remove("hidden");
     els.catalogView.classList.toggle("hidden", name !== "catalog");
     els.cartView.classList.toggle("hidden", name !== "cart");
@@ -1180,7 +1183,8 @@
   }
 
   function setOwnerTab(tabName) {
-    const name = tabName === "staff" ? "staff" : "droppers";
+    const allowed = new Set(["droppers", "staff", "order"]);
+    const name = allowed.has(tabName) ? tabName : "droppers";
     if (els.ownerTabs) {
       els.ownerTabs.querySelectorAll("[data-owner-tab]").forEach((btn) => {
         btn.classList.toggle("active", btn.getAttribute("data-owner-tab") === name);
@@ -1191,6 +1195,22 @@
     }
     if (els.ownerTabStaff) {
       els.ownerTabStaff.classList.toggle("hidden", name !== "staff");
+    }
+    if (els.ownerTabOrder) {
+      els.ownerTabOrder.classList.toggle("hidden", name !== "order");
+    }
+
+    const showOrder = name === "order";
+    if (els.orderMain) els.orderMain.classList.toggle("hidden", !showOrder);
+    if (els.mainTabs) els.mainTabs.classList.toggle("hidden", !showOrder);
+    if (els.cartChip) els.cartChip.classList.toggle("hidden", !showOrder);
+
+    if (showOrder) {
+      loadDropperSettings().then(() => {
+        syncPaymentAndTtn();
+        updateCartIndicators();
+        switchTab("catalog");
+      });
     }
   }
 

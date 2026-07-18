@@ -149,6 +149,8 @@ select {
 
 .owner-tabs {
   margin: 8px 0 14px;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
 .owner-panel {
@@ -158,6 +160,10 @@ select {
 
 .owner-panel.hidden {
   display: none;
+}
+
+.owner-order-hint {
+  margin: 0 0 4px;
 }
 
 .switch-row {
