@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
   <title>Kirs — Замовлення</title>
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
-  <link rel="stylesheet" href="/static/styles.css?v=20260718ag" />
+  <link rel="stylesheet" href="/static/styles.css?v=20260718ah" />
 </head>
 <body>
   <div class="app">
@@ -118,6 +118,7 @@
     <nav class="tabs hidden" id="mainTabs">
       <button type="button" class="tab active" data-tab="catalog">Каталог</button>
       <button type="button" class="tab" data-tab="cart">Кошик <span class="badge" id="cartBadge">0</span></button>
+      <button type="button" class="tab" data-tab="history">Історія</button>
     </nav>
 
     <main id="orderMain" class="hidden">
@@ -395,10 +396,25 @@
           <button type="submit" class="btn primary block" id="checkoutContinue">Продовжити</button>
         </form>
       </section>
+
+      <section id="confirmView" class="view hidden">
+        <button type="button" class="back-link" id="confirmBack">← Назад до форми</button>
+        <h1 class="title">Підтвердження замовлення</h1>
+        <p class="hint">Перевірте дані перед відправкою. Після підтвердження заказ буде прийнято.</p>
+        <div id="confirmSummary" class="confirm-summary"></div>
+        <p id="confirmError" class="form-error hidden"></p>
+        <button type="button" class="btn primary block" id="confirmSubmit">Підтвердити замовлення</button>
+      </section>
+
+      <section id="historyView" class="view hidden">
+        <h1 class="title">Історія замовлень</h1>
+        <p class="hint">Усі передані вами замовлення з номерами.</p>
+        <div id="ordersHistory" class="results"></div>
+      </section>
     </main>
   </div>
 
   <button type="button" id="photoZoomBackdrop" class="photo-zoom-backdrop hidden" aria-label="Закрити фото"></button>
-  <script src="/static/app.js?v=20260718ag"></script>
+  <script src="/static/app.js?v=20260718ah"></script>
 </body>
 </html>

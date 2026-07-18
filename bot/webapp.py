@@ -63,6 +63,37 @@ class DropperSettingsUpdateRequest(BaseModel):
     referral_percent: float | None = None
 
 
+class OrderCreateRequest(BaseModel):
+    chat_id: str = Field(..., min_length=2, max_length=64)
+    user_id: str = Field("", max_length=64)
+    first_name: str = Field(..., min_length=1, max_length=80)
+    patronymic: str = Field("", max_length=80)
+    last_name: str = Field(..., min_length=1, max_length=80)
+    phone: str = Field(..., min_length=10, max_length=32)
+    delivery_method: str = Field(..., min_length=3, max_length=32)
+    city: str = Field("", max_length=200)
+    city_ref: str = Field(..., min_length=5, max_length=64)
+    settlement_ref: str = Field("", max_length=64)
+    warehouse: str = Field("", max_length=300)
+    warehouse_ref: str = Field("", max_length=64)
+    street: str = Field("", max_length=200)
+    street_ref: str = Field("", max_length=64)
+    house: str = Field("", max_length=32)
+    apartment: str = Field("", max_length=32)
+    own_ttn: bool = False
+    ttn_number: str = Field("", max_length=64)
+    payment_method: str = Field(..., min_length=2, max_length=32)
+    prepay: float = Field(0, ge=0)
+    comment: str = Field("", max_length=1000)
+    receipt_name: str = Field("", max_length=260)
+    ttn_pdf_name: str = Field("", max_length=260)
+    cart: list[dict] = Field(default_factory=list)
+    total: float = Field(0, ge=0)
+    np_city: dict | None = None
+    np_warehouse: dict | None = None
+    np_street: dict | None = None
+
+
 def _apply_dropper_discount(price_raw: str, percent: float) -> tuple[str, str | None]:
     """Повертає (ціна_для_показу, оригінал_або_None)."""
     if not percent or percent <= 0:
@@ -536,6 +567,240 @@ def create_web_app(
             "city_ref": city_ref.strip(),
             "count": len(items),
             "items": [i.to_dict() for i in items],
+        }
+
+    def _balance_spend_room(dropper) -> float:
+        if not dropper.allow_balance_payment:
+            return 0.0
+        balance = storage.get_balance(dropper.id)
+        floor = (
+            -max(0.0, float(dropper.negative_balance_limit or 0))
+            if dropper.allow_negative_balance
+            else 0.0
+        )
+        return max(0.0, balance - floor)
+
+    def _validate_order_payload(payload: OrderCreateRequest, dropper) -> tuple[float, float, float]:
+        if dropper.orders_disabled:
+            raise HTTPException(status_code=403, detail="Передачу замовлень заблоковано")
+        if not payload.cart:
+            raise HTTPException(status_code=400, detail="Кошик порожній")
+        total = max(0.0, float(payload.total or 0))
+        cart_sum = 0.0
+        for item in payload.cart:
+            try:
+                price = float(str(item.get("drop_price") or "0").replace(",", "."))
+            except (TypeError, ValueError):
+                price = 0.0
+            qty = max(1, int(item.get("qty") or 1))
+            cart_sum += price * qty
+        if abs(cart_sum - total) > 1.0 and total <= 0:
+            total = round(cart_sum, 2)
+        prepay = max(0.0, float(payload.prepay or 0))
+        debit = 0.0
+        if payload.own_ttn:
+            if payload.payment_method != "requisites":
+                raise HTTPException(
+                    status_code=400,
+                    detail="При власній ТТН доступна лише оплата на реквізити",
+                )
+            ttn = re.sub(r"\D", "", payload.ttn_number or "")
+            if len(ttn) < 10:
+                raise HTTPException(status_code=400, detail="Вкажіть повний номер ТТН")
+        elif payload.payment_method == "cod":
+            room = _balance_spend_room(dropper)
+            max_prepay = total + room
+            if prepay > max_prepay + 0.01:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Передплата не може перевищувати {round(max_prepay)} грн",
+                )
+            debit = max(0.0, round(prepay - total, 2))
+        if payload.delivery_method == "np_warehouse" and not payload.warehouse_ref:
+            raise HTTPException(status_code=400, detail="Оберіть відділення/поштомат")
+        if payload.delivery_method == "np_courier":
+            if not payload.patronymic.strip():
+                raise HTTPException(status_code=400, detail="Для курʼєра вкажіть по батькові")
+            if not payload.street_ref or not payload.house.strip():
+                raise HTTPException(status_code=400, detail="Вкажіть адресу для курʼєра")
+        if (
+            payload.payment_method == "requisites"
+            and dropper.require_full_payment
+            and not payload.receipt_name.strip()
+        ):
+            raise HTTPException(status_code=400, detail="Потрібна квитанція про оплату")
+        return total, prepay, debit
+
+    def _format_dropper_accept_message(order: dict, dropper) -> str:
+        payload = order.get("payload") or {}
+        cart = payload.get("cart") or []
+        lines = [
+            "✅ Замовлення прийнято",
+            "",
+            f"Номер: {order.get('order_number')}",
+            f"Сума: {round(float(order.get('total') or 0))} ₴",
+        ]
+        if order.get("prepay"):
+            lines.append(f"Передплата: {round(float(order.get('prepay') or 0))} ₴")
+        if order.get("prepay_balance_debit"):
+            lines.append(
+                f"Списано з балансу: {round(float(order.get('prepay_balance_debit') or 0))} ₴"
+            )
+        if order.get("own_ttn") and order.get("ttn_number"):
+            lines.append(f"Ваша ТТН: {order.get('ttn_number')}")
+        else:
+            lines.append("ТТН: буде створено пізніше (наступний етап)")
+        lines.append("")
+        lines.append("Товари:")
+        for item in cart[:20]:
+            code = item.get("code") or ""
+            name = item.get("name") or ""
+            qty = item.get("qty") or 1
+            lines.append(f"• {code} — {name} × {qty}")
+        if len(cart) > 20:
+            lines.append(f"… ще {len(cart) - 20}")
+        lines.append("")
+        lines.append("Деталі — у вкладці «Історія замовлень» Mini App.")
+        return "\n".join(lines)
+
+    @app.post("/api/orders")
+    async def create_order(payload: OrderCreateRequest) -> dict:
+        dropper = storage.get_dropper_by_chat(payload.chat_id)
+        if not dropper:
+            raise HTTPException(status_code=404, detail="Дроппера не знайдено")
+        total, prepay, debit = _validate_order_payload(payload, dropper)
+
+        own_ttn = bool(payload.own_ttn)
+        ttn_number = re.sub(r"\D", "", payload.ttn_number or "") if own_ttn else ""
+        if own_ttn:
+            ttn_status = "provided"
+        elif payload.payment_method == "cod":
+            # Створення ТТН через API НП — окремий етап (потрібні реквізити відправника)
+            ttn_status = "pending_create"
+        else:
+            ttn_status = "pending_create"
+
+        safe_cart = []
+        for item in payload.cart:
+            safe_cart.append(
+                {
+                    "product_id": item.get("product_id") or "",
+                    "code": item.get("code") or "",
+                    "name": item.get("name") or "",
+                    "color": item.get("color") or "",
+                    "qty": max(1, int(item.get("qty") or 1)),
+                    "drop_price": item.get("drop_price") or "",
+                    "stock": item.get("stock"),
+                    "photo_url": item.get("photo_url") or "",
+                }
+            )
+
+        order_payload = {
+            "recipient": {
+                "first_name": payload.first_name.strip(),
+                "patronymic": payload.patronymic.strip(),
+                "last_name": payload.last_name.strip(),
+                "phone": payload.phone.strip(),
+            },
+            "delivery": {
+                "method": payload.delivery_method,
+                "city": payload.city,
+                "city_ref": payload.city_ref,
+                "settlement_ref": payload.settlement_ref,
+                "warehouse": payload.warehouse,
+                "warehouse_ref": payload.warehouse_ref,
+                "street": payload.street,
+                "street_ref": payload.street_ref,
+                "house": payload.house,
+                "apartment": payload.apartment,
+                "np_city": payload.np_city,
+                "np_warehouse": payload.np_warehouse,
+                "np_street": payload.np_street,
+            },
+            "payment": {
+                "method": payload.payment_method,
+                "prepay": prepay,
+                "prepay_balance_debit": debit,
+                "receipt_name": payload.receipt_name,
+            },
+            "own_ttn": own_ttn,
+            "ttn_number": ttn_number,
+            "ttn_pdf_name": payload.ttn_pdf_name,
+            "comment": payload.comment.strip(),
+            "cart": safe_cart,
+            "created_by_user_id": payload.user_id.strip(),
+        }
+
+        order = storage.create_order(
+            dropper_id=dropper.id,
+            chat_id=dropper.chat_id,
+            payment_method=payload.payment_method,
+            delivery_method=payload.delivery_method,
+            own_ttn=own_ttn,
+            total=total,
+            prepay=prepay,
+            prepay_balance_debit=debit,
+            ttn_number=ttn_number,
+            ttn_status=ttn_status,
+            payload=order_payload,
+        )
+
+        if debit > 0:
+            storage.add_ledger_entry(
+                dropper_id=dropper.id,
+                amount=-debit,
+                entry_type="prepay_overage_debit",
+                title=f"Передплата понад «Разом» · {order['order_number']}",
+                note="Різниця передплати і суми замовлення",
+                related_order_id=order["order_number"],
+            )
+
+        storage.accrue_referral_from_drop_total(
+            source_dropper_id=dropper.id,
+            drop_total=total,
+            order_id=order["order_number"],
+        )
+
+        try:
+            await _notify(
+                dropper.chat_id,
+                _format_dropper_accept_message(order, dropper),
+            )
+            storage.update_order_flags(order["id"], notify_dropper_status="sent")
+            order = storage.get_order(order["id"]) or order
+        except Exception:
+            logger.exception("Не вдалося повідомити дроппера про заказ %s", order["order_number"])
+            storage.update_order_flags(order["id"], notify_dropper_status="error")
+
+        return {"ok": True, "order": order}
+
+    @app.get("/api/dropper/orders")
+    async def dropper_orders(
+        chat_id: str = Query(..., max_length=64),
+        limit: int = Query(50, ge=1, le=200),
+    ) -> dict:
+        dropper = storage.get_dropper_by_chat(chat_id)
+        if not dropper:
+            raise HTTPException(status_code=404, detail="Дроппера не знайдено")
+        items = storage.list_orders_for_dropper(dropper.id, limit=limit)
+        return {"count": len(items), "items": items}
+
+    @app.get("/api/owner/droppers/{chat_id}/orders")
+    async def owner_dropper_orders(
+        chat_id: str,
+        owner_chat_id: str = Query("", max_length=64),
+        owner_user_id: str = Query("", max_length=64),
+        limit: int = Query(50, ge=1, le=200),
+    ) -> dict:
+        _require_owner(owner_chat_id, owner_user_id)
+        dropper = storage.get_dropper_by_chat(chat_id)
+        if not dropper:
+            raise HTTPException(status_code=404, detail="Дроппера не знайдено")
+        items = storage.list_orders_for_dropper(dropper.id, limit=limit)
+        return {
+            "dropper": dropper.to_dict(),
+            "count": len(items),
+            "items": items,
         }
 
     @app.get("/")

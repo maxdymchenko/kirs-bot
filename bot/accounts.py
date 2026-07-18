@@ -225,6 +225,43 @@ class AppStorage:
                 WHERE related_order_id != ''
                 """
             )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS orders (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    order_number TEXT NOT NULL UNIQUE,
+                    dropper_id INTEGER NOT NULL,
+                    chat_id TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'accepted',
+                    payment_method TEXT NOT NULL DEFAULT '',
+                    delivery_method TEXT NOT NULL DEFAULT '',
+                    own_ttn INTEGER NOT NULL DEFAULT 0,
+                    total REAL NOT NULL DEFAULT 0,
+                    prepay REAL NOT NULL DEFAULT 0,
+                    prepay_balance_debit REAL NOT NULL DEFAULT 0,
+                    cod_amount REAL NOT NULL DEFAULT 0,
+                    ttn_number TEXT NOT NULL DEFAULT '',
+                    ttn_status TEXT NOT NULL DEFAULT 'none',
+                    sheets_sync_status TEXT NOT NULL DEFAULT 'pending',
+                    notify_dropper_status TEXT NOT NULL DEFAULT 'pending',
+                    payload_json TEXT NOT NULL DEFAULT '{}',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_orders_dropper
+                ON orders(dropper_id, id DESC)
+                """
+            )
+            conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_orders_created
+                ON orders(created_at DESC)
+                """
+            )
             conn.commit()
 
     def _row_get(self, row: sqlite3.Row, key: str, default: Any = None) -> Any:
@@ -754,3 +791,172 @@ class AppStorage:
                 }
             )
         return items
+
+    def _row_order(self, row: sqlite3.Row) -> dict[str, Any]:
+        import json
+
+        payload: Any = {}
+        raw = row["payload_json"] or "{}"
+        try:
+            payload = json.loads(raw)
+        except json.JSONDecodeError:
+            payload = {}
+        return {
+            "id": row["id"],
+            "order_number": row["order_number"],
+            "dropper_id": row["dropper_id"],
+            "chat_id": row["chat_id"],
+            "status": row["status"],
+            "payment_method": row["payment_method"] or "",
+            "delivery_method": row["delivery_method"] or "",
+            "own_ttn": bool(row["own_ttn"]),
+            "total": float(row["total"] or 0),
+            "prepay": float(row["prepay"] or 0),
+            "prepay_balance_debit": float(row["prepay_balance_debit"] or 0),
+            "cod_amount": float(row["cod_amount"] or 0),
+            "ttn_number": row["ttn_number"] or "",
+            "ttn_status": row["ttn_status"] or "none",
+            "sheets_sync_status": row["sheets_sync_status"] or "pending",
+            "notify_dropper_status": row["notify_dropper_status"] or "pending",
+            "payload": payload,
+            "created_at": row["created_at"],
+            "updated_at": row["updated_at"],
+        }
+
+    def next_order_number(self) -> str:
+        day = datetime.now(timezone.utc).strftime("%y%m%d")
+        prefix = f"K-{day}-"
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT order_number FROM orders
+                WHERE order_number LIKE ?
+                ORDER BY id DESC LIMIT 1
+                """,
+                (f"{prefix}%",),
+            ).fetchone()
+        seq = 1
+        if row:
+            try:
+                seq = int(str(row["order_number"]).rsplit("-", 1)[-1]) + 1
+            except ValueError:
+                seq = 1
+        return f"{prefix}{seq:04d}"
+
+    def create_order(
+        self,
+        *,
+        dropper_id: int,
+        chat_id: str,
+        payment_method: str,
+        delivery_method: str,
+        own_ttn: bool,
+        total: float,
+        prepay: float,
+        prepay_balance_debit: float,
+        ttn_number: str,
+        ttn_status: str,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        import json
+
+        now = _now()
+        order_number = self.next_order_number()
+        total = max(0.0, float(total or 0))
+        prepay = max(0.0, float(prepay or 0))
+        debit = max(0.0, float(prepay_balance_debit or 0))
+        cod_amount = max(0.0, total - prepay)
+        payload_json = json.dumps(payload, ensure_ascii=False)
+        with self._connect() as conn:
+            cur = conn.execute(
+                """
+                INSERT INTO orders (
+                    order_number, dropper_id, chat_id, status,
+                    payment_method, delivery_method, own_ttn,
+                    total, prepay, prepay_balance_debit, cod_amount,
+                    ttn_number, ttn_status, sheets_sync_status,
+                    notify_dropper_status, payload_json, created_at, updated_at
+                ) VALUES (?, ?, ?, 'accepted', ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 'pending', ?, ?, ?)
+                """,
+                (
+                    order_number,
+                    int(dropper_id),
+                    str(chat_id).strip(),
+                    str(payment_method or "").strip(),
+                    str(delivery_method or "").strip(),
+                    1 if own_ttn else 0,
+                    total,
+                    prepay,
+                    debit,
+                    cod_amount,
+                    str(ttn_number or "").strip(),
+                    str(ttn_status or "none").strip(),
+                    payload_json,
+                    now,
+                    now,
+                ),
+            )
+            order_id = int(cur.lastrowid)
+            conn.commit()
+            row = conn.execute("SELECT * FROM orders WHERE id = ?", (order_id,)).fetchone()
+        return self._row_order(row)
+
+    def update_order_flags(
+        self,
+        order_id: int,
+        *,
+        notify_dropper_status: str | None = None,
+        ttn_status: str | None = None,
+        sheets_sync_status: str | None = None,
+        ttn_number: str | None = None,
+    ) -> dict[str, Any] | None:
+        fields: dict[str, Any] = {"updated_at": _now()}
+        if notify_dropper_status is not None:
+            fields["notify_dropper_status"] = notify_dropper_status
+        if ttn_status is not None:
+            fields["ttn_status"] = ttn_status
+        if sheets_sync_status is not None:
+            fields["sheets_sync_status"] = sheets_sync_status
+        if ttn_number is not None:
+            fields["ttn_number"] = ttn_number
+        if len(fields) == 1:
+            return self.get_order(order_id)
+        sets = ", ".join(f"{k} = ?" for k in fields)
+        values = list(fields.values()) + [int(order_id)]
+        with self._connect() as conn:
+            conn.execute(f"UPDATE orders SET {sets} WHERE id = ?", values)
+            conn.commit()
+        return self.get_order(order_id)
+
+    def get_order(self, order_id: int) -> dict[str, Any] | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM orders WHERE id = ?", (int(order_id),)
+            ).fetchone()
+        return self._row_order(row) if row else None
+
+    def get_order_by_number(self, order_number: str) -> dict[str, Any] | None:
+        key = str(order_number or "").strip()
+        if not key:
+            return None
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM orders WHERE order_number = ?", (key,)
+            ).fetchone()
+        return self._row_order(row) if row else None
+
+    def list_orders_for_dropper(
+        self, dropper_id: int, limit: int = 50
+    ) -> list[dict[str, Any]]:
+        limit = max(1, min(int(limit or 50), 200))
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT * FROM orders
+                WHERE dropper_id = ?
+                ORDER BY id DESC
+                LIMIT ?
+                """,
+                (int(dropper_id), limit),
+            ).fetchall()
+        return [self._row_order(r) for r in rows]

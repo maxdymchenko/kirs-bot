@@ -276,6 +276,16 @@ async def order_menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
                         view="balance",
                     )
                 ],
+                [
+                    _webapp_button(
+                        "Історія замовлень",
+                        webapp_url,
+                        chat_type,
+                        chat_id=chat_id,
+                        user_id=user_id,
+                        view="history",
+                    )
+                ],
             ]
         )
         await update.message.reply_text("Меню:", reply_markup=keyboard)

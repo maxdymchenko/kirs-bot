@@ -71,6 +71,13 @@
     catalogView: document.getElementById("catalogView"),
     cartView: document.getElementById("cartView"),
     checkoutView: document.getElementById("checkoutView"),
+    confirmView: document.getElementById("confirmView"),
+    confirmSummary: document.getElementById("confirmSummary"),
+    confirmError: document.getElementById("confirmError"),
+    confirmBack: document.getElementById("confirmBack"),
+    confirmSubmit: document.getElementById("confirmSubmit"),
+    historyView: document.getElementById("historyView"),
+    ordersHistory: document.getElementById("ordersHistory"),
     mainTabs: document.getElementById("mainTabs"),
     cartList: document.getElementById("cartList"),
     cartEmpty: document.getElementById("cartEmpty"),
@@ -304,6 +311,8 @@
     els.checkoutError.classList.remove("hidden");
   }
 
+  let checkoutDraft = null;
+
   function switchTab(name) {
     closePhotoZoom();
     if (els.mainTabs) {
@@ -314,8 +323,11 @@
     els.mainTabs.classList.remove("hidden");
     els.catalogView.classList.toggle("hidden", name !== "catalog");
     els.cartView.classList.toggle("hidden", name !== "cart");
+    if (els.historyView) els.historyView.classList.toggle("hidden", name !== "history");
     els.checkoutView.classList.add("hidden");
+    if (els.confirmView) els.confirmView.classList.add("hidden");
     if (name === "cart") renderCart();
+    if (name === "history") renderOrdersHistory();
   }
 
   async function openCheckout() {
@@ -323,6 +335,8 @@
     if (!cart.length) return;
     els.catalogView.classList.add("hidden");
     els.cartView.classList.add("hidden");
+    if (els.historyView) els.historyView.classList.add("hidden");
+    if (els.confirmView) els.confirmView.classList.add("hidden");
     els.checkoutView.classList.remove("hidden");
     els.mainTabs.classList.add("hidden");
     document.querySelectorAll(".tab").forEach((tab) => tab.classList.remove("active"));
@@ -1198,8 +1212,281 @@
         return `Передплата не може перевищувати ${Math.round(data.total)} грн`;
       }
       data.prepayBalanceDebit = Math.max(0, Math.round(prepay - Number(data.total || 0)));
+    } else {
+      data.prepayBalanceDebit = 0;
     }
     return "";
+  }
+
+  function paymentMethodLabel(value) {
+    if (value === "cod") return "Оплата при отриманні";
+    if (value === "requisites") return "Оплата на реквізити";
+    return value || "—";
+  }
+
+  function deliveryMethodLabel(value) {
+    if (value === "np_warehouse") return "Відділення / поштомат НП";
+    if (value === "np_courier") return "Курʼєр НП";
+    return value || "—";
+  }
+
+  function formatOrderDate(iso) {
+    if (!iso) return "";
+    try {
+      const d = new Date(iso);
+      if (Number.isNaN(d.getTime())) return iso;
+      return d.toLocaleString("uk-UA", {
+        day: "2-digit",
+        month: "2-digit",
+        year: "numeric",
+        hour: "2-digit",
+        minute: "2-digit",
+      });
+    } catch {
+      return iso;
+    }
+  }
+
+  function renderConfirmSummary(data) {
+    if (!els.confirmSummary) return;
+    const cartLines = (data.cart || [])
+      .map(
+        (item) =>
+          `${item.code || ""} — ${item.name || ""} × ${item.qty || 1} · ${item.drop_price || "—"} ₴`
+      )
+      .join("\n");
+    const deliveryExtra =
+      data.deliveryMethod === "np_courier"
+        ? `${data.street || ""}, буд. ${data.house || ""}${
+            data.apartment ? `, кв. ${data.apartment}` : ""
+          }`
+        : data.warehouse || "";
+    const debit = Number(data.prepayBalanceDebit || 0);
+    els.confirmSummary.innerHTML = `
+      <div class="confirm-block">
+        <div class="confirm-label">Отримувач</div>
+        <div class="confirm-value">${escapeHtml(
+          `${data.lastName} ${data.firstName} ${data.patronymic || ""}`.trim()
+        )}\n${escapeHtml(data.phone)}</div>
+      </div>
+      <div class="confirm-block">
+        <div class="confirm-label">Доставка</div>
+        <div class="confirm-value">${escapeHtml(deliveryMethodLabel(data.deliveryMethod))}
+${escapeHtml(data.city || "")}
+${escapeHtml(deliveryExtra)}</div>
+      </div>
+      <div class="confirm-block">
+        <div class="confirm-label">Оплата</div>
+        <div class="confirm-value">${escapeHtml(paymentMethodLabel(data.paymentMethod))}
+Разом: ${escapeHtml(String(Math.round(data.total || 0)))} ₴
+${
+  data.paymentMethod === "cod"
+    ? `Передплата: ${escapeHtml(String(data.prepay === "" ? 0 : data.prepay))} ₴`
+    : ""
+}
+${debit > 0 ? `З балансу спишеться: ${escapeHtml(String(debit))} ₴` : ""}
+${data.ownTtn ? `Власна ТТН: ${escapeHtml(data.ttnNumber || "")}` : "ТТН: створиться пізніше (НП)"}</div>
+      </div>
+      <div class="confirm-block">
+        <div class="confirm-label">Товари</div>
+        <div class="confirm-value">${escapeHtml(cartLines)}</div>
+      </div>
+      ${
+        data.comment
+          ? `<div class="confirm-block"><div class="confirm-label">Коментар</div><div class="confirm-value">${escapeHtml(
+              data.comment
+            )}</div></div>`
+          : ""
+      }
+    `;
+  }
+
+  function openConfirmView(data) {
+    checkoutDraft = data;
+    els.checkoutView.classList.add("hidden");
+    if (els.confirmView) els.confirmView.classList.remove("hidden");
+    renderConfirmSummary(data);
+    if (els.confirmError) {
+      els.confirmError.classList.add("hidden");
+      els.confirmError.textContent = "";
+    }
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  }
+
+  function buildOrderApiPayload(data) {
+    return {
+      chat_id: currentTelegramChatId(),
+      user_id: currentTelegramUser().user_id,
+      first_name: data.firstName,
+      patronymic: data.patronymic || "",
+      last_name: data.lastName,
+      phone: data.phone,
+      delivery_method: data.deliveryMethod,
+      city: data.city || "",
+      city_ref: data.cityRef,
+      settlement_ref: data.settlementRef || "",
+      warehouse: data.warehouse || "",
+      warehouse_ref: data.warehouseRef || "",
+      street: data.street || "",
+      street_ref: data.streetRef || "",
+      house: data.house || "",
+      apartment: data.apartment || "",
+      own_ttn: Boolean(data.ownTtn),
+      ttn_number: data.ttnNumber || "",
+      payment_method: data.paymentMethod,
+      prepay: data.prepay === "" ? 0 : Number(data.prepay || 0),
+      comment: data.comment || "",
+      receipt_name: data.receiptName || "",
+      ttn_pdf_name: data.ttnPdfName || "",
+      cart: (data.cart || []).map((item) => ({
+        product_id: item.product_id || "",
+        code: item.code || "",
+        name: item.name || "",
+        color: item.color || "",
+        qty: item.qty || 1,
+        drop_price: item.drop_price || "",
+        stock: item.stock,
+        photo_url: item.photo_url || "",
+      })),
+      total: Number(data.total || 0),
+      np_city: data.npCity || null,
+      np_warehouse: data.npWarehouse || null,
+      np_street: data.npStreet || null,
+    };
+  }
+
+  async function submitOrder() {
+    if (!checkoutDraft) return;
+    if (els.confirmSubmit) els.confirmSubmit.disabled = true;
+    if (els.confirmError) {
+      els.confirmError.classList.add("hidden");
+      els.confirmError.textContent = "";
+    }
+    try {
+      const response = await fetch("/api/orders", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(buildOrderApiPayload(checkoutDraft)),
+      });
+      const result = await response.json();
+      if (!response.ok) {
+        throw new Error(
+          typeof result.detail === "string" ? result.detail : "Не вдалося створити замовлення"
+        );
+      }
+      saveCart([]);
+      updateCartIndicators();
+      checkoutDraft = null;
+      const orderNo = result.order?.order_number || "";
+      showToast(orderNo ? `Замовлення ${orderNo} прийнято` : "Замовлення прийнято");
+      safeTgAlert(
+        orderNo
+          ? `Замовлення ${orderNo} прийнято. Деталі — у вкладці «Історія».`
+          : "Замовлення прийнято."
+      );
+      if (els.confirmView) els.confirmView.classList.add("hidden");
+      switchTab("history");
+    } catch (error) {
+      if (els.confirmError) {
+        els.confirmError.textContent = error.message || "Помилка";
+        els.confirmError.classList.remove("hidden");
+      }
+      showToast(error.message || "Помилка відправки");
+    } finally {
+      if (els.confirmSubmit) els.confirmSubmit.disabled = false;
+    }
+  }
+
+  function renderOrderCard(order, { compact = false } = {}) {
+    const payload = order.payload || {};
+    const recipient = payload.recipient || {};
+    const delivery = payload.delivery || {};
+    const cart = payload.cart || [];
+    const name = [recipient.last_name, recipient.first_name, recipient.patronymic]
+      .filter(Boolean)
+      .join(" ");
+    const itemsPreview = cart
+      .slice(0, compact ? 3 : 8)
+      .map((i) => `${i.code || ""} × ${i.qty || 1}`)
+      .join(", ");
+    const more = cart.length > (compact ? 3 : 8) ? ` +${cart.length - (compact ? 3 : 8)}` : "";
+    const ttnLine =
+      order.ttn_number
+        ? `ТТН: ${order.ttn_number}`
+        : order.ttn_status === "pending_create"
+          ? "ТТН: очікує створення"
+          : "ТТН: —";
+    return `
+      <article class="order-card">
+        <div class="order-card-head">
+          <div class="order-card-num">${escapeHtml(order.order_number || "")}</div>
+          <div class="order-card-status">${escapeHtml(order.status || "")}</div>
+        </div>
+        <div class="meta">${escapeHtml(formatOrderDate(order.created_at))}</div>
+        <div class="meta">${escapeHtml(name || "—")} · ${escapeHtml(recipient.phone || "")}</div>
+        <div class="meta">${escapeHtml(delivery.city || "")}</div>
+        <div class="meta">Разом: <b>${escapeHtml(String(Math.round(order.total || 0)))} ₴</b>
+          ${order.prepay ? ` · передплата ${escapeHtml(String(Math.round(order.prepay)))} ₴` : ""}
+        </div>
+        <div class="meta">${escapeHtml(ttnLine)}</div>
+        <div class="meta">${escapeHtml(itemsPreview + more)}</div>
+      </article>
+    `;
+  }
+
+  async function renderOrdersHistory() {
+    if (!els.ordersHistory) return;
+    const chatId = currentTelegramChatId();
+    els.ordersHistory.innerHTML = `<div class="ac-loading">Завантаження історії...</div>`;
+    try {
+      const response = await fetch(
+        `/api/dropper/orders?chat_id=${encodeURIComponent(chatId)}&limit=50`
+      );
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(typeof data.detail === "string" ? data.detail : "Помилка");
+      }
+      const items = data.items || [];
+      els.ordersHistory.innerHTML = items.length
+        ? items.map((o) => renderOrderCard(o)).join("")
+        : `<div class="empty">Поки немає переданих замовлень</div>`;
+    } catch (error) {
+      els.ordersHistory.innerHTML = `<div class="form-error">${escapeHtml(
+        error.message || "Помилка"
+      )}</div>`;
+    }
+  }
+
+  async function loadOwnerDropperOrders(card) {
+    const chatId = card.getAttribute("data-dropper-chat");
+    let box = card.querySelector("[data-owner-orders]");
+    if (!box) {
+      box = document.createElement("div");
+      box.className = "owner-orders";
+      box.setAttribute("data-owner-orders", "1");
+      card.appendChild(box);
+    }
+    box.innerHTML = `<div class="ac-loading">Завантаження замовлень...</div>`;
+    try {
+      const response = await fetch(
+        `/api/owner/droppers/${encodeURIComponent(chatId)}/orders?${ownerAuthParams()}&limit=20`
+      );
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(typeof data.detail === "string" ? data.detail : "Помилка");
+      }
+      const items = data.items || [];
+      box.innerHTML = `
+        <p class="owner-orders-title">Замовлення дроппера (${items.length})</p>
+        ${
+          items.length
+            ? items.map((o) => renderOrderCard(o, { compact: true })).join("")
+            : `<div class="empty">Замовлень ще немає</div>`
+        }
+      `;
+    } catch (error) {
+      box.innerHTML = `<div class="form-error">${escapeHtml(error.message || "Помилка")}</div>`;
+    }
   }
 
   els.searchForm.addEventListener("submit", async (event) => {
@@ -1533,13 +1820,22 @@
       return;
     }
     setCheckoutError("");
-    // Поки що тільки збираємо дані; відправка на бекенд — наступний етап
-    console.log("checkout draft", data);
-    showToast("Дані зібрано. Підтвердження замовлення — наступний етап");
-    safeTgAlert(
-      "Форма заповнена. Далі додамо підтвердження та відправку замовлення."
-    );
+    openConfirmView(data);
   });
+
+  if (els.confirmBack) {
+    els.confirmBack.addEventListener("click", () => {
+      if (els.confirmView) els.confirmView.classList.add("hidden");
+      els.checkoutView.classList.remove("hidden");
+      window.scrollTo({ top: 0, behavior: "smooth" });
+    });
+  }
+
+  if (els.confirmSubmit) {
+    els.confirmSubmit.addEventListener("click", () => {
+      submitOrder();
+    });
+  }
 
   function ownerAuthParams() {
     const chatId = currentTelegramChatId();
@@ -1915,6 +2211,9 @@
         syncPaymentAndTtn();
         updateCartIndicators();
       });
+      if (queryParam("view") === "history") {
+        switchTab("history");
+      }
       return;
     }
     if (mode === "dropper_blocked") {
@@ -2072,6 +2371,9 @@
       if (!card) return;
       const collapsed = card.classList.toggle("is-collapsed");
       toggle.setAttribute("aria-expanded", collapsed ? "false" : "true");
+      if (!collapsed) {
+        loadOwnerDropperOrders(card);
+      }
     });
 
     els.ownerDroppers.addEventListener("change", async (event) => {
