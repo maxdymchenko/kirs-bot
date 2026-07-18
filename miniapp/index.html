@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
   <title>Kirs — Замовлення</title>
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
-  <link rel="stylesheet" href="/static/styles.css?v=20260718ah" />
+  <link rel="stylesheet" href="/static/styles.css?v=20260718ai" />
 </head>
 <body>
   <div class="app">
@@ -56,6 +56,7 @@
         <button type="button" class="tab active" data-owner-tab="droppers">Дроппери</button>
         <button type="button" class="tab" data-owner-tab="staff">Співробітники</button>
         <button type="button" class="tab" data-owner-tab="balances">Баланси</button>
+        <button type="button" class="tab" data-owner-tab="settings">Загальні</button>
         <button type="button" class="tab" data-owner-tab="order">Форма</button>
       </nav>
 
@@ -97,6 +98,85 @@
         <div id="ownerBalances" class="results"></div>
         <h2 class="section-title" style="margin-top:18px">Історія реферальних нарахувань</h2>
         <div id="ownerReferralHistory" class="results"></div>
+      </div>
+
+      <div id="ownerTabSettings" class="owner-panel hidden">
+        <h2 class="section-title">Загальні налаштування</h2>
+        <p class="hint">API НП, відправник, габарити посилки та Google-таблиця замовлень.</p>
+        <form id="generalSettingsForm" novalidate>
+          <div class="form-section">
+            <h3 class="section-title">API-ключі Нової Пошти</h3>
+            <p class="hint">Увімкніть чекбокс біля кабінету — з нього створюватимуться ТТН. «+» додає ще один ключ.</p>
+            <div id="npApiKeysList" class="np-keys-list"></div>
+            <button type="button" class="btn secondary" id="npApiKeyAdd">+ Додати API-ключ</button>
+          </div>
+
+          <div class="form-section">
+            <h3 class="section-title">Відправник (для створення ТТН)</h3>
+            <label class="field">
+              <span class="field-label">Місто відправлення</span>
+              <div class="ac-field" data-ac="sender-city">
+                <input id="senderCity" type="text" autocomplete="off" placeholder="Почніть вводити місто..." />
+                <div class="ac-dropdown hidden" id="senderCityDropdown" role="listbox"></div>
+              </div>
+              <input type="hidden" id="senderCityRef" />
+              <input type="hidden" id="senderSettlementRef" />
+            </label>
+            <label class="field">
+              <span class="field-label">Відділення / склад відправлення</span>
+              <div class="ac-field" data-ac="sender-warehouse">
+                <input id="senderWarehouse" type="text" autocomplete="off" placeholder="Номер або адреса..." />
+                <div class="ac-dropdown hidden" id="senderWarehouseDropdown" role="listbox"></div>
+              </div>
+              <input type="hidden" id="senderWarehouseRef" />
+              <input type="hidden" id="senderWarehouseNumber" />
+            </label>
+          </div>
+
+          <div class="form-section">
+            <h3 class="section-title">Габарити посилки за замовчуванням</h3>
+            <div class="dims-grid">
+              <label class="field compact-field">
+                <span class="field-label">Вага, кг</span>
+                <input id="parcelWeight" type="number" min="0.1" step="0.1" />
+              </label>
+              <label class="field compact-field">
+                <span class="field-label">Довжина, см</span>
+                <input id="parcelLength" type="number" min="1" step="1" />
+              </label>
+              <label class="field compact-field">
+                <span class="field-label">Ширина, см</span>
+                <input id="parcelWidth" type="number" min="1" step="1" />
+              </label>
+              <label class="field compact-field">
+                <span class="field-label">Висота, см</span>
+                <input id="parcelHeight" type="number" min="1" step="1" />
+              </label>
+              <label class="field compact-field">
+                <span class="field-label">Місць</span>
+                <input id="parcelSeats" type="number" min="1" step="1" />
+              </label>
+            </div>
+            <label class="field">
+              <span class="field-label">Опис вантажу</span>
+              <input id="parcelDescription" type="text" placeholder="Товар" />
+            </label>
+          </div>
+
+          <div class="form-section">
+            <h3 class="section-title">Google Sheets (замовлення)</h3>
+            <p class="hint">Лист «Заказы». Структура фіксована — у таблицю пізніше писатимемо всі замовлення.</p>
+            <label class="field">
+              <span class="field-label">Посилання на таблицю</span>
+              <input id="ordersSheetUrl" type="url" placeholder="https://docs.google.com/spreadsheets/d/..." />
+            </label>
+            <div class="info-box" id="ordersSheetColumnsHint"></div>
+          </div>
+
+          <p id="generalSettingsError" class="form-error hidden"></p>
+          <p id="generalSettingsOk" class="hint hidden" style="color:var(--ok)"></p>
+          <button type="submit" class="btn primary block">Зберегти налаштування</button>
+        </form>
       </div>
 
       <div id="ownerTabOrder" class="owner-panel hidden">
@@ -415,6 +495,6 @@
   </div>
 
   <button type="button" id="photoZoomBackdrop" class="photo-zoom-backdrop hidden" aria-label="Закрити фото"></button>
-  <script src="/static/app.js?v=20260718ah"></script>
+  <script src="/static/app.js?v=20260718ai"></script>
 </body>
 </html>

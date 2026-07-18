@@ -262,6 +262,15 @@ class AppStorage:
                 ON orders(created_at DESC)
                 """
             )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS app_settings (
+                    key TEXT PRIMARY KEY,
+                    value_json TEXT NOT NULL DEFAULT '{}',
+                    updated_at TEXT NOT NULL
+                )
+                """
+            )
             conn.commit()
 
     def _row_get(self, row: sqlite3.Row, key: str, default: Any = None) -> Any:
@@ -960,3 +969,172 @@ class AppStorage:
                 (int(dropper_id), limit),
             ).fetchall()
         return [self._row_order(r) for r in rows]
+
+    def default_general_settings(self) -> dict[str, Any]:
+        return {
+            "np_api_keys": [],
+            "sender_city": {
+                "label": "",
+                "city_ref": "",
+                "settlement_ref": "",
+            },
+            "sender_warehouse": {
+                "label": "",
+                "ref": "",
+                "number": "",
+            },
+            "parcel_defaults": {
+                "weight_kg": 0.5,
+                "length_cm": 30,
+                "width_cm": 20,
+                "height_cm": 10,
+                "seats_amount": 1,
+                "description": "Товар",
+            },
+            "orders_spreadsheet_id": "1RYNXnGbXdB0ve7pBy4KD-SdaKAaoLipiKC9vOeGfczE",
+            "orders_spreadsheet_url": (
+                "https://docs.google.com/spreadsheets/d/"
+                "1RYNXnGbXdB0ve7pBy4KD-SdaKAaoLipiKC9vOeGfczE/edit"
+            ),
+            "orders_sheet_title": "Заказы",
+        }
+
+    def get_general_settings(self) -> dict[str, Any]:
+        import json
+
+        defaults = self.default_general_settings()
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT value_json FROM app_settings WHERE key = ?",
+                ("general",),
+            ).fetchone()
+        if not row:
+            return defaults
+        try:
+            data = json.loads(row["value_json"] or "{}")
+        except json.JSONDecodeError:
+            return defaults
+        if not isinstance(data, dict):
+            return defaults
+        merged = {**defaults, **data}
+        # nested defaults
+        for key in ("sender_city", "sender_warehouse", "parcel_defaults"):
+            base = defaults.get(key) or {}
+            cur = data.get(key) if isinstance(data.get(key), dict) else {}
+            merged[key] = {**base, **cur}
+        if not isinstance(merged.get("np_api_keys"), list):
+            merged["np_api_keys"] = []
+        return merged
+
+    def save_general_settings(self, payload: dict[str, Any]) -> dict[str, Any]:
+        import json
+        import re
+        import uuid
+
+        current = self.get_general_settings()
+        keys_in = payload.get("np_api_keys")
+        np_keys: list[dict[str, Any]] = []
+        if isinstance(keys_in, list):
+            for item in keys_in:
+                if not isinstance(item, dict):
+                    continue
+                api_key = str(item.get("api_key") or "").strip()
+                label = str(item.get("label") or "").strip() or "Кабінет НП"
+                enabled = bool(item.get("enabled"))
+                kid = str(item.get("id") or "").strip() or uuid.uuid4().hex[:10]
+                if not api_key and not enabled:
+                    # порожній рядок без ключа — пропускаємо
+                    continue
+                np_keys.append(
+                    {
+                        "id": kid,
+                        "label": label[:80],
+                        "api_key": api_key[:128],
+                        "enabled": enabled,
+                    }
+                )
+
+        city_in = payload.get("sender_city") if isinstance(payload.get("sender_city"), dict) else {}
+        wh_in = (
+            payload.get("sender_warehouse")
+            if isinstance(payload.get("sender_warehouse"), dict)
+            else {}
+        )
+        parcel_in = (
+            payload.get("parcel_defaults")
+            if isinstance(payload.get("parcel_defaults"), dict)
+            else {}
+        )
+
+        def _num(value: Any, default: float) -> float:
+            try:
+                return float(value)
+            except (TypeError, ValueError):
+                return float(default)
+
+        sheet_url = str(
+            payload.get("orders_spreadsheet_url")
+            or current.get("orders_spreadsheet_url")
+            or ""
+        ).strip()
+        sheet_id = str(payload.get("orders_spreadsheet_id") or "").strip()
+        if not sheet_id and sheet_url:
+            m = re.search(r"/spreadsheets/d/([a-zA-Z0-9-_]+)", sheet_url)
+            if m:
+                sheet_id = m.group(1)
+        if not sheet_id:
+            sheet_id = str(current.get("orders_spreadsheet_id") or "")
+
+        saved = {
+            "np_api_keys": np_keys,
+            "sender_city": {
+                "label": str(city_in.get("label") or "").strip()[:200],
+                "city_ref": str(city_in.get("city_ref") or "").strip()[:64],
+                "settlement_ref": str(city_in.get("settlement_ref") or "").strip()[:64],
+            },
+            "sender_warehouse": {
+                "label": str(wh_in.get("label") or "").strip()[:300],
+                "ref": str(wh_in.get("ref") or "").strip()[:64],
+                "number": str(wh_in.get("number") or "").strip()[:32],
+            },
+            "parcel_defaults": {
+                "weight_kg": max(0.1, _num(parcel_in.get("weight_kg"), 0.5)),
+                "length_cm": max(1.0, _num(parcel_in.get("length_cm"), 30)),
+                "width_cm": max(1.0, _num(parcel_in.get("width_cm"), 20)),
+                "height_cm": max(1.0, _num(parcel_in.get("height_cm"), 10)),
+                "seats_amount": max(1, int(_num(parcel_in.get("seats_amount"), 1))),
+                "description": str(parcel_in.get("description") or "Товар").strip()[:120]
+                or "Товар",
+            },
+            "orders_spreadsheet_id": sheet_id[:128],
+            "orders_spreadsheet_url": sheet_url[:500],
+            "orders_sheet_title": str(
+                payload.get("orders_sheet_title")
+                or current.get("orders_sheet_title")
+                or "Заказы"
+            ).strip()[:80]
+            or "Заказы",
+        }
+        now = _now()
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO app_settings (key, value_json, updated_at)
+                VALUES (?, ?, ?)
+                ON CONFLICT(key) DO UPDATE SET
+                    value_json = excluded.value_json,
+                    updated_at = excluded.updated_at
+                """,
+                ("general", json.dumps(saved, ensure_ascii=False), now),
+            )
+            conn.commit()
+        return saved
+
+    def get_enabled_np_api_keys(self) -> list[dict[str, Any]]:
+        settings = self.get_general_settings()
+        keys = settings.get("np_api_keys") or []
+        return [
+            k
+            for k in keys
+            if isinstance(k, dict) and k.get("enabled") and str(k.get("api_key") or "").strip()
+        ]

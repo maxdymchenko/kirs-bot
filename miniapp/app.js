@@ -45,11 +45,33 @@
     ownerTabDroppers: document.getElementById("ownerTabDroppers"),
     ownerTabStaff: document.getElementById("ownerTabStaff"),
     ownerTabBalances: document.getElementById("ownerTabBalances"),
+    ownerTabSettings: document.getElementById("ownerTabSettings"),
     ownerTabOrder: document.getElementById("ownerTabOrder"),
     ownerDroppers: document.getElementById("ownerDroppers"),
     ownerStaff: document.getElementById("ownerStaff"),
     ownerBalances: document.getElementById("ownerBalances"),
     ownerReferralHistory: document.getElementById("ownerReferralHistory"),
+    generalSettingsForm: document.getElementById("generalSettingsForm"),
+    generalSettingsError: document.getElementById("generalSettingsError"),
+    generalSettingsOk: document.getElementById("generalSettingsOk"),
+    npApiKeysList: document.getElementById("npApiKeysList"),
+    npApiKeyAdd: document.getElementById("npApiKeyAdd"),
+    senderCity: document.getElementById("senderCity"),
+    senderCityDropdown: document.getElementById("senderCityDropdown"),
+    senderCityRef: document.getElementById("senderCityRef"),
+    senderSettlementRef: document.getElementById("senderSettlementRef"),
+    senderWarehouse: document.getElementById("senderWarehouse"),
+    senderWarehouseDropdown: document.getElementById("senderWarehouseDropdown"),
+    senderWarehouseRef: document.getElementById("senderWarehouseRef"),
+    senderWarehouseNumber: document.getElementById("senderWarehouseNumber"),
+    parcelWeight: document.getElementById("parcelWeight"),
+    parcelLength: document.getElementById("parcelLength"),
+    parcelWidth: document.getElementById("parcelWidth"),
+    parcelHeight: document.getElementById("parcelHeight"),
+    parcelSeats: document.getElementById("parcelSeats"),
+    parcelDescription: document.getElementById("parcelDescription"),
+    ordersSheetUrl: document.getElementById("ordersSheetUrl"),
+    ordersSheetColumnsHint: document.getElementById("ordersSheetColumnsHint"),
     balanceView: document.getElementById("balanceView"),
     balanceHero: document.getElementById("balanceHero"),
     balanceReferralTotal: document.getElementById("balanceReferralTotal"),
@@ -1864,7 +1886,7 @@ ${data.ownTtn ? `Власна ТТН: ${escapeHtml(data.ttnNumber || "")}` : "Т
   }
 
   function setOwnerTab(tabName) {
-    const allowed = new Set(["droppers", "staff", "balances", "order"]);
+    const allowed = new Set(["droppers", "staff", "balances", "settings", "order"]);
     const name = allowed.has(tabName) ? tabName : "droppers";
     if (els.ownerTabs) {
       els.ownerTabs.querySelectorAll("[data-owner-tab]").forEach((btn) => {
@@ -1880,6 +1902,9 @@ ${data.ownTtn ? `Власна ТТН: ${escapeHtml(data.ttnNumber || "")}` : "Т
     if (els.ownerTabBalances) {
       els.ownerTabBalances.classList.toggle("hidden", name !== "balances");
     }
+    if (els.ownerTabSettings) {
+      els.ownerTabSettings.classList.toggle("hidden", name !== "settings");
+    }
     if (els.ownerTabOrder) {
       els.ownerTabOrder.classList.toggle("hidden", name !== "order");
     }
@@ -1892,7 +1917,9 @@ ${data.ownTtn ? `Власна ТТН: ${escapeHtml(data.ttnNumber || "")}` : "Т
     if (name === "balances") {
       renderOwnerBalances();
     }
-
+    if (name === "settings") {
+      loadGeneralSettings();
+    }
     if (showOrder) {
       loadColorOptions();
       loadDropperSettings().then(() => {
@@ -1945,6 +1972,238 @@ ${data.ownTtn ? `Власна ТТН: ${escapeHtml(data.ttnNumber || "")}` : "Т
       els.balanceLedger.innerHTML = `<div class="form-error">${escapeHtml(
         error.message || "Помилка"
       )}</div>`;
+    }
+  }
+
+  const senderNpState = {
+    city: null,
+    warehouse: null,
+    cityTimer: null,
+    warehouseTimer: null,
+    cityReq: 0,
+    warehouseReq: 0,
+  };
+
+  let generalSettingsState = {
+    np_api_keys: [],
+    sheet_columns: [],
+  };
+
+  function newNpKeyRow(data = {}) {
+    return {
+      id: data.id || `k${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`,
+      label: data.label || "",
+      api_key: data.api_key || "",
+      enabled: Boolean(data.enabled),
+    };
+  }
+
+  function renderNpApiKeys() {
+    if (!els.npApiKeysList) return;
+    const keys = generalSettingsState.np_api_keys || [];
+    if (!keys.length) {
+      generalSettingsState.np_api_keys = [newNpKeyRow({ label: "Кабінет 1" })];
+    }
+    els.npApiKeysList.innerHTML = generalSettingsState.np_api_keys
+      .map(
+        (row, index) => `
+      <div class="np-key-row" data-np-key-index="${index}">
+        <label class="np-key-enabled">
+          <input type="checkbox" data-np-field="enabled" ${row.enabled ? "checked" : ""} />
+          Використовувати для створення ТТН
+        </label>
+        <input type="text" data-np-field="label" placeholder="Назва кабінету" value="${escapeHtml(
+          row.label || ""
+        )}" />
+        <input type="password" data-np-field="api_key" placeholder="API-ключ Нової Пошти" value="${escapeHtml(
+          row.api_key || ""
+        )}" autocomplete="off" />
+        <div class="np-key-actions">
+          <button type="button" class="btn secondary" data-np-remove="${index}">Видалити</button>
+        </div>
+      </div>`
+      )
+      .join("");
+  }
+
+  function collectNpApiKeysFromDom() {
+    if (!els.npApiKeysList) return generalSettingsState.np_api_keys || [];
+    const rows = [...els.npApiKeysList.querySelectorAll(".np-key-row")];
+    return rows.map((row, index) => {
+      const prev = generalSettingsState.np_api_keys[index] || newNpKeyRow();
+      return {
+        id: prev.id,
+        label: row.querySelector('[data-np-field="label"]')?.value?.trim() || "",
+        api_key: row.querySelector('[data-np-field="api_key"]')?.value?.trim() || "",
+        enabled: Boolean(row.querySelector('[data-np-field="enabled"]')?.checked),
+      };
+    });
+  }
+
+  function fillGeneralSettingsForm(settings, sheetColumns) {
+    generalSettingsState.np_api_keys = (settings.np_api_keys || []).map((k) => newNpKeyRow(k));
+    if (!generalSettingsState.np_api_keys.length) {
+      generalSettingsState.np_api_keys = [newNpKeyRow({ label: "Кабінет 1" })];
+    }
+    generalSettingsState.sheet_columns = sheetColumns || [];
+    renderNpApiKeys();
+
+    const city = settings.sender_city || {};
+    const wh = settings.sender_warehouse || {};
+    const parcel = settings.parcel_defaults || {};
+    if (els.senderCity) els.senderCity.value = city.label || "";
+    if (els.senderCityRef) els.senderCityRef.value = city.city_ref || "";
+    if (els.senderSettlementRef) els.senderSettlementRef.value = city.settlement_ref || "";
+    if (els.senderWarehouse) els.senderWarehouse.value = wh.label || "";
+    if (els.senderWarehouseRef) els.senderWarehouseRef.value = wh.ref || "";
+    if (els.senderWarehouseNumber) els.senderWarehouseNumber.value = wh.number || "";
+    senderNpState.city = city.city_ref
+      ? {
+          label: city.label || "",
+          city_ref: city.city_ref || "",
+          settlement_ref: city.settlement_ref || "",
+        }
+      : null;
+    senderNpState.warehouse = wh.ref
+      ? { label: wh.label || "", ref: wh.ref || "", number: wh.number || "" }
+      : null;
+
+    if (els.parcelWeight) els.parcelWeight.value = parcel.weight_kg ?? 0.5;
+    if (els.parcelLength) els.parcelLength.value = parcel.length_cm ?? 30;
+    if (els.parcelWidth) els.parcelWidth.value = parcel.width_cm ?? 20;
+    if (els.parcelHeight) els.parcelHeight.value = parcel.height_cm ?? 10;
+    if (els.parcelSeats) els.parcelSeats.value = parcel.seats_amount ?? 1;
+    if (els.parcelDescription) els.parcelDescription.value = parcel.description || "Товар";
+    if (els.ordersSheetUrl) {
+      els.ordersSheetUrl.value =
+        settings.orders_spreadsheet_url ||
+        (settings.orders_spreadsheet_id
+          ? `https://docs.google.com/spreadsheets/d/${settings.orders_spreadsheet_id}/edit`
+          : "");
+    }
+    if (els.ordersSheetColumnsHint) {
+      const cols = generalSettingsState.sheet_columns || [];
+      els.ordersSheetColumnsHint.innerHTML = cols.length
+        ? `<b>Колонки листа «Заказы»:</b> ${escapeHtml(cols.join(" · "))}`
+        : "Колонки підвантажаться після збереження/відкриття.";
+    }
+  }
+
+  async function loadGeneralSettings() {
+    if (els.generalSettingsError) {
+      els.generalSettingsError.classList.add("hidden");
+      els.generalSettingsError.textContent = "";
+    }
+    if (els.generalSettingsOk) els.generalSettingsOk.classList.add("hidden");
+    try {
+      const response = await fetch(`/api/owner/settings?${ownerAuthParams()}`);
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(typeof data.detail === "string" ? data.detail : "Помилка налаштувань");
+      }
+      fillGeneralSettingsForm(data.settings || {}, data.sheet_columns || []);
+    } catch (error) {
+      if (els.generalSettingsError) {
+        els.generalSettingsError.textContent = error.message || "Помилка";
+        els.generalSettingsError.classList.remove("hidden");
+      }
+    }
+  }
+
+  function collectGeneralSettingsPayload() {
+    return {
+      ...ownerAuthBody(),
+      np_api_keys: collectNpApiKeysFromDom(),
+      sender_city: {
+        label: els.senderCity?.value?.trim() || "",
+        city_ref: els.senderCityRef?.value?.trim() || "",
+        settlement_ref: els.senderSettlementRef?.value?.trim() || "",
+      },
+      sender_warehouse: {
+        label: els.senderWarehouse?.value?.trim() || "",
+        ref: els.senderWarehouseRef?.value?.trim() || "",
+        number: els.senderWarehouseNumber?.value?.trim() || "",
+      },
+      parcel_defaults: {
+        weight_kg: Number(els.parcelWeight?.value || 0.5),
+        length_cm: Number(els.parcelLength?.value || 30),
+        width_cm: Number(els.parcelWidth?.value || 20),
+        height_cm: Number(els.parcelHeight?.value || 10),
+        seats_amount: Number(els.parcelSeats?.value || 1),
+        description: els.parcelDescription?.value?.trim() || "Товар",
+      },
+      orders_spreadsheet_url: els.ordersSheetUrl?.value?.trim() || "",
+    };
+  }
+
+  async function searchSenderCities(query) {
+    const reqId = ++senderNpState.cityReq;
+    showDropdownMessage(els.senderCityDropdown, "Шукаємо...", "ac-loading");
+    try {
+      const response = await fetch(
+        `/api/np/settlements?q=${encodeURIComponent(query)}&limit=20`
+      );
+      const data = await response.json();
+      if (reqId !== senderNpState.cityReq) return;
+      if (!response.ok) {
+        throw new Error(typeof data.detail === "string" ? data.detail : "Помилка");
+      }
+      const items = data.items || [];
+      if (!items.length) {
+        showDropdownMessage(els.senderCityDropdown, "Нічого не знайдено");
+        return;
+      }
+      els.senderCityDropdown.innerHTML = items
+        .map((item, index) => {
+          const title = item.label || item.present || "";
+          return `<button type="button" class="ac-option" data-sender-city-index="${index}"><span>${escapeHtml(
+            title
+          )}</span></button>`;
+        })
+        .join("");
+      els.senderCityDropdown.dataset.items = JSON.stringify(items);
+      els.senderCityDropdown.classList.remove("hidden");
+    } catch (error) {
+      if (reqId !== senderNpState.cityReq) return;
+      showDropdownMessage(els.senderCityDropdown, error.message || "Помилка");
+    }
+  }
+
+  async function searchSenderWarehouses(query) {
+    const cityRef = senderNpState.city?.city_ref || els.senderCityRef?.value;
+    if (!cityRef) return;
+    const reqId = ++senderNpState.warehouseReq;
+    showDropdownMessage(els.senderWarehouseDropdown, "Шукаємо...", "ac-loading");
+    try {
+      const q = normalizeWarehouseQuery(query);
+      const response = await fetch(
+        `/api/np/warehouses?city_ref=${encodeURIComponent(cityRef)}&q=${encodeURIComponent(
+          q
+        )}&limit=20`
+      );
+      const data = await response.json();
+      if (reqId !== senderNpState.warehouseReq) return;
+      if (!response.ok) {
+        throw new Error(typeof data.detail === "string" ? data.detail : "Помилка");
+      }
+      const items = data.items || [];
+      if (!items.length) {
+        showDropdownMessage(els.senderWarehouseDropdown, "Нічого не знайдено");
+        return;
+      }
+      els.senderWarehouseDropdown.innerHTML = items
+        .map((item, index) => {
+          const title = item.label || item.description || "";
+          return `<button type="button" class="ac-option" data-sender-wh-index="${index}"><span>${escapeHtml(
+            title
+          )}</span></button>`;
+        })
+        .join("");
+      els.senderWarehouseDropdown.dataset.items = JSON.stringify(items);
+      els.senderWarehouseDropdown.classList.remove("hidden");
+    } catch (error) {
+      if (reqId !== senderNpState.warehouseReq) return;
+      showDropdownMessage(els.senderWarehouseDropdown, error.message || "Помилка");
     }
   }
 
@@ -2320,6 +2579,159 @@ ${data.ownTtn ? `Власна ТТН: ${escapeHtml(data.ttnNumber || "")}` : "Т
       setOwnerTab(btn.getAttribute("data-owner-tab"));
     });
   }
+
+  if (els.npApiKeyAdd) {
+    els.npApiKeyAdd.addEventListener("click", () => {
+      generalSettingsState.np_api_keys = collectNpApiKeysFromDom();
+      generalSettingsState.np_api_keys.push(
+        newNpKeyRow({ label: `Кабінет ${generalSettingsState.np_api_keys.length + 1}` })
+      );
+      renderNpApiKeys();
+    });
+  }
+
+  if (els.npApiKeysList) {
+    els.npApiKeysList.addEventListener("click", (event) => {
+      const removeBtn = event.target.closest("[data-np-remove]");
+      if (!removeBtn) return;
+      const index = Number(removeBtn.getAttribute("data-np-remove"));
+      generalSettingsState.np_api_keys = collectNpApiKeysFromDom();
+      generalSettingsState.np_api_keys.splice(index, 1);
+      if (!generalSettingsState.np_api_keys.length) {
+        generalSettingsState.np_api_keys = [newNpKeyRow({ label: "Кабінет 1" })];
+      }
+      renderNpApiKeys();
+    });
+  }
+
+  if (els.generalSettingsForm) {
+    els.generalSettingsForm.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      if (els.generalSettingsError) {
+        els.generalSettingsError.classList.add("hidden");
+        els.generalSettingsError.textContent = "";
+      }
+      if (els.generalSettingsOk) els.generalSettingsOk.classList.add("hidden");
+      try {
+        const response = await fetch("/api/owner/settings", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(collectGeneralSettingsPayload()),
+        });
+        const data = await response.json();
+        if (!response.ok) {
+          throw new Error(typeof data.detail === "string" ? data.detail : "Помилка збереження");
+        }
+        fillGeneralSettingsForm(data.settings || {}, generalSettingsState.sheet_columns || []);
+        if (els.generalSettingsOk) {
+          els.generalSettingsOk.textContent = `Збережено. Увімкнених API-ключів НП: ${
+            data.enabled_np_keys_count || 0
+          }`;
+          els.generalSettingsOk.classList.remove("hidden");
+        }
+        showToast("Загальні налаштування збережено");
+      } catch (error) {
+        if (els.generalSettingsError) {
+          els.generalSettingsError.textContent = error.message || "Помилка";
+          els.generalSettingsError.classList.remove("hidden");
+        }
+      }
+    });
+  }
+
+  if (els.senderCity) {
+    els.senderCity.addEventListener("input", () => {
+      senderNpState.city = null;
+      if (els.senderCityRef) els.senderCityRef.value = "";
+      if (els.senderSettlementRef) els.senderSettlementRef.value = "";
+      senderNpState.warehouse = null;
+      if (els.senderWarehouse) els.senderWarehouse.value = "";
+      if (els.senderWarehouseRef) els.senderWarehouseRef.value = "";
+      if (els.senderWarehouseNumber) els.senderWarehouseNumber.value = "";
+      clearTimeout(senderNpState.cityTimer);
+      const q = els.senderCity.value.trim();
+      if (q.length < 2) {
+        hideDropdown(els.senderCityDropdown);
+        return;
+      }
+      senderNpState.cityTimer = setTimeout(() => searchSenderCities(q), 280);
+    });
+  }
+
+  if (els.senderCityDropdown) {
+    els.senderCityDropdown.addEventListener("mousedown", (event) => {
+      const btn = event.target.closest("[data-sender-city-index]");
+      if (!btn) return;
+      event.preventDefault();
+      try {
+        const items = JSON.parse(els.senderCityDropdown.dataset.items || "[]");
+        const item = items[Number(btn.dataset.senderCityIndex)];
+        if (!item) return;
+        senderNpState.city = item;
+        els.senderCity.value = item.label || item.present || "";
+        els.senderCityRef.value = item.city_ref || "";
+        els.senderSettlementRef.value = item.settlement_ref || "";
+        hideDropdown(els.senderCityDropdown);
+        senderNpState.warehouse = null;
+        if (els.senderWarehouse) els.senderWarehouse.value = "";
+        if (els.senderWarehouseRef) els.senderWarehouseRef.value = "";
+        if (els.senderWarehouseNumber) els.senderWarehouseNumber.value = "";
+      } catch {
+        showToast("Не вдалося обрати місто");
+      }
+    });
+  }
+
+  if (els.senderWarehouse) {
+    els.senderWarehouse.addEventListener("input", () => {
+      senderNpState.warehouse = null;
+      if (els.senderWarehouseRef) els.senderWarehouseRef.value = "";
+      if (els.senderWarehouseNumber) els.senderWarehouseNumber.value = "";
+      clearTimeout(senderNpState.warehouseTimer);
+      const q = els.senderWarehouse.value.trim();
+      if (!(senderNpState.city?.city_ref || els.senderCityRef?.value)) return;
+      senderNpState.warehouseTimer = setTimeout(
+        () => searchSenderWarehouses(q),
+        q ? 220 : 0
+      );
+    });
+    els.senderWarehouse.addEventListener("focus", () => {
+      if (!(senderNpState.city?.city_ref || els.senderCityRef?.value)) return;
+      searchSenderWarehouses(els.senderWarehouse.value || "");
+    });
+  }
+
+  if (els.senderWarehouseDropdown) {
+    els.senderWarehouseDropdown.addEventListener("mousedown", (event) => {
+      const btn = event.target.closest("[data-sender-wh-index]");
+      if (!btn) return;
+      event.preventDefault();
+      try {
+        const items = JSON.parse(els.senderWarehouseDropdown.dataset.items || "[]");
+        const item = items[Number(btn.dataset.senderWhIndex)];
+        if (!item) return;
+        senderNpState.warehouse = item;
+        els.senderWarehouse.value = item.label || item.description || "";
+        els.senderWarehouseRef.value = item.ref || "";
+        els.senderWarehouseNumber.value = item.number || "";
+        hideDropdown(els.senderWarehouseDropdown);
+      } catch {
+        showToast("Не вдалося обрати відділення");
+      }
+    });
+  }
+
+  document.addEventListener("click", (event) => {
+    if (els.senderCityDropdown && !event.target.closest('[data-ac="sender-city"]')) {
+      hideDropdown(els.senderCityDropdown);
+    }
+    if (
+      els.senderWarehouseDropdown &&
+      !event.target.closest('[data-ac="sender-warehouse"]')
+    ) {
+      hideDropdown(els.senderWarehouseDropdown);
+    }
+  });
 
   if (els.staffForm) {
     els.staffForm.addEventListener("submit", async (event) => {

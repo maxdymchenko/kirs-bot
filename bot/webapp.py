@@ -94,6 +94,18 @@ class OrderCreateRequest(BaseModel):
     np_street: dict | None = None
 
 
+class GeneralSettingsUpdateRequest(BaseModel):
+    owner_chat_id: str = Field("", max_length=64)
+    owner_user_id: str = Field("", max_length=64)
+    np_api_keys: list[dict] = Field(default_factory=list)
+    sender_city: dict = Field(default_factory=dict)
+    sender_warehouse: dict = Field(default_factory=dict)
+    parcel_defaults: dict = Field(default_factory=dict)
+    orders_spreadsheet_url: str = Field("", max_length=500)
+    orders_spreadsheet_id: str = Field("", max_length=128)
+    orders_sheet_title: str = Field("Заказы", max_length=80)
+
+
 def _apply_dropper_discount(price_raw: str, percent: float) -> tuple[str, str | None]:
     """Повертає (ціна_для_показу, оригінал_або_None)."""
     if not percent or percent <= 0:
@@ -801,6 +813,65 @@ def create_web_app(
             "dropper": dropper.to_dict(),
             "count": len(items),
             "items": items,
+        }
+
+    @app.get("/api/owner/settings")
+    async def get_owner_settings(
+        owner_chat_id: str = Query("", max_length=64),
+        owner_user_id: str = Query("", max_length=64),
+    ) -> dict:
+        _require_owner(owner_chat_id, owner_user_id)
+        settings = storage.get_general_settings()
+        enabled = storage.get_enabled_np_api_keys()
+        return {
+            "settings": settings,
+            "enabled_np_keys_count": len(enabled),
+            "sheet_columns": [
+                "Дата",
+                "№ Заказа",
+                "Оплата",
+                "Служба доставки",
+                "Название товара",
+                "Код",
+                "Цвет/модель",
+                "Кол-во",
+                "Цена продажи, грн",
+                "Дроп цена, грн",
+                "Источник заказа",
+                "Данные клиента",
+                "ТТН",
+                "Статус",
+                "Примечание",
+                "Чек",
+                "Рассчет с дроппером",
+                "Расположение товара на складе",
+            ],
+            "note": (
+                "Увімкнені API-ключі НП будуть використовуватися для створення ТТН. "
+                "Поки береться перший увімкнений ключ."
+            ),
+        }
+
+    @app.post("/api/owner/settings")
+    async def save_owner_settings(payload: GeneralSettingsUpdateRequest) -> dict:
+        _require_owner(payload.owner_chat_id, payload.owner_user_id)
+        saved = storage.save_general_settings(
+            {
+                "np_api_keys": payload.np_api_keys,
+                "sender_city": payload.sender_city,
+                "sender_warehouse": payload.sender_warehouse,
+                "parcel_defaults": payload.parcel_defaults,
+                "orders_spreadsheet_url": payload.orders_spreadsheet_url,
+                "orders_spreadsheet_id": payload.orders_spreadsheet_id,
+                "orders_sheet_title": payload.orders_sheet_title,
+            }
+        )
+        return {
+            "ok": True,
+            "settings": saved,
+            "enabled_np_keys_count": len(
+                [k for k in saved.get("np_api_keys", []) if k.get("enabled") and k.get("api_key")]
+            ),
         }
 
     @app.get("/")
