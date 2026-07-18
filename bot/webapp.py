@@ -194,6 +194,7 @@ def create_web_app(
                 }
                 for r in storage.list_referrals(db_dropper.id)
             ]
+            data["balance"] = storage.get_balance(db_dropper.id)
             return data
         yaml_dropper = _yaml_dropper(chat_id)
         if yaml_dropper:
@@ -491,7 +492,7 @@ def create_web_app(
     async def search_warehouses(
         city_ref: str = Query(..., min_length=10, max_length=64),
         q: str = Query("", max_length=100),
-        limit: int = Query(200, ge=1, le=500),
+        limit: int = Query(30, ge=1, le=500),
     ) -> dict:
         if not np_client.configured():
             raise HTTPException(status_code=503, detail="NOVA_POSHTA_API_KEY не налаштовано")

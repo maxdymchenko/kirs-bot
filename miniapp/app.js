@@ -80,6 +80,7 @@
     cartBadge: document.getElementById("cartBadge"),
     cartChipText: document.getElementById("cartChipText"),
     cartChip: document.getElementById("cartChip"),
+    photoZoomBackdrop: document.getElementById("photoZoomBackdrop"),
     checkoutBtn: document.getElementById("checkoutBtn"),
     checkoutBack: document.getElementById("checkoutBack"),
     checkoutForm: document.getElementById("checkoutForm"),
@@ -103,7 +104,7 @@
     codPaymentCard: document.getElementById("codPaymentCard"),
     requisitesPaymentCard: document.getElementById("requisitesPaymentCard"),
     prepayBlock: document.getElementById("prepayBlock"),
-    prepayMaxLabel: document.getElementById("prepayMaxLabel"),
+    prepayHint: document.getElementById("prepayHint"),
     prepay: document.getElementById("prepay"),
     requisitesBlock: document.getElementById("requisitesBlock"),
     requisitesDetails: document.getElementById("requisitesDetails"),
@@ -130,6 +131,7 @@
     allow_balance_payment: false,
     allow_negative_balance: false,
     negative_balance_limit: 0,
+    balance: 0,
     extra_discount_percent: 0,
     orders_disabled: false,
     referral_code: "",
@@ -152,6 +154,7 @@
   const npState = {
     city: null,
     warehouse: null,
+    warehouseCache: { cityRef: "", query: "", items: [] },
     street: null,
     cityTimer: null,
     warehouseTimer: null,
@@ -302,6 +305,7 @@
   }
 
   function switchTab(name) {
+    closePhotoZoom();
     if (els.mainTabs) {
       els.mainTabs.querySelectorAll("[data-tab]").forEach((tab) => {
         tab.classList.toggle("active", tab.dataset.tab === name);
@@ -394,6 +398,7 @@
 
   function clearWarehouseSelection({ keepText = true } = {}) {
     npState.warehouse = null;
+    npState.warehouseCache = { cityRef: "", query: "", items: [] };
     els.warehouseRef.value = "";
     if (!keepText) els.warehouse.value = "";
     markSelected(els.warehouse, false);
@@ -516,14 +521,35 @@
     }
   }
 
+  function normalizeWarehouseQuery(value) {
+    return String(value || "")
+      .trim()
+      .replace(/^(?:№|#|no\.?)\s*/i, "")
+      .replace(/^(?:відділення|отделение|поштомат|почтомат)\s*/i, "")
+      .trim();
+  }
+
   async function searchWarehouses(query) {
     const cityRef = npState.city?.city_ref || els.cityRef.value;
     if (!cityRef) return;
+    const q = normalizeWarehouseQuery(query);
+    const limit = q ? 10 : 20;
+
+    if (
+      npState.warehouseCache.cityRef === cityRef &&
+      npState.warehouseCache.query === q &&
+      Array.isArray(npState.warehouseCache.items) &&
+      npState.warehouseCache.items.length
+    ) {
+      renderWarehouseOptions(npState.warehouseCache.items);
+      return;
+    }
+
     const reqId = ++npState.warehouseReq;
     showDropdownMessage(els.warehouseDropdown, "Шукаємо...", "ac-loading");
     try {
       const response = await fetch(
-        `/api/np/warehouses?city_ref=${encodeURIComponent(cityRef)}&q=${encodeURIComponent(query)}&limit=200`
+        `/api/np/warehouses?city_ref=${encodeURIComponent(cityRef)}&q=${encodeURIComponent(q)}&limit=${limit}`
       );
       const data = await response.json();
       if (reqId !== npState.warehouseReq) return;
@@ -532,7 +558,9 @@
           typeof data.detail === "string" ? data.detail : "Помилка пошуку відділень"
         );
       }
-      renderWarehouseOptions(data.items || []);
+      const items = data.items || [];
+      npState.warehouseCache = { cityRef, query: q, items };
+      renderWarehouseOptions(items);
     } catch (error) {
       if (reqId !== npState.warehouseReq) return;
       showDropdownMessage(
@@ -556,8 +584,9 @@
     clearTimeout(npState.warehouseTimer);
     const query = value.trim();
     if (!npState.city?.city_ref && !els.cityRef.value) return;
-    // Порожній запит = показати всі доступні відділення в місті
-    npState.warehouseTimer = setTimeout(() => searchWarehouses(query), query ? 280 : 0);
+    // Порожній запит = показати перші відділення; з номером — коротший debounce
+    const delay = query ? 220 : 0;
+    npState.warehouseTimer = setTimeout(() => searchWarehouses(query), delay);
   }
 
   function renderStreetOptions(items) {
@@ -681,6 +710,7 @@
       dropperSettings.allow_balance_payment = Boolean(data.allow_balance_payment);
       dropperSettings.allow_negative_balance = Boolean(data.allow_negative_balance);
       dropperSettings.negative_balance_limit = Number(data.negative_balance_limit || 0);
+      dropperSettings.balance = Number(data.balance || 0);
       dropperSettings.extra_discount_percent = Number(data.extra_discount_percent || 0);
       dropperSettings.orders_disabled = Boolean(data.orders_disabled);
       dropperSettings.referral_code = data.referral_code || "";
@@ -692,6 +722,7 @@
       dropperSettings.allow_balance_payment = false;
       dropperSettings.allow_negative_balance = false;
       dropperSettings.negative_balance_limit = 0;
+      dropperSettings.balance = 0;
       dropperSettings.extra_discount_percent = 0;
       dropperSettings.orders_disabled = false;
     }
@@ -790,6 +821,42 @@
     els.payAmountLabel = document.getElementById("payAmountLabel");
   }
 
+  function balanceSpendRoom() {
+    if (!dropperSettings.allow_balance_payment) return 0;
+    const balance = Number(dropperSettings.balance || 0);
+    const floor = dropperSettings.allow_negative_balance
+      ? -Math.max(0, Number(dropperSettings.negative_balance_limit || 0))
+      : 0;
+    return Math.max(0, Math.floor(balance - floor));
+  }
+
+  function maxPrepayAmount(orderTotal) {
+    const total = Math.max(0, Math.round(Number(orderTotal) || 0));
+    return total + balanceSpendRoom();
+  }
+
+  function updatePrepayUi(orderTotal) {
+    if (!els.prepay || !els.prepayHint) return;
+    const total = Math.max(0, Math.round(Number(orderTotal) || 0));
+    const maxPrepay = maxPrepayAmount(total);
+    const room = balanceSpendRoom();
+    els.prepay.max = String(maxPrepay);
+    if (dropperSettings.allow_balance_payment && room > 0) {
+      els.prepayHint.innerHTML =
+        `Якщо отримувач вніс передплату, вкажіть суму для вирахування з накладеного платежу. ` +
+        `До «Разом» (${escapeHtml(String(total))} грн) можна вказати більше — до ` +
+        `<b>${escapeHtml(String(maxPrepay))} грн</b>. Різниця спишеться з балансу дроппера` +
+        (dropperSettings.allow_negative_balance
+          ? ` (доступно ще ${escapeHtml(String(room))} грн з урахуванням ліміту мінусу).`
+          : ` (доступно на балансі: ${escapeHtml(String(room))} грн).`);
+    } else {
+      els.prepayHint.innerHTML =
+        `Якщо отримувач вніс передплату, вкажіть суму яку необхідно вирахувати із накладеного ` +
+        `платежу замовлення. Сума не може перевищувати суму «Разом» ` +
+        `(<b>${escapeHtml(String(total))}</b> грн).`;
+    }
+  }
+
   function syncPaymentAndTtn() {
     const ownTtn = Boolean(els.ownTtn.checked);
     els.ttnFields.classList.toggle("hidden", !ownTtn);
@@ -814,8 +881,7 @@
     els.ttnPdfField.classList.toggle("hidden", !ownTtn);
 
     const total = Math.round(cartMoneyTotal());
-    els.prepayMaxLabel.textContent = String(total);
-    els.prepay.max = String(total);
+    updatePrepayUi(total);
     updateRequisitesIntro(total);
   }
 
@@ -862,7 +928,29 @@
     return currentQty < max;
   }
 
+  function closePhotoZoom() {
+    document.querySelectorAll(".card-photo.is-zoomed").forEach((img) => {
+      img.classList.remove("is-zoomed");
+    });
+    if (els.photoZoomBackdrop) {
+      els.photoZoomBackdrop.classList.add("hidden");
+    }
+  }
+
+  function togglePhotoZoom(img) {
+    if (!img || !img.getAttribute("src")) return;
+    const wasZoomed = img.classList.contains("is-zoomed");
+    closePhotoZoom();
+    if (!wasZoomed) {
+      img.classList.add("is-zoomed");
+      if (els.photoZoomBackdrop) {
+        els.photoZoomBackdrop.classList.remove("hidden");
+      }
+    }
+  }
+
   function renderResults(items) {
+    closePhotoZoom();
     if (!items.length) {
       els.results.innerHTML = "";
       els.status.textContent = "Нічого не знайдено за цим кодом";
@@ -888,7 +976,7 @@
         const disabled = outOfStock || atLimit ? "disabled" : "";
         return `
           <article class="card">
-            <img src="${photo || ""}" alt="" onerror="this.style.opacity=0.2" />
+            <img class="card-photo" src="${photo || ""}" alt="" draggable="false" onerror="this.style.opacity=0.2" />
             <div class="card-body">
               <div class="card-title">${escapeHtml(item.name || "")}</div>
               <div class="meta">Код: <b>${escapeHtml(item.code || "")}</b> · ${escapeHtml(item.color || "без кольору")}</div>
@@ -918,6 +1006,7 @@
   }
 
   function renderCart() {
+    closePhotoZoom();
     let cart = sanitizeCart(loadCart());
     saveCart(cart);
 
@@ -942,7 +1031,7 @@
         const plusDisabled = canAddMore(item, qty) ? "" : "disabled";
         return `
           <article class="card">
-            <img src="${photo}" alt="" onerror="this.style.opacity=0.2" />
+            <img class="card-photo" src="${photo}" alt="" draggable="false" onerror="this.style.opacity=0.2" />
             <div class="card-body">
               <div class="card-title">${escapeHtml(item.name || "")}</div>
               <div class="meta">Код: <b>${escapeHtml(item.code || "")}</b> · ${escapeHtml(item.color || "без кольору")}</div>
@@ -1101,9 +1190,14 @@
       if (Number.isNaN(prepay) || prepay < 0) {
         return "Некоректна сума передплати";
       }
-      if (prepay > data.total) {
+      const maxPrepay = maxPrepayAmount(data.total);
+      if (prepay > maxPrepay) {
+        if (dropperSettings.allow_balance_payment) {
+          return `Передплата не може перевищувати ${Math.round(maxPrepay)} грн (Разом + доступний баланс)`;
+        }
         return `Передплата не може перевищувати ${Math.round(data.total)} грн`;
       }
+      data.prepayBalanceDebit = Math.max(0, Math.round(prepay - Number(data.total || 0)));
     }
     return "";
   }
@@ -1187,18 +1281,35 @@
   });
 
   els.results.addEventListener("click", (event) => {
+    const photo = event.target.closest("img.card-photo");
+    if (photo && els.results.contains(photo)) {
+      event.preventDefault();
+      togglePhotoZoom(photo);
+      return;
+    }
     const btn = event.target.closest("[data-add]");
     if (!btn || btn.disabled) return;
     try {
       const item = JSON.parse(decodeURIComponent(btn.getAttribute("data-add")));
       addToCart(item);
       updateCartIndicators();
+      btn.classList.remove("is-flash");
+      // force reflow so repeated taps still animate
+      void btn.offsetWidth;
+      btn.classList.add("is-flash");
+      window.setTimeout(() => btn.classList.remove("is-flash"), 280);
     } catch {
       showToast("Не вдалося додати товар");
     }
   });
 
   els.cartList.addEventListener("click", (event) => {
+    const photo = event.target.closest("img.card-photo");
+    if (photo && els.cartList.contains(photo)) {
+      event.preventDefault();
+      togglePhotoZoom(photo);
+      return;
+    }
     const cart = loadCart();
     const dec = event.target.closest("[data-dec]");
     const inc = event.target.closest("[data-inc]");
@@ -1230,6 +1341,10 @@
       renderCart();
     }
   });
+
+  if (els.photoZoomBackdrop) {
+    els.photoZoomBackdrop.addEventListener("click", () => closePhotoZoom());
+  }
 
   document.querySelectorAll(".tab").forEach((tab) => {
     tab.addEventListener("click", () => switchTab(tab.dataset.tab));
@@ -1681,7 +1796,9 @@
                   </span>
                 </span>
               </label>
-              <label class="setting-row is-nested">
+              <label class="setting-row is-nested${
+                d.allow_negative_balance ? "" : " is-disabled"
+              }" data-negative-limit-row>
                 <span class="setting-copy">
                   <span class="setting-label">Ліміт мінусу</span>
                   <span class="setting-hint">Максимальний борг, ₴</span>
@@ -1689,7 +1806,8 @@
                 <span class="setting-control">
                   <input class="setting-input" type="number" min="0" step="1"
                     data-rule-num="negative_balance_limit"
-                    value="${escapeHtml(String(d.negative_balance_limit || 0))}" />
+                    value="${escapeHtml(String(d.negative_balance_limit || 0))}"
+                    ${d.allow_negative_balance ? "" : "disabled"} />
                 </span>
               </label>
               <label class="setting-row">
@@ -1964,12 +2082,31 @@
       if (check) {
         const key = check.getAttribute("data-rule");
         const prev = !check.checked;
+        if (key === "allow_negative_balance") {
+          const limitRow = card.querySelector("[data-negative-limit-row]");
+          const limitInput = card.querySelector('[data-rule-num="negative_balance_limit"]');
+          if (limitRow && limitInput) {
+            const enabled = Boolean(check.checked);
+            limitRow.classList.toggle("is-disabled", !enabled);
+            limitInput.disabled = !enabled;
+          }
+        }
         await persistRule(card, { [key]: Boolean(check.checked) }, () => {
           check.checked = prev;
+          if (key === "allow_negative_balance") {
+            const limitRow = card.querySelector("[data-negative-limit-row]");
+            const limitInput = card.querySelector('[data-rule-num="negative_balance_limit"]');
+            if (limitRow && limitInput) {
+              const enabled = Boolean(check.checked);
+              limitRow.classList.toggle("is-disabled", !enabled);
+              limitInput.disabled = !enabled;
+            }
+          }
         });
         return;
       }
       if (num) {
+        if (num.disabled) return;
         const key = num.getAttribute("data-rule-num");
         let value = Number(num.value);
         if (!Number.isFinite(value) || value < 0) value = 0;

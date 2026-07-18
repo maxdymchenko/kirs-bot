@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
@@ -13,6 +14,10 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 NP_API_URL = "https://api.novaposhta.ua/v2.0/json/"
+_WAREHOUSE_QUERY_PREFIX_RE = re.compile(
+    r"^(?:№|#|no\.?|nº)?\s*(?:відділення|отделение|поштомат|почтомат)?\s*",
+    re.IGNORECASE,
+)
 
 
 @dataclass
@@ -83,6 +88,57 @@ def _warehouse_category_label(raw: str) -> str:
     if not raw:
         return "Відділення"
     return raw
+
+
+def _normalize_warehouse_query(query: str) -> str:
+    q = (query or "").strip()
+    q = _WAREHOUSE_QUERY_PREFIX_RE.sub("", q).strip()
+    return q
+
+
+def _warehouse_match_rank(query: str, number: str, description: str) -> int:
+    """Менше = краще. 0 = точний номер."""
+    q = (query or "").strip().casefold()
+    if not q:
+        return 100
+    num = (number or "").strip().casefold()
+    desc = (description or "").strip().casefold()
+    if num and num == q:
+        return 0
+    q_digits = q.lstrip("0") or "0"
+    num_digits = num.lstrip("0") or "0"
+    if num and q.isdigit() and num_digits == q_digits:
+        return 1
+    if num and num.startswith(q):
+        return 10 + (len(num) - len(q))
+    if q in desc:
+        return 30 + desc.find(q)
+    return 80
+
+
+def _row_to_warehouse(row: dict, city_ref: str) -> WarehouseOption | None:
+    if not _warehouse_is_selectable(row):
+        return None
+    ref = str(row.get("Ref") or "").strip()
+    if not ref:
+        return None
+    category = str(
+        row.get("CategoryOfWarehouse") or row.get("TypeOfWarehouse") or ""
+    ).strip()
+    desc = str(row.get("Description") or "").strip()
+    if "мобільн" in desc.casefold() or "мобильн" in desc.casefold():
+        category_label = "Мобільне відділення"
+    else:
+        category_label = _warehouse_category_label(category)
+    return WarehouseOption(
+        ref=ref,
+        description=desc,
+        description_ru=str(row.get("DescriptionRu") or "").strip(),
+        number=str(row.get("Number") or "").strip(),
+        city_ref=str(row.get("CityRef") or city_ref).strip(),
+        category=category,
+        category_label=category_label,
+    )
 
 
 def _warehouse_is_selectable(row: dict) -> bool:
@@ -215,73 +271,54 @@ class NovaPoshtaClient:
         self,
         city_ref: str,
         query: str = "",
-        limit: int = 200,
+        limit: int = 30,
     ) -> list[WarehouseOption]:
         city_ref = (city_ref or "").strip()
         if not city_ref:
             return []
 
-        q = (query or "").strip()
-        max_items = max(1, min(int(limit or 200), 500))
-        page_size = 50
-        page = 1
+        q = _normalize_warehouse_query(query)
+        max_items = max(1, min(int(limit or 30), 100))
+        # Один запит до NP: Limit = скільки реально треба, без зайвих сторінок
+        page_size = max_items
+        props: dict[str, Any] = {
+            "CityRef": city_ref,
+            "Limit": str(page_size),
+            "Page": "1",
+        }
+        if q:
+            props["FindByString"] = q
+
+        data = self._request("Address", "getWarehouses", props) or []
         results: list[WarehouseOption] = []
         seen: set[str] = set()
+        for row in data:
+            if not isinstance(row, dict):
+                continue
+            item = _row_to_warehouse(row, city_ref)
+            if item is None or item.ref in seen:
+                continue
+            seen.add(item.ref)
+            results.append(item)
 
-        while len(results) < max_items:
-            props: dict[str, Any] = {
-                "CityRef": city_ref,
-                "Limit": str(page_size),
-                "Page": str(page),
-            }
-            if q:
-                props["FindByString"] = q
-
-            data = self._request("Address", "getWarehouses", props)
-            if not data:
-                break
-
-            for row in data:
-                if not isinstance(row, dict):
-                    continue
-                if not _warehouse_is_selectable(row):
-                    continue
-                ref = str(row.get("Ref") or "").strip()
-                if not ref or ref in seen:
-                    continue
-                seen.add(ref)
-                category = str(
-                    row.get("CategoryOfWarehouse")
-                    or row.get("TypeOfWarehouse")
-                    or ""
-                ).strip()
-                # Мобільні / пункти прийому часто в Description або Category
-                desc = str(row.get("Description") or "").strip()
-                if "мобільн" in desc.casefold() or "мобильн" in desc.casefold():
-                    category_label = "Мобільне відділення"
-                else:
-                    category_label = _warehouse_category_label(category)
-                results.append(
-                    WarehouseOption(
-                        ref=ref,
-                        description=desc,
-                        description_ru=str(row.get("DescriptionRu") or "").strip(),
-                        number=str(row.get("Number") or "").strip(),
-                        city_ref=str(row.get("CityRef") or city_ref).strip(),
-                        category=category,
-                        category_label=category_label,
-                    )
+        if q:
+            results.sort(
+                key=lambda w: (
+                    _warehouse_match_rank(q, w.number, w.description),
+                    w.number.zfill(6),
+                    w.description.casefold(),
                 )
-                if len(results) >= max_items:
-                    break
+            )
+            # Точний номер («10» / «№10») — не тягнемо зайві 30 пунктів
+            exact = [
+                w
+                for w in results
+                if _warehouse_match_rank(q, w.number, w.description) <= 1
+            ]
+            if exact and (q.isdigit() or q.casefold() in {w.number.casefold() for w in exact}):
+                return exact[:max_items]
 
-            if len(data) < page_size:
-                break
-            page += 1
-            if page > 20:
-                break
-
-        return results
+        return results[:max_items]
 
     def search_streets(
         self,
