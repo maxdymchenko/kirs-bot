@@ -1708,7 +1708,7 @@
                 <span class="setting-control">
                   <input class="setting-input" type="number" min="0" max="100" step="0.1"
                     data-rule-num="referral_percent"
-                    value="${escapeHtml(String(d.referral_percent || 0))}" />
+                    value="${escapeHtml(String(Math.min(100, Number(d.referral_percent) || 0)))}" />
                 </span>
               </label>
               <label class="setting-row">
