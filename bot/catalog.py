@@ -63,7 +63,7 @@ class CatalogService:
         self,
         spreadsheet_id: str | None = None,
         credentials_path: str | Path | None = None,
-        cache_ttl_seconds: int = 300,
+        cache_ttl_seconds: int = 30,
     ):
         self.spreadsheet_id = spreadsheet_id or os.getenv(
             "STOCK_SPREADSHEET_ID", DEFAULT_SHEET_ID
