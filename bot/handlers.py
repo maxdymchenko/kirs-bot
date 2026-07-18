@@ -1,5 +1,6 @@
 import html
 import logging
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update, WebAppInfo
 from telegram.constants import ParseMode
@@ -61,10 +62,36 @@ async def on_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
             pass
 
 
-def _webapp_button(text: str, webapp_url: str, chat_type: str) -> InlineKeyboardButton:
+def _webapp_url_with_context(
+    base_url: str,
+    chat_id: int | str | None = None,
+    user_id: int | str | None = None,
+) -> str:
+    """В групах Telegram відкриває звичайний браузер — передаємо контекст у query."""
+    parts = urlsplit(base_url)
+    query = dict(parse_qsl(parts.query, keep_blank_values=True))
+    if chat_id is not None and str(chat_id).strip():
+        query["chat_id"] = str(chat_id).strip()
+    if user_id is not None and str(user_id).strip():
+        query["user_id"] = str(user_id).strip()
+    return urlunsplit(
+        (parts.scheme, parts.netloc, parts.path or "/", urlencode(query), parts.fragment)
+    )
+
+
+def _webapp_button(
+    text: str,
+    webapp_url: str,
+    chat_type: str,
+    chat_id: int | str | None = None,
+    user_id: int | str | None = None,
+) -> InlineKeyboardButton:
+    # У private чатах Telegram відкриває справжній Mini App (є initData).
     if chat_type == "private":
         return InlineKeyboardButton(text=text, web_app=WebAppInfo(url=webapp_url))
-    return InlineKeyboardButton(text=text, url=webapp_url)
+    # У групах web_app-кнопки заборонені → звичайне посилання з chat_id/user_id.
+    url = _webapp_url_with_context(webapp_url, chat_id=chat_id, user_id=user_id)
+    return InlineKeyboardButton(text=text, url=url)
 
 
 async def chat_id_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -200,7 +227,15 @@ async def order_menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
     if role == "owner":
         keyboard = InlineKeyboardMarkup(
             [
-                [_webapp_button("Кабінет власника", webapp_url, chat_type)],
+                [
+                    _webapp_button(
+                        "Кабінет власника",
+                        webapp_url,
+                        chat_type,
+                        chat_id=chat_id,
+                        user_id=user_id,
+                    )
+                ],
                 [
                     InlineKeyboardButton(
                         text="Мій баланс",
@@ -224,7 +259,15 @@ async def order_menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
     if role == "dropper":
         keyboard = InlineKeyboardMarkup(
             [
-                [_webapp_button("Зробити замовлення", webapp_url, chat_type)],
+                [
+                    _webapp_button(
+                        "Зробити замовлення",
+                        webapp_url,
+                        chat_type,
+                        chat_id=chat_id,
+                        user_id=user_id,
+                    )
+                ],
                 [
                     InlineKeyboardButton(
                         text="Мій баланс",
@@ -238,7 +281,17 @@ async def order_menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     if need_registration:
         keyboard = InlineKeyboardMarkup(
-            [[_webapp_button("Зареєструвати дроппера", webapp_url, chat_type)]]
+            [
+                [
+                    _webapp_button(
+                        "Зареєструвати дроппера",
+                        webapp_url,
+                        chat_type,
+                        chat_id=chat_id,
+                        user_id=user_id,
+                    )
+                ]
+            ]
         )
         await update.message.reply_text(
             "Цю групу ще не зареєстровано як дроппера.\n"

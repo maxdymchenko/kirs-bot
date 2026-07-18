@@ -595,17 +595,30 @@
     );
   }
 
+  function queryParam(name) {
+    try {
+      return new URLSearchParams(window.location.search).get(name) || "";
+    } catch (_error) {
+      return "";
+    }
+  }
+
   function currentTelegramChatId() {
     if (sessionState.chat_id) return sessionState.chat_id;
     const unsafe = tg?.initDataUnsafe || {};
     if (unsafe.chat?.id != null) return String(unsafe.chat.id);
+    const fromQuery = queryParam("chat_id");
+    if (fromQuery) return fromQuery;
     return "";
   }
 
   function currentTelegramUser() {
     const unsafe = tg?.initDataUnsafe || {};
     return {
-      user_id: sessionState.user_id || (unsafe.user?.id != null ? String(unsafe.user.id) : ""),
+      user_id:
+        sessionState.user_id ||
+        (unsafe.user?.id != null ? String(unsafe.user.id) : "") ||
+        queryParam("user_id"),
       username: sessionState.username || unsafe.user?.username || "",
     };
   }
@@ -1234,13 +1247,16 @@
       return;
     }
     els.bootStatus.classList.remove("hidden");
-    els.bootStatus.textContent = "Немає доступу до цієї Mini App у поточному чаті.";
+    els.bootStatus.textContent =
+      "Немає доступу. Відкрийте Mini App кнопкою з /menu у потрібному чаті Telegram.";
   }
 
   async function bootstrapSession() {
     const unsafe = tg?.initDataUnsafe || {};
-    sessionState.chat_id = unsafe.chat?.id != null ? String(unsafe.chat.id) : "";
-    sessionState.user_id = unsafe.user?.id != null ? String(unsafe.user.id) : "";
+    sessionState.chat_id =
+      (unsafe.chat?.id != null ? String(unsafe.chat.id) : "") || queryParam("chat_id");
+    sessionState.user_id =
+      (unsafe.user?.id != null ? String(unsafe.user.id) : "") || queryParam("user_id");
     sessionState.username = unsafe.user?.username || "";
 
     try {
