@@ -220,8 +220,7 @@ def create_web_app(
             f"chat_id групи: `{dropper.chat_id}`\n"
             f"Хто зареєстрував: @{dropper.registered_by_username or '—'} "
             f"(user_id={dropper.registered_by_user_id or '—'})\n\n"
-            "Дроппер уже активний у базі (SQLite). "
-            "Додавати chat_id на Render не потрібно."
+            "Дроппер уже активний у базі (SQLite)."
         )
 
         await _notify(chat_id, group_text)

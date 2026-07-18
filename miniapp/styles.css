@@ -290,6 +290,11 @@ textarea {
   font-weight: 800;
 }
 
+.qty button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
 .cart-footer {
   margin-top: 18px;
   padding: 14px;

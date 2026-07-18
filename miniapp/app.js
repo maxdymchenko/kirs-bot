@@ -1,8 +1,27 @@
 (() => {
   const tg = window.Telegram?.WebApp;
-  if (tg) {
-    tg.ready();
-    tg.expand();
+
+  function safeTgCall(fn) {
+    if (!tg || typeof fn !== "function") return false;
+    try {
+      fn();
+      return true;
+    } catch (_error) {
+      // У звичайному браузері (посилання з групи) методи Mini App недоступні
+      return false;
+    }
+  }
+
+  safeTgCall(() => tg.ready());
+  safeTgCall(() => tg.expand());
+
+  function safeTgAlert(message) {
+    const ok = safeTgCall(() => tg.showAlert(String(message || "")));
+    if (!ok && message) {
+      // fallback уже є через toast / звичайний UI
+      console.info("tg.alert skipped:", message);
+    }
+    return ok;
   }
 
   const CART_KEY = "kirs_cart_v1";
@@ -692,14 +711,47 @@
     updateRequisitesIntro(total);
   }
 
+  function stockNumber(stock) {
+    if (stock === null || stock === undefined || stock === "") return null;
+    const n = Number(stock);
+    if (!Number.isFinite(n)) return null;
+    return Math.max(0, Math.floor(n));
+  }
+
   function stockLabel(stock) {
-    if (stock === null || stock === undefined || stock === "") {
+    const n = stockNumber(stock);
+    if (n === null) {
       return `<span class="stock-ok">Наявність: —</span>`;
     }
-    if (Number(stock) <= 0) {
+    if (n <= 0) {
       return `<span class="stock-out">Немає в наявності</span>`;
     }
-    return `<span class="stock-ok">В наявності: ${stock}</span>`;
+    return `<span class="stock-ok">В наявності: ${n}</span>`;
+  }
+
+  function availableQtyLabel(stock) {
+    const n = stockNumber(stock);
+    if (n === null) {
+      return `<div class="stock-ok">Доступна кількість: —</div>`;
+    }
+    if (n <= 0) {
+      return `<div class="stock-out">Доступна кількість: 0</div>`;
+    }
+    return `<div class="stock-ok">Доступна кількість: ${n}</div>`;
+  }
+
+  function clampQtyToStock(item, qty) {
+    const next = Math.max(1, Number(qty) || 1);
+    const max = stockNumber(item?.stock);
+    if (max === null) return next;
+    if (max <= 0) return 0;
+    return Math.min(next, max);
+  }
+
+  function canAddMore(item, currentQty = 0) {
+    const max = stockNumber(item?.stock);
+    if (max === null) return true;
+    return currentQty < max;
   }
 
   function renderResults(items) {
@@ -709,12 +761,17 @@
       return;
     }
 
+    const cart = loadCart();
     els.status.textContent = `Знайдено варіантів: ${items.length}`;
     els.results.innerHTML = items
       .map((item) => {
         const photo = item.photo_url || "";
         const price = item.drop_price ? `${item.drop_price} ₴` : "—";
-        const disabled = Number(item.stock) === 0 ? "disabled" : "";
+        const inCart = cart.find((row) => cartKey(row) === cartKey(item));
+        const currentQty = inCart?.qty || 0;
+        const outOfStock = stockNumber(item.stock) === 0;
+        const atLimit = !canAddMore(item, currentQty);
+        const disabled = outOfStock || atLimit ? "disabled" : "";
         return `
           <article class="card">
             <img src="${photo || ""}" alt="" onerror="this.style.opacity=0.2" />
@@ -735,12 +792,25 @@
       .join("");
   }
 
+  function sanitizeCart(cart) {
+    const next = [];
+    for (const item of cart) {
+      const qty = clampQtyToStock(item, item.qty || 1);
+      if (qty <= 0) continue;
+      next.push({ ...item, qty });
+    }
+    return next;
+  }
+
   function renderCart() {
-    const cart = loadCart();
+    let cart = sanitizeCart(loadCart());
+    saveCart(cart);
+
     if (!cart.length) {
       els.cartEmpty.classList.remove("hidden");
       els.cartList.innerHTML = "";
       els.cartFooter.classList.add("hidden");
+      updateCartIndicators();
       return;
     }
 
@@ -753,6 +823,8 @@
       .map((item, index) => {
         const photo = item.photo_url || "";
         const price = item.drop_price ? `${item.drop_price} ₴` : "—";
+        const qty = item.qty || 1;
+        const plusDisabled = canAddMore(item, qty) ? "" : "disabled";
         return `
           <article class="card">
             <img src="${photo}" alt="" onerror="this.style.opacity=0.2" />
@@ -760,11 +832,16 @@
               <div class="card-title">${escapeHtml(item.name || "")}</div>
               <div class="meta">Код: <b>${escapeHtml(item.code || "")}</b> · ${escapeHtml(item.color || "без кольору")}</div>
               <div class="row-actions">
-                <div class="price">${escapeHtml(price)}</div>
+                <div>
+                  <div class="price">${escapeHtml(price)}</div>
+                  ${availableQtyLabel(item.stock)}
+                </div>
                 <div class="qty">
                   <button type="button" data-dec="${index}">−</button>
-                  <strong>${item.qty || 1}</strong>
-                  <button type="button" data-inc="${index}">+</button>
+                  <strong>${qty}</strong>
+                  <button type="button" data-inc="${index}" ${plusDisabled} title="${
+                    plusDisabled ? "Немає більше в наявності" : "Додати"
+                  }">+</button>
                   <button type="button" data-del="${index}" title="Видалити">✕</button>
                 </div>
               </div>
@@ -773,18 +850,33 @@
         `;
       })
       .join("");
+    updateCartIndicators();
   }
 
   function addToCart(item) {
+    const max = stockNumber(item?.stock);
+    if (max === 0) {
+      showToast("Товару немає в наявності");
+      return;
+    }
+
     const cart = loadCart();
     const key = cartKey(item);
     const existing = cart.find((row) => cartKey(row) === key);
+    const currentQty = existing?.qty || 0;
+
+    if (!canAddMore(item, currentQty)) {
+      showToast(`Доступно лише ${max} шт.`);
+      return;
+    }
+
     if (existing) {
-      existing.qty = (existing.qty || 1) + 1;
+      existing.qty = clampQtyToStock(item, currentQty + 1);
+      if (item.stock !== undefined) existing.stock = item.stock;
     } else {
       cart.push({ ...item, qty: 1 });
     }
-    saveCart(cart);
+    saveCart(sanitizeCart(cart));
     showToast("Товар додано в кошик");
   }
 
@@ -944,12 +1036,19 @@
       cart[i].qty = Math.max(1, (cart[i].qty || 1) - 1);
       saveCart(cart);
       renderCart();
+      return;
     }
     if (inc) {
       const i = Number(inc.dataset.inc);
-      cart[i].qty = (cart[i].qty || 1) + 1;
+      if (inc.disabled || !canAddMore(cart[i], cart[i].qty || 1)) {
+        const max = stockNumber(cart[i]?.stock);
+        showToast(max === null ? "Ліміт кількості" : `Доступно лише ${max} шт.`);
+        return;
+      }
+      cart[i].qty = clampQtyToStock(cart[i], (cart[i].qty || 1) + 1);
       saveCart(cart);
       renderCart();
+      return;
     }
     if (del) {
       const i = Number(del.dataset.del);
@@ -1149,11 +1248,9 @@
     // Поки що тільки збираємо дані; відправка на бекенд — наступний етап
     console.log("checkout draft", data);
     showToast("Дані зібрано. Підтвердження замовлення — наступний етап");
-    if (tg?.showAlert) {
-      tg.showAlert(
-        "Форма заповнена. Далі додамо підтвердження та відправку замовлення."
-      );
-    }
+    safeTgAlert(
+      "Форма заповнена. Далі додамо підтвердження та відправку замовлення."
+    );
   });
 
   function ownerAuthParams() {
@@ -1369,9 +1466,7 @@
           );
         }
         showToast("Реєстрацію завершено");
-        if (tg?.showAlert) {
-          tg.showAlert("Реєстрацію успішно завершено. Можна відкривати /menu для замовлень.");
-        }
+        safeTgAlert("Реєстрацію успішно завершено. Можна відкривати /menu для замовлень.");
         sessionState.role = "dropper";
         sessionState.need_registration = false;
         showMode("dropper");
