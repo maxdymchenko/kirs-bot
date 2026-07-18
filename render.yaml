@@ -32,3 +32,5 @@ services:
         sync: false
       - key: WEBAPP_URL
         sync: false
+      - key: NOVA_POSHTA_API_KEY
+        sync: false

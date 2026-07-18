@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
   <title>Kirs — Замовлення</title>
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
-  <link rel="stylesheet" href="/static/styles.css?v=20260718b" />
+  <link rel="stylesheet" href="/static/styles.css?v=20260718e" />
 </head>
 <body>
   <div class="app">
@@ -75,7 +75,20 @@
             </label>
             <label class="field">
               <span class="field-label">Телефон</span>
-              <input id="phone" name="phone" type="tel" inputmode="tel" autocomplete="tel" placeholder="+38(099)999-99-99" required />
+              <div class="phone-field">
+                <span class="phone-ghost" id="phoneGhost" aria-hidden="true">+38(099)999-99-99</span>
+                <input
+                  id="phone"
+                  name="phone"
+                  class="phone-input"
+                  type="tel"
+                  inputmode="numeric"
+                  autocomplete="tel"
+                  maxlength="18"
+                  placeholder=""
+                  required
+                />
+              </div>
             </label>
           </div>
 
@@ -102,16 +115,35 @@
             <div id="npDeliveryFields">
               <label class="field">
                 <span class="field-label">Населений пункт</span>
-                <input id="city" name="city" type="text" placeholder="Назва населеного пункту" />
+                <div class="ac-field" data-ac="city">
+                  <input
+                    id="city"
+                    name="city"
+                    type="text"
+                    autocomplete="off"
+                    placeholder="Почніть вводити назву (укр/рос)"
+                  />
+                  <input type="hidden" id="cityRef" name="cityRef" value="" />
+                  <input type="hidden" id="settlementRef" name="settlementRef" value="" />
+                  <div class="ac-dropdown hidden" id="cityDropdown" role="listbox"></div>
+                </div>
+                <p class="field-hint">Оберіть пункт зі списку Нової Пошти (обовʼязково)</p>
               </label>
               <label class="field" id="warehouseField">
                 <span class="field-label" id="warehouseLabel">Відділення/поштомат Нової Пошти</span>
-                <input
-                  id="warehouse"
-                  name="warehouse"
-                  type="text"
-                  placeholder="Введіть адресу або номер відділення/поштомату"
-                />
+                <div class="ac-field" data-ac="warehouse">
+                  <input
+                    id="warehouse"
+                    name="warehouse"
+                    type="text"
+                    autocomplete="off"
+                    placeholder="Номер або адреса відділення/поштомату"
+                    disabled
+                  />
+                  <input type="hidden" id="warehouseRef" name="warehouseRef" value="" />
+                  <div class="ac-dropdown hidden" id="warehouseDropdown" role="listbox"></div>
+                </div>
+                <p class="field-hint">Оберіть зі списку (обовʼязково)</p>
               </label>
               <label class="field hidden" id="addressField">
                 <span class="field-label">Адреса доставки</span>
@@ -185,6 +217,11 @@
                 <span class="field-label">Квитанція про оплату</span>
                 <input id="paymentReceipt" name="paymentReceipt" type="file" accept="image/*,.pdf" />
               </label>
+              <label class="field hidden" id="ttnPdfField">
+                <span class="field-label">Файл PDF 100×100</span>
+                <input id="ttnPdf" name="ttnPdf" type="file" accept="application/pdf,.pdf" />
+                <span class="field-hint">Прикріпіть етикетку ТТН у форматі PDF 100×100</span>
+              </label>
             </div>
           </div>
 
@@ -208,6 +245,6 @@
     </main>
   </div>
 
-  <script src="/static/app.js?v=20260718b"></script>
+  <script src="/static/app.js?v=20260718e"></script>
 </body>
 </html>

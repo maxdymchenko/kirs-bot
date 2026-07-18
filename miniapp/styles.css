@@ -283,6 +283,104 @@ textarea {
   color: var(--text);
 }
 
+.phone-field {
+  position: relative;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 16px;
+  letter-spacing: 0.02em;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: #fff;
+}
+
+.phone-ghost {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  padding: 12px 14px;
+  color: #c3c9d4;
+  pointer-events: none;
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+.phone-input {
+  position: relative;
+  background: transparent !important;
+  border: 0 !important;
+  font-family: inherit;
+  font-size: inherit;
+  letter-spacing: inherit;
+  caret-color: var(--text);
+}
+
+.phone-field:focus-within {
+  outline: 2px solid rgba(47, 111, 237, 0.25);
+  outline-offset: 1px;
+}
+
+.field-hint {
+  margin: 6px 0 0;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.ac-field {
+  position: relative;
+}
+
+.ac-dropdown {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: calc(100% + 4px);
+  z-index: 30;
+  max-height: 240px;
+  overflow: auto;
+  background: #fff;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  box-shadow: var(--shadow);
+}
+
+.ac-option {
+  display: block;
+  width: 100%;
+  border: 0;
+  background: transparent;
+  text-align: left;
+  padding: 10px 12px;
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1.35;
+  color: var(--text);
+}
+
+.ac-option:hover,
+.ac-option.active {
+  background: var(--accent-soft);
+}
+
+.ac-option-sub {
+  display: block;
+  margin-top: 2px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.ac-empty,
+.ac-loading {
+  padding: 12px;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.ac-field.is-selected input[type="text"] {
+  border-color: #8bc99a;
+  background: #f4fbf6;
+}
+
 .input-with-prefix {
   display: grid;
   grid-template-columns: auto 1fr;
