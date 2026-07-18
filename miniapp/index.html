@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
   <title>Kirs — Замовлення</title>
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
-  <link rel="stylesheet" href="/static/styles.css?v=20260718o" />
+  <link rel="stylesheet" href="/static/styles.css?v=20260718p" />
 </head>
 <body>
   <div class="app">
@@ -46,14 +46,19 @@
 
     <section id="ownerView" class="view hidden">
       <h1 class="title">Кабінет власника</h1>
-      <p class="hint">Дроппери та співробітники. Аналітика — наступними етапами.</p>
+      <p class="hint">Оберіть розділ. Аналітика з’явиться пізніше.</p>
 
-      <div class="form-section">
-        <h2 class="section-title">Дроппери</h2>
+      <nav class="tabs owner-tabs" id="ownerTabs">
+        <button type="button" class="tab active" data-owner-tab="droppers">Дроппери</button>
+        <button type="button" class="tab" data-owner-tab="staff">Співробітники</button>
+      </nav>
+
+      <div id="ownerTabDroppers" class="owner-panel">
+        <h2 class="section-title">Зареєстровані дроппери</h2>
         <div id="ownerDroppers" class="results"></div>
       </div>
 
-      <div class="form-section">
+      <div id="ownerTabStaff" class="owner-panel hidden">
         <h2 class="section-title">Додати співробітника</h2>
         <form id="staffForm" novalidate>
           <label class="field">
@@ -67,6 +72,7 @@
           <label class="field">
             <span class="field-label">Роль</span>
             <select id="staffRole">
+              <option value="admin">Адміністратор</option>
               <option value="manager">Менеджер</option>
               <option value="warehouse">Комірник</option>
             </select>
@@ -74,7 +80,9 @@
           <p id="staffError" class="form-error hidden"></p>
           <button type="submit" class="btn primary block">Додати</button>
         </form>
-        <div id="ownerStaff" class="results" style="margin-top:12px"></div>
+
+        <h2 class="section-title" style="margin-top:18px">Список співробітників</h2>
+        <div id="ownerStaff" class="results"></div>
       </div>
     </section>
 
@@ -343,6 +351,6 @@
     </main>
   </div>
 
-  <script src="/static/app.js?v=20260718o"></script>
+  <script src="/static/app.js?v=20260718p"></script>
 </body>
 </html>

@@ -22,6 +22,9 @@
     registerForm: document.getElementById("registerForm"),
     registerError: document.getElementById("registerError"),
     ownerView: document.getElementById("ownerView"),
+    ownerTabs: document.getElementById("ownerTabs"),
+    ownerTabDroppers: document.getElementById("ownerTabDroppers"),
+    ownerTabStaff: document.getElementById("ownerTabStaff"),
     ownerDroppers: document.getElementById("ownerDroppers"),
     ownerStaff: document.getElementById("ownerStaff"),
     staffForm: document.getElementById("staffForm"),
@@ -1167,9 +1170,33 @@
     };
   }
 
+  function staffRoleLabel(role) {
+    const map = {
+      admin: "Адміністратор",
+      manager: "Менеджер",
+      warehouse: "Комірник",
+    };
+    return map[role] || role;
+  }
+
+  function setOwnerTab(tabName) {
+    const name = tabName === "staff" ? "staff" : "droppers";
+    if (els.ownerTabs) {
+      els.ownerTabs.querySelectorAll("[data-owner-tab]").forEach((btn) => {
+        btn.classList.toggle("active", btn.getAttribute("data-owner-tab") === name);
+      });
+    }
+    if (els.ownerTabDroppers) {
+      els.ownerTabDroppers.classList.toggle("hidden", name !== "droppers");
+    }
+    if (els.ownerTabStaff) {
+      els.ownerTabStaff.classList.toggle("hidden", name !== "staff");
+    }
+  }
+
   async function renderOwnerCabinet() {
     els.ownerDroppers.innerHTML = `<div class="ac-loading">Завантаження дропперів...</div>`;
-    els.ownerStaff.innerHTML = "";
+    els.ownerStaff.innerHTML = `<div class="ac-loading">Завантаження...</div>`;
     try {
       const auth = ownerAuthParams();
       const [droppersRes, staffRes] = await Promise.all([
@@ -1208,7 +1235,7 @@
               (s) => `
           <article class="owner-card">
             <div class="owner-card-title">${escapeHtml(s.full_name || s.telegram_user_id)}</div>
-            <div class="meta">role: <b>${escapeHtml(s.role)}</b> · user_id: ${escapeHtml(
+            <div class="meta">${escapeHtml(staffRoleLabel(s.role))} · user_id: ${escapeHtml(
                 s.telegram_user_id
               )}</div>
           </article>`
@@ -1216,9 +1243,9 @@
             .join("")
         : `<div class="empty">Співробітників ще немає</div>`;
     } catch (error) {
-      els.ownerDroppers.innerHTML = `<div class="form-error">${escapeHtml(
-        error.message || "Помилка"
-      )}</div>`;
+      const msg = `<div class="form-error">${escapeHtml(error.message || "Помилка")}</div>`;
+      els.ownerDroppers.innerHTML = msg;
+      els.ownerStaff.innerHTML = msg;
     }
   }
 
@@ -1236,6 +1263,7 @@
     }
     if (mode === "owner") {
       els.ownerView.classList.remove("hidden");
+      setOwnerTab("droppers");
       renderOwnerCabinet();
       return;
     }
@@ -1283,9 +1311,9 @@
         showMode("register");
         return;
       }
-      if (sessionState.role === "manager" || sessionState.role === "warehouse") {
+      if (sessionState.role === "admin" || sessionState.role === "manager" || sessionState.role === "warehouse") {
         els.bootStatus.classList.remove("hidden");
-        els.bootStatus.textContent = `Роль «${sessionState.role}». Кабінет співробітника — наступний етап.`;
+        els.bootStatus.textContent = `Роль «${staffRoleLabel(sessionState.role)}». Кабінет співробітника — наступний етап.`;
         return;
       }
       showMode("denied");
@@ -1331,6 +1359,14 @@
         els.registerError.textContent = error.message || "Помилка реєстрації";
         els.registerError.classList.remove("hidden");
       }
+    });
+  }
+
+  if (els.ownerTabs) {
+    els.ownerTabs.addEventListener("click", (event) => {
+      const btn = event.target.closest("[data-owner-tab]");
+      if (!btn) return;
+      setOwnerTab(btn.getAttribute("data-owner-tab"));
     });
   }
 

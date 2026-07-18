@@ -378,8 +378,8 @@ class AppStorage:
         created_by_user_id: str = "",
     ) -> StaffMember:
         role = role.strip().lower()
-        if role not in {"manager", "warehouse"}:
-            raise ValueError("role must be manager or warehouse")
+        if role not in {"admin", "manager", "warehouse"}:
+            raise ValueError("role must be admin, manager or warehouse")
         user_id = str(telegram_user_id).strip()
         now = _now()
         with self._connect() as conn:

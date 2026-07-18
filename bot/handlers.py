@@ -250,7 +250,7 @@ async def order_menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
         )
         return
 
-    if role in {"manager", "warehouse"}:
+    if role in {"admin", "manager", "warehouse"}:
         await update.message.reply_text(
             f"Роль: {role}.\nКабінет співробітника з’явиться наступним етапом."
         )
