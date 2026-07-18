@@ -1520,54 +1520,105 @@
             .map(
               (d) => `
           <article class="owner-card" data-dropper-chat="${escapeHtml(d.chat_id)}">
-            <div class="owner-card-title">${escapeHtml(d.company_name)}</div>
-            <div class="meta">${escapeHtml(d.contact_name)} · ${escapeHtml(d.phone)}</div>
-            <div class="meta">chat_id: <b>${escapeHtml(d.chat_id)}</b></div>
-            <div class="meta-soft">Реф. код: <b>${escapeHtml(d.referral_code || "—")}</b>
-              ${d.referred_by_name ? ` · запрошений: ${escapeHtml(d.referred_by_name)}` : ""}
-              ${d.referrals_count ? ` · привів: ${escapeHtml(String(d.referrals_count))}` : ""}
+            <div class="owner-card-head">
+              <h3 class="owner-card-title">${escapeHtml(d.company_name)}</h3>
+              <p class="meta">${escapeHtml(d.contact_name)} · ${escapeHtml(d.phone)}</p>
+              <p class="meta">chat_id: <b>${escapeHtml(d.chat_id)}</b></p>
+              <p class="meta">
+                Реф. код: <b>${escapeHtml(d.referral_code || "—")}</b>
+                ${d.referred_by_name ? ` · запрошений: ${escapeHtml(d.referred_by_name)}` : ""}
+                ${d.referrals_count ? ` · привів: ${escapeHtml(String(d.referrals_count))}` : ""}
+              </p>
             </div>
-            <div class="rule-grid">
-              <label class="switch-row">
-                <span>Лише після повної оплати</span>
-                <input type="checkbox" data-rule="require_full_payment" ${
-                  d.require_full_payment ? "checked" : ""
-                } />
+            <div class="owner-settings">
+              <label class="setting-row">
+                <span class="setting-copy">
+                  <span class="setting-label">Лише після повної оплати</span>
+                  <span class="setting-hint">Потрібна квитанція до замовлення</span>
+                </span>
+                <span class="setting-control">
+                  <span class="toggle">
+                    <input type="checkbox" data-rule="require_full_payment" ${
+                      d.require_full_payment ? "checked" : ""
+                    } />
+                    <span class="toggle-ui"></span>
+                  </span>
+                </span>
               </label>
-              <label class="switch-row">
-                <span>В рахунок балансу</span>
-                <input type="checkbox" data-rule="allow_balance_payment" ${
-                  d.allow_balance_payment ? "checked" : ""
-                } />
+              <label class="setting-row">
+                <span class="setting-copy">
+                  <span class="setting-label">В рахунок балансу</span>
+                  <span class="setting-hint">Списання з балансу замість оплати</span>
+                </span>
+                <span class="setting-control">
+                  <span class="toggle">
+                    <input type="checkbox" data-rule="allow_balance_payment" ${
+                      d.allow_balance_payment ? "checked" : ""
+                    } />
+                    <span class="toggle-ui"></span>
+                  </span>
+                </span>
               </label>
-              <div class="rule-row">
-                <label class="switch-row">
-                  <span>Мінус-баланс дозволено</span>
-                  <input type="checkbox" data-rule="allow_negative_balance" ${
-                    d.allow_negative_balance ? "checked" : ""
-                  } />
-                </label>
-                <div class="rule-row-inline">
-                  <span class="meta">Ліміт мінусу, ₴</span>
-                  <input type="number" min="0" step="1" data-rule-num="negative_balance_limit"
+              <label class="setting-row">
+                <span class="setting-copy">
+                  <span class="setting-label">Мінус-баланс дозволено</span>
+                  <span class="setting-hint">Можна йти в мінус до ліміту</span>
+                </span>
+                <span class="setting-control">
+                  <span class="toggle">
+                    <input type="checkbox" data-rule="allow_negative_balance" ${
+                      d.allow_negative_balance ? "checked" : ""
+                    } />
+                    <span class="toggle-ui"></span>
+                  </span>
+                </span>
+              </label>
+              <label class="setting-row is-nested">
+                <span class="setting-copy">
+                  <span class="setting-label">Ліміт мінусу</span>
+                  <span class="setting-hint">Максимальний борг, ₴</span>
+                </span>
+                <span class="setting-control">
+                  <input class="setting-input" type="number" min="0" step="1"
+                    data-rule-num="negative_balance_limit"
                     value="${escapeHtml(String(d.negative_balance_limit || 0))}" />
-                </div>
-              </div>
-              <div class="rule-row-inline">
-                <span>Додаткова знижка, %</span>
-                <input type="number" min="0" max="100" step="0.1" data-rule-num="extra_discount_percent"
-                  value="${escapeHtml(String(d.extra_discount_percent || 0))}" />
-              </div>
-              <div class="rule-row-inline">
-                <span>Реферальний % з приведених</span>
-                <input type="number" min="0" max="100" step="0.1" data-rule-num="referral_percent"
-                  value="${escapeHtml(String(d.referral_percent || 0))}" />
-              </div>
-              <label class="switch-row">
-                <span>Відключити передачу замовлень</span>
-                <input type="checkbox" data-rule="orders_disabled" ${
-                  d.orders_disabled ? "checked" : ""
-                } />
+                </span>
+              </label>
+              <label class="setting-row">
+                <span class="setting-copy">
+                  <span class="setting-label">Додаткова знижка</span>
+                  <span class="setting-hint">Відсоток від дроп-ціни</span>
+                </span>
+                <span class="setting-control">
+                  <input class="setting-input" type="number" min="0" max="100" step="0.1"
+                    data-rule-num="extra_discount_percent"
+                    value="${escapeHtml(String(d.extra_discount_percent || 0))}" />
+                </span>
+              </label>
+              <label class="setting-row">
+                <span class="setting-copy">
+                  <span class="setting-label">Реферальний %</span>
+                  <span class="setting-hint">З дроп-ціни приведених</span>
+                </span>
+                <span class="setting-control">
+                  <input class="setting-input" type="number" min="0" max="100" step="0.1"
+                    data-rule-num="referral_percent"
+                    value="${escapeHtml(String(d.referral_percent || 0))}" />
+                </span>
+              </label>
+              <label class="setting-row">
+                <span class="setting-copy">
+                  <span class="setting-label">Блокування замовлень</span>
+                  <span class="setting-hint">Повне погашення боргу</span>
+                </span>
+                <span class="setting-control">
+                  <span class="toggle">
+                    <input type="checkbox" data-rule="orders_disabled" ${
+                      d.orders_disabled ? "checked" : ""
+                    } />
+                    <span class="toggle-ui"></span>
+                  </span>
+                </span>
               </label>
             </div>
           </article>`
