@@ -315,6 +315,56 @@ def create_web_app(
             items.append(data)
         return {"count": len(items), "items": items}
 
+    @app.get("/api/dropper/balance")
+    async def dropper_balance(chat_id: str = Query(..., max_length=64)) -> dict:
+        dropper = storage.get_dropper_by_chat(chat_id)
+        if not dropper:
+            raise HTTPException(status_code=404, detail="Дроппера не знайдено")
+        ledger = storage.list_ledger(dropper.id, limit=100)
+        referrals = [x for x in ledger if x["entry_type"] == "referral_credit"]
+        return {
+            "dropper": dropper.to_dict(),
+            "balance": storage.get_balance(dropper.id),
+            "referral_earned_total": round(sum(x["amount"] for x in referrals), 2),
+            "ledger": ledger,
+            "referrals": referrals,
+            "note": (
+                "Реферальні нарахування = % від дроп-ціни замовлень "
+                "приведених дропперів (після підтвердження замовлення)."
+            ),
+        }
+
+    @app.get("/api/owner/balances")
+    async def owner_balances(
+        owner_chat_id: str = Query("", max_length=64),
+        owner_user_id: str = Query("", max_length=64),
+    ) -> dict:
+        _require_owner(owner_chat_id, owner_user_id)
+        items = storage.list_dropper_balances()
+        referral_history = storage.list_ledger(entry_type="referral_credit", limit=100)
+        # збагачуємо іменами
+        enriched = []
+        for row in referral_history:
+            beneficiary = storage.get_dropper_by_id(row["dropper_id"])
+            source = (
+                storage.get_dropper_by_id(row["related_dropper_id"])
+                if row.get("related_dropper_id")
+                else None
+            )
+            enriched.append(
+                {
+                    **row,
+                    "beneficiary_name": beneficiary.company_name if beneficiary else "",
+                    "source_name": source.company_name if source else "",
+                }
+            )
+        return {
+            "count": len(items),
+            "items": items,
+            "referral_history": enriched,
+            "rule": "Реф.% рахується від дроп-ціни замовлення приведеного дроппера.",
+        }
+
     @app.get("/api/owner/staff")
     async def owner_list_staff(
         owner_chat_id: str = Query("", max_length=64),

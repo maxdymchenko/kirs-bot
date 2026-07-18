@@ -44,9 +44,17 @@
     ownerTabs: document.getElementById("ownerTabs"),
     ownerTabDroppers: document.getElementById("ownerTabDroppers"),
     ownerTabStaff: document.getElementById("ownerTabStaff"),
+    ownerTabBalances: document.getElementById("ownerTabBalances"),
     ownerTabOrder: document.getElementById("ownerTabOrder"),
     ownerDroppers: document.getElementById("ownerDroppers"),
     ownerStaff: document.getElementById("ownerStaff"),
+    ownerBalances: document.getElementById("ownerBalances"),
+    ownerReferralHistory: document.getElementById("ownerReferralHistory"),
+    balanceView: document.getElementById("balanceView"),
+    balanceHero: document.getElementById("balanceHero"),
+    balanceReferralTotal: document.getElementById("balanceReferralTotal"),
+    balanceLedger: document.getElementById("balanceLedger"),
+    balanceHint: document.getElementById("balanceHint"),
     staffForm: document.getElementById("staffForm"),
     staffError: document.getElementById("staffError"),
     orderMain: document.getElementById("orderMain"),
@@ -1340,7 +1348,7 @@
   }
 
   function setOwnerTab(tabName) {
-    const allowed = new Set(["droppers", "staff", "order"]);
+    const allowed = new Set(["droppers", "staff", "balances", "order"]);
     const name = allowed.has(tabName) ? tabName : "droppers";
     if (els.ownerTabs) {
       els.ownerTabs.querySelectorAll("[data-owner-tab]").forEach((btn) => {
@@ -1353,6 +1361,9 @@
     if (els.ownerTabStaff) {
       els.ownerTabStaff.classList.toggle("hidden", name !== "staff");
     }
+    if (els.ownerTabBalances) {
+      els.ownerTabBalances.classList.toggle("hidden", name !== "balances");
+    }
     if (els.ownerTabOrder) {
       els.ownerTabOrder.classList.toggle("hidden", name !== "order");
     }
@@ -1362,6 +1373,10 @@
     if (els.mainTabs) els.mainTabs.classList.toggle("hidden", !showOrder);
     if (els.cartChip) els.cartChip.classList.toggle("hidden", !showOrder);
 
+    if (name === "balances") {
+      renderOwnerBalances();
+    }
+
     if (showOrder) {
       loadColorOptions();
       loadDropperSettings().then(() => {
@@ -1369,6 +1384,103 @@
         updateCartIndicators();
         switchTab("catalog");
       });
+    }
+  }
+
+  function formatLedgerAmount(amount) {
+    const n = Number(amount) || 0;
+    const sign = n > 0 ? "+" : "";
+    const cls = n >= 0 ? "ledger-amount-plus" : "ledger-amount-minus";
+    return `<span class="${cls}">${sign}${formatMoney(n)}</span>`;
+  }
+
+  async function renderBalanceView() {
+    if (!els.balanceView) return;
+    els.balanceHero.textContent = "…";
+    els.balanceLedger.innerHTML = `<div class="ac-loading">Завантаження...</div>`;
+    try {
+      const chatId = currentTelegramChatId();
+      const response = await fetch(
+        `/api/dropper/balance?chat_id=${encodeURIComponent(chatId)}`
+      );
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.detail || "Помилка балансу");
+      els.balanceHero.textContent = formatMoney(data.balance || 0);
+      els.balanceReferralTotal.textContent = `Реферально нараховано: ${formatMoney(
+        data.referral_earned_total || 0
+      )}`;
+      if (data.note && els.balanceHint) els.balanceHint.textContent = data.note;
+      const rows = data.ledger || [];
+      els.balanceLedger.innerHTML = rows.length
+        ? rows
+            .map(
+              (r) => `
+          <article class="owner-card">
+            <div class="owner-card-title">${escapeHtml(r.title || r.entry_type)}</div>
+            <div class="meta">${formatLedgerAmount(r.amount)}</div>
+            <div class="meta-soft">${escapeHtml(r.note || "")}</div>
+            <div class="meta-soft">${escapeHtml(r.created_at || "")}</div>
+          </article>`
+            )
+            .join("")
+        : `<div class="empty">Поки немає нарахувань. Реферали з’являться після замовлень приведених дропперів.</div>`;
+    } catch (error) {
+      els.balanceHero.textContent = "—";
+      els.balanceLedger.innerHTML = `<div class="form-error">${escapeHtml(
+        error.message || "Помилка"
+      )}</div>`;
+    }
+  }
+
+  async function renderOwnerBalances() {
+    if (!els.ownerBalances) return;
+    els.ownerBalances.innerHTML = `<div class="ac-loading">Завантаження...</div>`;
+    if (els.ownerReferralHistory) {
+      els.ownerReferralHistory.innerHTML = "";
+    }
+    try {
+      const response = await fetch(`/api/owner/balances?${ownerAuthParams()}`);
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.detail || "Помилка");
+      const items = data.items || [];
+      els.ownerBalances.innerHTML = items.length
+        ? items
+            .map((row) => {
+              const d = row.dropper || {};
+              return `
+            <article class="owner-card">
+              <div class="owner-card-title">${escapeHtml(d.company_name || "")}</div>
+              <div class="meta">Баланс: <b>${escapeHtml(formatMoney(row.balance || 0))}</b></div>
+              <div class="meta-soft">Реф. нараховано: ${escapeHtml(
+                formatMoney(row.referral_earned_total || 0)
+              )} · код ${escapeHtml(d.referral_code || "—")}</div>
+            </article>`;
+            })
+            .join("")
+        : `<div class="empty">Немає дропперів</div>`;
+
+      const history = data.referral_history || [];
+      if (els.ownerReferralHistory) {
+        els.ownerReferralHistory.innerHTML = history.length
+          ? history
+              .map(
+                (r) => `
+            <article class="owner-card">
+              <div class="owner-card-title">${escapeHtml(r.beneficiary_name || "")}</div>
+              <div class="meta">${formatLedgerAmount(r.amount)} · від ${escapeHtml(
+                  r.source_name || "—"
+                )}</div>
+              <div class="meta-soft">${escapeHtml(r.note || "")}</div>
+              <div class="meta-soft">${escapeHtml(r.created_at || "")}</div>
+            </article>`
+              )
+              .join("")
+          : `<div class="empty">Історія рефералів порожня — з’явиться після підтверджених замовлень.</div>`;
+      }
+    } catch (error) {
+      els.ownerBalances.innerHTML = `<div class="form-error">${escapeHtml(
+        error.message || "Помилка"
+      )}</div>`;
     }
   }
 
@@ -1491,6 +1603,7 @@
     els.orderMain.classList.add("hidden");
     els.mainTabs.classList.add("hidden");
     els.cartChip.classList.add("hidden");
+    if (els.balanceView) els.balanceView.classList.add("hidden");
 
     if (mode === "register") {
       els.registerView.classList.remove("hidden");
@@ -1498,11 +1611,25 @@
     }
     if (mode === "owner") {
       els.ownerView.classList.remove("hidden");
-      setOwnerTab("droppers");
+      const initial =
+        queryParam("view") === "balances" || queryParam("view") === "balance"
+          ? "balances"
+          : "droppers";
+      setOwnerTab(initial);
       renderOwnerCabinet();
       return;
     }
+    if (mode === "balance") {
+      if (els.balanceView) els.balanceView.classList.remove("hidden");
+      renderBalanceView();
+      return;
+    }
     if (mode === "dropper") {
+      if (queryParam("view") === "balance") {
+        if (els.balanceView) els.balanceView.classList.remove("hidden");
+        renderBalanceView();
+        return;
+      }
       els.orderMain.classList.remove("hidden");
       els.mainTabs.classList.remove("hidden");
       els.cartChip.classList.remove("hidden");

@@ -36,19 +36,9 @@ def register_handlers(application: Application, ctx: BotContext) -> None:
         )
     )
     application.add_handler(
-        CallbackQueryHandler(stub_balance_callback, pattern=r"^stub:balance$")
-    )
-    application.add_handler(
         CallbackQueryHandler(mark_done_callback, pattern=f"^{DONE_CALLBACK_PREFIX}")
     )
     application.add_error_handler(on_error)
-
-
-async def stub_balance_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    query = update.callback_query
-    if not query:
-        return
-    await query.answer("Баланс — наступний етап", show_alert=True)
 
 
 async def on_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -66,6 +56,7 @@ def _webapp_url_with_context(
     base_url: str,
     chat_id: int | str | None = None,
     user_id: int | str | None = None,
+    view: str | None = None,
 ) -> str:
     """В групах Telegram відкриває звичайний браузер — передаємо контекст у query."""
     parts = urlsplit(base_url)
@@ -74,6 +65,8 @@ def _webapp_url_with_context(
         query["chat_id"] = str(chat_id).strip()
     if user_id is not None and str(user_id).strip():
         query["user_id"] = str(user_id).strip()
+    if view:
+        query["view"] = str(view).strip()
     return urlunsplit(
         (parts.scheme, parts.netloc, parts.path or "/", urlencode(query), parts.fragment)
     )
@@ -85,12 +78,13 @@ def _webapp_button(
     chat_type: str,
     chat_id: int | str | None = None,
     user_id: int | str | None = None,
+    view: str | None = None,
 ) -> InlineKeyboardButton:
     # У private чатах Telegram відкриває справжній Mini App (є initData).
+    url = _webapp_url_with_context(webapp_url, chat_id=chat_id, user_id=user_id, view=view)
     if chat_type == "private":
-        return InlineKeyboardButton(text=text, web_app=WebAppInfo(url=webapp_url))
+        return InlineKeyboardButton(text=text, web_app=WebAppInfo(url=url))
     # У групах web_app-кнопки заборонені → звичайне посилання з chat_id/user_id.
-    url = _webapp_url_with_context(webapp_url, chat_id=chat_id, user_id=user_id)
     return InlineKeyboardButton(text=text, url=url)
 
 
@@ -237,9 +231,13 @@ async def order_menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
                     )
                 ],
                 [
-                    InlineKeyboardButton(
-                        text="Мій баланс",
-                        callback_data="stub:balance",
+                    _webapp_button(
+                        "Баланси / реферали",
+                        webapp_url,
+                        chat_type,
+                        chat_id=chat_id,
+                        user_id=user_id,
+                        view="balances",
                     )
                 ],
             ]
@@ -269,9 +267,13 @@ async def order_menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
                     )
                 ],
                 [
-                    InlineKeyboardButton(
-                        text="Мій баланс",
-                        callback_data="stub:balance",
+                    _webapp_button(
+                        "Мій баланс",
+                        webapp_url,
+                        chat_type,
+                        chat_id=chat_id,
+                        user_id=user_id,
+                        view="balance",
                     )
                 ],
             ]

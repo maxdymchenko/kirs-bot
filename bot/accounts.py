@@ -196,6 +196,35 @@ class AppStorage:
                 ON chat_migrations(new_chat_id)
                 """
             )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS balance_ledger (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    dropper_id INTEGER NOT NULL,
+                    amount REAL NOT NULL,
+                    entry_type TEXT NOT NULL,
+                    title TEXT NOT NULL DEFAULT '',
+                    note TEXT NOT NULL DEFAULT '',
+                    related_order_id TEXT NOT NULL DEFAULT '',
+                    related_dropper_id INTEGER,
+                    meta_json TEXT NOT NULL DEFAULT '',
+                    created_at TEXT NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_balance_ledger_dropper
+                ON balance_ledger(dropper_id, id DESC)
+                """
+            )
+            conn.execute(
+                """
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_balance_ledger_idempotent
+                ON balance_ledger(dropper_id, entry_type, related_order_id)
+                WHERE related_order_id != ''
+                """
+            )
             conn.commit()
 
     def _row_get(self, row: sqlite3.Row, key: str, default: Any = None) -> Any:
@@ -569,3 +598,159 @@ class AppStorage:
                 "SELECT * FROM staff WHERE telegram_user_id = ?", (user_id,)
             ).fetchone()
         return self._row_staff(row)
+
+    def _row_ledger(self, row: sqlite3.Row) -> dict[str, Any]:
+        return {
+            "id": row["id"],
+            "dropper_id": row["dropper_id"],
+            "amount": float(row["amount"] or 0),
+            "entry_type": row["entry_type"],
+            "title": row["title"] or "",
+            "note": row["note"] or "",
+            "related_order_id": row["related_order_id"] or "",
+            "related_dropper_id": row["related_dropper_id"],
+            "meta_json": row["meta_json"] or "",
+            "created_at": row["created_at"],
+        }
+
+    def get_balance(self, dropper_id: int) -> float:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT COALESCE(SUM(amount), 0) AS bal FROM balance_ledger WHERE dropper_id = ?",
+                (int(dropper_id),),
+            ).fetchone()
+        return float(row["bal"] or 0)
+
+    def list_ledger(
+        self,
+        dropper_id: int | None = None,
+        entry_type: str | None = None,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        limit = max(1, min(int(limit or 100), 500))
+        sql = "SELECT * FROM balance_ledger WHERE 1=1"
+        params: list[Any] = []
+        if dropper_id is not None:
+            sql += " AND dropper_id = ?"
+            params.append(int(dropper_id))
+        if entry_type:
+            sql += " AND entry_type = ?"
+            params.append(str(entry_type).strip())
+        sql += " ORDER BY id DESC LIMIT ?"
+        params.append(limit)
+        with self._connect() as conn:
+            rows = conn.execute(sql, params).fetchall()
+        return [self._row_ledger(r) for r in rows]
+
+    def add_ledger_entry(
+        self,
+        *,
+        dropper_id: int,
+        amount: float,
+        entry_type: str,
+        title: str = "",
+        note: str = "",
+        related_order_id: str = "",
+        related_dropper_id: int | None = None,
+        meta_json: str = "",
+    ) -> dict[str, Any] | None:
+        now = _now()
+        amount = float(amount)
+        entry_type = str(entry_type or "").strip()
+        related_order_id = str(related_order_id or "").strip()
+        if not entry_type:
+            raise ValueError("entry_type required")
+        with self._connect() as conn:
+            try:
+                cur = conn.execute(
+                    """
+                    INSERT INTO balance_ledger (
+                        dropper_id, amount, entry_type, title, note,
+                        related_order_id, related_dropper_id, meta_json, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        int(dropper_id),
+                        amount,
+                        entry_type,
+                        (title or "").strip(),
+                        (note or "").strip(),
+                        related_order_id,
+                        related_dropper_id,
+                        meta_json or "",
+                        now,
+                    ),
+                )
+                entry_id = int(cur.lastrowid)
+                conn.commit()
+            except sqlite3.IntegrityError:
+                # Ідемпотентність: повторне нарахування за той самий заказ
+                row = conn.execute(
+                    """
+                    SELECT * FROM balance_ledger
+                    WHERE dropper_id = ? AND entry_type = ? AND related_order_id = ?
+                    """,
+                    (int(dropper_id), entry_type, related_order_id),
+                ).fetchone()
+                return self._row_ledger(row) if row else None
+            row = conn.execute(
+                "SELECT * FROM balance_ledger WHERE id = ?", (entry_id,)
+            ).fetchone()
+        return self._row_ledger(row)
+
+    def accrue_referral_from_drop_total(
+        self,
+        *,
+        source_dropper_id: int,
+        drop_total: float,
+        order_id: str,
+    ) -> dict[str, Any] | None:
+        """
+        Нарахування рефералу: % від дроп-суми замовлення
+        на баланс дроппера, який запросив source.
+        """
+        source = self.get_dropper_by_id(source_dropper_id)
+        if not source or not source.referred_by_dropper_id:
+            return None
+        referrer = self.get_dropper_by_id(source.referred_by_dropper_id)
+        if not referrer or float(referrer.referral_percent or 0) <= 0:
+            return None
+        total = float(drop_total or 0)
+        if total <= 0:
+            return None
+        amount = round(total * float(referrer.referral_percent) / 100.0, 2)
+        if amount <= 0:
+            return None
+        return self.add_ledger_entry(
+            dropper_id=referrer.id,
+            amount=amount,
+            entry_type="referral_credit",
+            title=f"Реферал від {source.company_name}",
+            note=(
+                f"{referrer.referral_percent}% від дроп-суми {total:.2f} ₴ "
+                f"(заказ {order_id})"
+            ),
+            related_order_id=str(order_id).strip(),
+            related_dropper_id=source.id,
+            meta_json=(
+                f'{{"drop_total":{total},"percent":{float(referrer.referral_percent)},'
+                f'"source_dropper_id":{source.id}}}'
+            ),
+        )
+
+    def list_dropper_balances(self) -> list[dict[str, Any]]:
+        droppers = self.list_droppers()
+        items = []
+        for d in droppers:
+            bal = self.get_balance(d.id)
+            refs = self.list_ledger(d.id, entry_type="referral_credit", limit=5)
+            referral_earned = sum(x["amount"] for x in self.list_ledger(d.id, entry_type="referral_credit", limit=5000))
+            items.append(
+                {
+                    "dropper": d.to_dict(),
+                    "balance": bal,
+                    "referral_earned_total": round(float(referral_earned), 2),
+                    "recent_referrals": refs,
+                }
+            )
+        return items

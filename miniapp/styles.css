@@ -208,8 +208,28 @@ select {
 .owner-tabs {
   margin: 8px 0 14px;
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
 }
+
+@media (min-width: 420px) {
+  .owner-tabs {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+}
+
+.balance-hero {
+  margin-top: 8px;
+  padding: 18px 16px;
+  border-radius: 16px;
+  background: #fff;
+  border: 1px solid var(--line);
+  font-size: 28px;
+  font-weight: 800;
+}
+
+.ledger-amount-plus { color: var(--ok); font-weight: 800; }
+.ledger-amount-minus { color: var(--danger); font-weight: 800; }
 
 .owner-panel {
   display: grid;

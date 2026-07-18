@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
   <title>Kirs — Замовлення</title>
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
-  <link rel="stylesheet" href="/static/styles.css?v=20260718t" />
+  <link rel="stylesheet" href="/static/styles.css?v=20260718u" />
 </head>
 <body>
   <div class="app">
@@ -55,6 +55,7 @@
       <nav class="tabs owner-tabs" id="ownerTabs">
         <button type="button" class="tab active" data-owner-tab="droppers">Дроппери</button>
         <button type="button" class="tab" data-owner-tab="staff">Співробітники</button>
+        <button type="button" class="tab" data-owner-tab="balances">Баланси</button>
         <button type="button" class="tab" data-owner-tab="order">Форма</button>
       </nav>
 
@@ -90,11 +91,28 @@
         <div id="ownerStaff" class="results"></div>
       </div>
 
+      <div id="ownerTabBalances" class="owner-panel hidden">
+        <h2 class="section-title">Баланси дропперів</h2>
+        <p class="hint">Реф.% нараховується від дроп-ціни замовлень приведених дропперів.</p>
+        <div id="ownerBalances" class="results"></div>
+        <h2 class="section-title" style="margin-top:18px">Історія реферальних нарахувань</h2>
+        <div id="ownerReferralHistory" class="results"></div>
+      </div>
+
       <div id="ownerTabOrder" class="owner-panel hidden">
         <p class="hint owner-order-hint">
           Тимчасовий доступ до каталогу/форми для налаштування. Пізніше цю вкладку сховаємо з кабінету власника.
         </p>
       </div>
+    </section>
+
+    <section id="balanceView" class="view hidden">
+      <h1 class="title">Мій баланс</h1>
+      <p class="hint" id="balanceHint">Реферальні нарахування з’являться після підтверджених замовлень ваших рефералів.</p>
+      <div class="balance-hero" id="balanceHero">—</div>
+      <div class="meta" id="balanceReferralTotal"></div>
+      <h2 class="section-title" style="margin-top:16px">Історія нарахувань</h2>
+      <div id="balanceLedger" class="results"></div>
     </section>
 
     <nav class="tabs hidden" id="mainTabs">
@@ -369,6 +387,6 @@
     </main>
   </div>
 
-  <script src="/static/app.js?v=20260718t"></script>
+  <script src="/static/app.js?v=20260718u"></script>
 </body>
 </html>
