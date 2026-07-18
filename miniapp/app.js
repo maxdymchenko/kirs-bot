@@ -1697,7 +1697,7 @@
                 <span class="setting-control">
                   <input class="setting-input" type="number" min="0" max="100" step="0.1"
                     data-rule-num="extra_discount_percent"
-                    value="${escapeHtml(String(d.extra_discount_percent || 0))}" />
+                    value="${escapeHtml(String(Math.min(100, Number(d.extra_discount_percent) || 0)))}" />
                 </span>
               </label>
               <label class="setting-row">
@@ -1959,10 +1959,18 @@
       }
       if (num) {
         const key = num.getAttribute("data-rule-num");
-        const value = Number(num.value);
+        let value = Number(num.value);
+        if (!Number.isFinite(value) || value < 0) value = 0;
+        if (
+          (key === "extra_discount_percent" || key === "referral_percent") &&
+          value > 100
+        ) {
+          value = 100;
+        }
+        num.value = String(value);
         const prev = num.defaultValue;
-        num.defaultValue = String(num.value);
-        await persistRule(card, { [key]: Number.isFinite(value) ? value : 0 }, () => {
+        num.defaultValue = String(value);
+        await persistRule(card, { [key]: value }, () => {
           num.value = prev;
           num.defaultValue = prev;
         });
