@@ -110,13 +110,14 @@ class CatalogService:
             rows = ws.get_all_values()
             variants: list[ProductVariant] = []
 
+            # A ID, B код, C название, E цвет, F наличиеличие, G дроп-цена, M фото
             for row in rows[1:]:
-                while len(row) < 12:
+                while len(row) < 13:
                     row.append("")
                 product_id = str(row[0]).strip()
                 code = str(row[1]).strip().lstrip("'")
                 name = str(row[2]).strip()
-                color = str(row[3]).strip()
+                color = str(row[4]).strip()
                 if not code or not name:
                     continue
                 variants.append(
@@ -125,9 +126,9 @@ class CatalogService:
                         code=code,
                         name=name,
                         color=color,
-                        stock=_parse_stock(row[4]),
-                        drop_price=str(row[5]).strip(),
-                        photo_url=str(row[11]).strip(),
+                        stock=_parse_stock(row[5]),
+                        drop_price=str(row[6]).strip(),
+                        photo_url=str(row[12]).strip(),
                     )
                 )
 
