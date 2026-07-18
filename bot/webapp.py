@@ -423,13 +423,16 @@ def create_web_app(
         return {"ok": True, "dropper": dropper.to_dict()}
 
     @app.get("/api/products/colors")
-    async def product_colors() -> dict:
+    async def product_colors(
+        q: str = Query("", max_length=64),
+        limit: int = Query(40, ge=1, le=200),
+    ) -> dict:
         try:
-            colors = catalog.list_colors()
+            colors = catalog.list_colors(query=q, limit=limit)
         except Exception:
             logger.exception("Ошибка чтения цветов каталога")
             raise HTTPException(status_code=500, detail="Не удалось прочитать каталог") from None
-        return {"count": len(colors), "items": colors}
+        return {"query": q.strip(), "count": len(colors), "items": colors}
 
     @app.get("/api/products/search")
     async def search_products(

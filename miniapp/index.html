@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
   <title>Kirs — Замовлення</title>
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
-  <link rel="stylesheet" href="/static/styles.css?v=20260718w" />
+  <link rel="stylesheet" href="/static/styles.css?v=20260718x" />
 </head>
 <body>
   <div class="app">
@@ -123,7 +123,7 @@
     <main id="orderMain" class="hidden">
       <section id="catalogView" class="view">
         <h1 class="title">Оформити замовлення</h1>
-        <p class="hint">Пошук за кодом або назвою. Колір — додатковий фільтр.</p>
+        <p class="hint">Код або назва. Фільтри — за потреби.</p>
 
         <form id="searchForm" class="search-block">
           <div class="search-row">
@@ -131,16 +131,31 @@
               id="searchInput"
               type="text"
               autocomplete="off"
-              placeholder="Код або назва, напр. Geneva"
+              placeholder="Код або назва, напр. 010 / Geneva"
             />
             <button type="submit" class="btn primary">Пошук</button>
           </div>
-          <label class="field compact-field">
-            <span class="field-label">Фільтр за кольором</span>
-            <select id="colorFilter">
-              <option value="">Усі кольори</option>
-            </select>
-          </label>
+          <div class="filter-bar">
+            <button type="button" class="filter-toggle" id="filtersToggle" aria-expanded="false">
+              Фільтри
+              <span class="filter-badge hidden" id="filtersBadge">1</span>
+            </button>
+            <button type="button" class="filter-clear hidden" id="filtersClear">Скинути</button>
+          </div>
+          <div id="filtersPanel" class="filters-panel hidden">
+            <label class="field compact-field">
+              <span class="field-label">Колір</span>
+              <div class="ac-field" data-ac="color">
+                <input
+                  id="colorFilter"
+                  type="text"
+                  autocomplete="off"
+                  placeholder="Почніть вводити колір..."
+                />
+                <div class="ac-dropdown hidden" id="colorDropdown" role="listbox"></div>
+              </div>
+            </label>
+          </div>
         </form>
 
         <div id="status" class="status"></div>
@@ -387,6 +402,6 @@
     </main>
   </div>
 
-  <script src="/static/app.js?v=20260718w"></script>
+  <script src="/static/app.js?v=20260718x"></script>
 </body>
 </html>

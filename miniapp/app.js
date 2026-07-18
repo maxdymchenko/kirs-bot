@@ -61,6 +61,11 @@
     searchForm: document.getElementById("searchForm"),
     searchInput: document.getElementById("searchInput"),
     colorFilter: document.getElementById("colorFilter"),
+    colorDropdown: document.getElementById("colorDropdown"),
+    filtersToggle: document.getElementById("filtersToggle"),
+    filtersPanel: document.getElementById("filtersPanel"),
+    filtersBadge: document.getElementById("filtersBadge"),
+    filtersClear: document.getElementById("filtersClear"),
     status: document.getElementById("status"),
     results: document.getElementById("results"),
     catalogView: document.getElementById("catalogView"),
@@ -693,22 +698,81 @@
   }
 
   async function loadColorOptions() {
-    if (!els.colorFilter) return;
-    try {
-      const response = await fetch("/api/products/colors");
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.detail || "colors error");
-      const current = els.colorFilter.value;
-      const colors = data.items || [];
-      els.colorFilter.innerHTML =
-        `<option value="">Усі кольори</option>` +
-        colors
-          .map((c) => `<option value="${escapeHtml(c)}">${escapeHtml(c)}</option>`)
-          .join("");
-      if (current) els.colorFilter.value = current;
-    } catch (error) {
-      console.warn("colors", error);
+    // colors now load via autocomplete; keep as no-op for callers
+  }
+
+  const colorState = {
+    timer: null,
+    req: 0,
+    selected: "",
+  };
+
+  function syncFiltersUi() {
+    const active = Boolean(colorState.selected || (els.colorFilter?.value || "").trim());
+    if (els.filtersBadge) {
+      els.filtersBadge.classList.toggle("hidden", !active);
+      els.filtersBadge.textContent = active ? "1" : "";
     }
+    if (els.filtersClear) {
+      els.filtersClear.classList.toggle("hidden", !active);
+    }
+    if (els.filtersToggle) {
+      els.filtersToggle.classList.toggle("is-active", active);
+    }
+  }
+
+  function setColorFilter(value, { runSearch = false } = {}) {
+    colorState.selected = (value || "").trim();
+    if (els.colorFilter) els.colorFilter.value = colorState.selected;
+    hideDropdown(els.colorDropdown);
+    syncFiltersUi();
+    if (runSearch && els.searchForm && (els.searchInput.value.trim() || colorState.selected)) {
+      els.searchForm.requestSubmit();
+    }
+  }
+
+  function renderColorOptions(items) {
+    if (!els.colorDropdown) return;
+    if (!items.length) {
+      showDropdownMessage(els.colorDropdown, "Нічого не знайдено");
+      return;
+    }
+    els.colorDropdown.innerHTML = items
+      .map(
+        (color, index) => `
+      <button type="button" class="ac-option" data-color-index="${index}" role="option">
+        ${escapeHtml(color)}
+      </button>`
+      )
+      .join("");
+    els.colorDropdown.dataset.items = JSON.stringify(items);
+    els.colorDropdown.classList.remove("hidden");
+  }
+
+  async function searchColors(query) {
+    if (!els.colorDropdown) return;
+    const reqId = ++colorState.req;
+    showDropdownMessage(els.colorDropdown, "Шукаємо...", "ac-loading");
+    try {
+      const response = await fetch(
+        `/api/products/colors?q=${encodeURIComponent(query)}&limit=40`
+      );
+      const data = await response.json();
+      if (reqId !== colorState.req) return;
+      if (!response.ok) {
+        throw new Error(typeof data.detail === "string" ? data.detail : "Помилка кольорів");
+      }
+      renderColorOptions(data.items || []);
+    } catch (error) {
+      if (reqId !== colorState.req) return;
+      showDropdownMessage(els.colorDropdown, error.message || "Не вдалося завантажити");
+    }
+  }
+
+  function scheduleColorSearch(value) {
+    clearTimeout(colorState.timer);
+    const query = value.trim();
+    colorState.timer = setTimeout(() => searchColors(query), query ? 220 : 0);
   }
 
   function updateRequisitesIntro(total) {
@@ -1047,9 +1111,9 @@
   els.searchForm.addEventListener("submit", async (event) => {
     event.preventDefault();
     const query = els.searchInput.value.trim();
-    const color = els.colorFilter?.value?.trim() || "";
+    const color = (colorState.selected || els.colorFilter?.value || "").trim();
     if (!query && !color) {
-      els.status.textContent = "Введіть код/назву або оберіть колір";
+      els.status.textContent = "Введіть код/назву або оберіть колір у фільтрах";
       return;
     }
 
@@ -1073,13 +1137,54 @@
     }
   });
 
-  if (els.colorFilter) {
-    els.colorFilter.addEventListener("change", () => {
-      if (els.searchInput.value.trim() || els.colorFilter.value) {
-        els.searchForm.requestSubmit();
+  if (els.filtersToggle && els.filtersPanel) {
+    els.filtersToggle.addEventListener("click", () => {
+      const open = els.filtersPanel.classList.toggle("hidden") === false;
+      els.filtersToggle.setAttribute("aria-expanded", open ? "true" : "false");
+      els.filtersToggle.classList.toggle("is-open", open);
+      if (open && els.colorFilter && !els.colorFilter.value.trim()) {
+        scheduleColorSearch("");
       }
     });
   }
+
+  if (els.filtersClear) {
+    els.filtersClear.addEventListener("click", () => {
+      setColorFilter("", { runSearch: Boolean(els.searchInput.value.trim()) });
+      if (!els.searchInput.value.trim()) {
+        els.results.innerHTML = "";
+        els.status.textContent = "";
+      }
+    });
+  }
+
+  if (els.colorFilter) {
+    els.colorFilter.addEventListener("input", () => {
+      colorState.selected = "";
+      syncFiltersUi();
+      scheduleColorSearch(els.colorFilter.value);
+    });
+    els.colorFilter.addEventListener("focus", () => {
+      scheduleColorSearch(els.colorFilter.value || "");
+    });
+  }
+
+  if (els.colorDropdown) {
+    els.colorDropdown.addEventListener("mousedown", (event) => {
+      const btn = event.target.closest("[data-color-index]");
+      if (!btn) return;
+      event.preventDefault();
+      const items = JSON.parse(els.colorDropdown.dataset.items || "[]");
+      const item = items[Number(btn.getAttribute("data-color-index"))];
+      if (item) setColorFilter(item, { runSearch: true });
+    });
+  }
+
+  document.addEventListener("click", (event) => {
+    if (!event.target.closest('[data-ac="color"]')) {
+      hideDropdown(els.colorDropdown);
+    }
+  });
 
   els.results.addEventListener("click", (event) => {
     const btn = event.target.closest("[data-add]");

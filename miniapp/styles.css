@@ -125,12 +125,70 @@ body {
 
 .search-block {
   display: grid;
-  gap: 8px;
+  gap: 10px;
   margin: 14px 0 10px;
 }
 
 .search-block .search-row {
   margin: 0;
+}
+
+.filter-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.filter-toggle {
+  border: 1px solid var(--line);
+  background: #fff;
+  color: var(--text);
+  border-radius: 999px;
+  padding: 8px 14px;
+  font-size: 13px;
+  font-weight: 700;
+  font-family: inherit;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.filter-toggle.is-open,
+.filter-toggle.is-active {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.filter-badge {
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: var(--accent);
+  color: #fff;
+  font-size: 11px;
+  line-height: 18px;
+  text-align: center;
+}
+
+.filter-clear {
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 600;
+  font-family: inherit;
+  cursor: pointer;
+  padding: 6px 4px;
+}
+
+.filters-panel {
+  background: #fff;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 12px;
 }
 
 .compact-field {

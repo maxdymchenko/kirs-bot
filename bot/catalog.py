@@ -48,6 +48,10 @@ def _normalize_code(code: str) -> str:
     return code.lstrip("0") or "0"
 
 
+def _code_raw(code: str) -> str:
+    return str(code or "").strip().lstrip("'").casefold()
+
+
 def _parse_stock(raw: str) -> int | None:
     raw = str(raw or "").strip().replace(",", ".")
     if not raw:
@@ -60,6 +64,51 @@ def _parse_stock(raw: str) -> int | None:
 
 def _norm_text(value: str) -> str:
     return " ".join(str(value or "").casefold().split())
+
+
+def _code_relevance(query: str, code: str) -> int | None:
+    """
+    Оцінка релевантності коду (менше = краще).
+    None = не підходить.
+    """
+    q_raw = _code_raw(query)
+    c_raw = _code_raw(code)
+    q_norm = _normalize_code(query).casefold()
+    c_norm = _normalize_code(code).casefold()
+    if not q_raw and not q_norm:
+        return None
+
+    if q_raw and c_raw == q_raw:
+        return 0
+    if q_norm and c_norm == q_norm:
+        return 1
+    if q_raw and c_raw.startswith(q_raw):
+        return 10 + (len(c_raw) - len(q_raw))
+    if q_norm and c_norm.startswith(q_norm):
+        return 20 + (len(c_norm) - len(q_norm))
+    if q_raw and q_raw in c_raw:
+        return 40 + c_raw.find(q_raw)
+    if q_norm and q_norm in c_norm:
+        return 50 + c_norm.find(q_norm)
+    return None
+
+
+def _name_relevance(query: str, name: str) -> int | None:
+    needle = _norm_text(query)
+    hay = _norm_text(name)
+    if not needle:
+        return None
+    if hay == needle:
+        return 0
+    if hay.startswith(needle):
+        return 10
+    if needle in hay:
+        return 20 + hay.find(needle)
+    # усі слова запиту є в назві
+    words = [w for w in needle.split() if w]
+    if words and all(w in hay for w in words):
+        return 30
+    return None
 
 
 class CatalogService:
@@ -140,17 +189,30 @@ class CatalogService:
             self._loaded_at = now
             logger.info("Каталог загружен: %d позиций", len(variants))
 
-    def list_colors(self) -> list[str]:
+    def list_colors(self, query: str = "", limit: int = 40) -> list[str]:
         self.refresh()
+        needle = _norm_text(query)
         with self._lock:
             colors = sorted(
                 {v.color.strip() for v in self._variants if v.color and v.color.strip()},
                 key=lambda c: c.casefold(),
             )
-        return colors
+        if not needle:
+            return colors[: max(1, min(limit, 200))]
+        scored: list[tuple[int, str]] = []
+        for color in colors:
+            n = _norm_text(color)
+            if n == needle:
+                scored.append((0, color))
+            elif n.startswith(needle):
+                scored.append((1, color))
+            elif needle in n:
+                scored.append((2, color))
+        scored.sort(key=lambda x: (x[0], x[1].casefold()))
+        return [c for _, c in scored[: max(1, min(limit, 200))]]
 
     def search_by_code(self, query: str) -> list[ProductVariant]:
-        """Совместимость: точный поиск по коду."""
+        """Совместимость: поиск по коду (точное + частичное)."""
         return self.search(query=query, color="", mode="code")
 
     def search(
@@ -161,10 +223,10 @@ class CatalogService:
         mode: str = "auto",
     ) -> list[ProductVariant]:
         """
-        Гибридный поиск:
-        - по коду (точное совпадение после нормализации нулей)
-        - по названию (полное и частичное, регистронезависимо)
-        - опциональный фильтр по цвету
+        Гибридный поиск с ранжированием:
+        - код: точний → починається з → містить (010 → 010, 010T, 010TK)
+        - назва: точна → починається з → містить
+        - опційний фільтр кольору
         """
         self.refresh()
         needle = _norm_text(query)
@@ -175,42 +237,42 @@ class CatalogService:
         with self._lock:
             variants = list(self._variants)
 
-        code_hits: list[ProductVariant] = []
-        name_exact: list[ProductVariant] = []
-        name_partial: list[ProductVariant] = []
-
+        ranked: list[tuple[tuple[int, int, str], ProductVariant]] = []
         for v in variants:
             if color_needle and color_needle not in _norm_text(v.color):
                 continue
 
             if not needle:
-                name_partial.append(v)
+                ranked.append(((90, 0, v.code.casefold()), v))
                 continue
 
-            code_norm = _normalize_code(v.code)
-            query_code = _normalize_code(query)
-            name_norm = _norm_text(v.name)
-
-            if mode in {"auto", "code"} and query_code and code_norm == query_code:
-                code_hits.append(v)
-                continue
-
+            code_score = None
+            name_score = None
+            if mode in {"auto", "code"}:
+                code_score = _code_relevance(query, v.code)
             if mode in {"auto", "name"}:
-                if name_norm == needle:
-                    name_exact.append(v)
-                elif needle in name_norm:
-                    name_partial.append(v)
+                name_score = _name_relevance(query, v.name)
 
-        # Приоритет: точный код → точное имя → частичное имя
+            if code_score is None and name_score is None:
+                continue
+
+            # Код важливіший за назву; всередині — за релевантністю
+            if code_score is not None:
+                sort_key = (0, code_score, v.code.casefold())
+            else:
+                sort_key = (1, name_score or 99, v.name.casefold())
+            ranked.append((sort_key, v))
+
+        ranked.sort(key=lambda item: item[0])
+
         seen: set[str] = set()
         results: list[ProductVariant] = []
-        for group in (code_hits, name_exact, name_partial):
-            for item in group:
-                key = f"{item.product_id}|{item.code}|{item.color}"
-                if key in seen:
-                    continue
-                seen.add(key)
-                results.append(item)
-                if len(results) >= max(1, min(limit, 200)):
-                    return results
+        for _, item in ranked:
+            key = f"{item.product_id}|{item.code}|{item.color}"
+            if key in seen:
+                continue
+            seen.add(key)
+            results.append(item)
+            if len(results) >= max(1, min(limit, 200)):
+                break
         return results
