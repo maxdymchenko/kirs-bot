@@ -43,7 +43,13 @@ def create_web_app(catalog: CatalogService) -> FastAPI:
         index = MINIAPP_DIR / "index.html"
         if not index.exists():
             raise HTTPException(status_code=404, detail="Mini App не найдена")
-        return FileResponse(index)
+        return FileResponse(
+            index,
+            headers={
+                "Cache-Control": "no-store, no-cache, must-revalidate",
+                "Pragma": "no-cache",
+            },
+        )
 
     if MINIAPP_DIR.exists():
         app.mount("/static", StaticFiles(directory=str(MINIAPP_DIR)), name="static")
