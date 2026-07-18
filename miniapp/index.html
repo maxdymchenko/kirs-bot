@@ -5,24 +5,85 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
   <title>Kirs — Замовлення</title>
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
-  <link rel="stylesheet" href="/static/styles.css?v=20260718j" />
+  <link rel="stylesheet" href="/static/styles.css?v=20260718n" />
 </head>
 <body>
   <div class="app">
     <header class="topbar">
       <div class="brand">KIRS</div>
-      <button type="button" class="cart-chip" id="cartChip" aria-label="Кошик">
+      <button type="button" class="cart-chip hidden" id="cartChip" aria-label="Кошик">
         <span class="cart-chip-icon">🛒</span>
         <span id="cartChipText">0</span>
       </button>
     </header>
 
-    <nav class="tabs" id="mainTabs">
+    <div id="bootStatus" class="view status">Завантаження...</div>
+
+    <section id="registerView" class="view hidden">
+      <h1 class="title">Реєстрація дроппера</h1>
+      <p class="hint">Один раз заповніть дані компанії. Після цього група буде активна для замовлень.</p>
+      <form id="registerForm" novalidate>
+        <label class="field">
+          <span class="field-label">Назва компанії / ФОП</span>
+          <input id="regCompany" name="company_name" type="text" required placeholder="Назва" />
+        </label>
+        <label class="field">
+          <span class="field-label">Контактна особа</span>
+          <input id="regContact" name="contact_name" type="text" required placeholder="Ім'я Прізвище" />
+        </label>
+        <label class="field">
+          <span class="field-label">Телефон</span>
+          <input id="regPhone" name="phone" type="tel" inputmode="tel" required placeholder="+380..." />
+        </label>
+        <label class="field">
+          <span class="field-label">Коментар</span>
+          <textarea id="regComment" name="comment" rows="2" placeholder="Необовʼязково"></textarea>
+        </label>
+        <p id="registerError" class="form-error hidden"></p>
+        <button type="submit" class="btn primary block">Зареєструвати</button>
+      </form>
+    </section>
+
+    <section id="ownerView" class="view hidden">
+      <h1 class="title">Кабінет власника</h1>
+      <p class="hint">Дроппери та співробітники. Аналітика — наступними етапами.</p>
+
+      <div class="form-section">
+        <h2 class="section-title">Дроппери</h2>
+        <div id="ownerDroppers" class="results"></div>
+      </div>
+
+      <div class="form-section">
+        <h2 class="section-title">Додати співробітника</h2>
+        <form id="staffForm" novalidate>
+          <label class="field">
+            <span class="field-label">Telegram user_id</span>
+            <input id="staffUserId" type="text" inputmode="numeric" required placeholder="123456789" />
+          </label>
+          <label class="field">
+            <span class="field-label">Ім'я</span>
+            <input id="staffName" type="text" placeholder="Ім'я співробітника" />
+          </label>
+          <label class="field">
+            <span class="field-label">Роль</span>
+            <select id="staffRole">
+              <option value="manager">Менеджер</option>
+              <option value="warehouse">Комірник</option>
+            </select>
+          </label>
+          <p id="staffError" class="form-error hidden"></p>
+          <button type="submit" class="btn primary block">Додати</button>
+        </form>
+        <div id="ownerStaff" class="results" style="margin-top:12px"></div>
+      </div>
+    </section>
+
+    <nav class="tabs hidden" id="mainTabs">
       <button type="button" class="tab active" data-tab="catalog">Каталог</button>
       <button type="button" class="tab" data-tab="cart">Кошик <span class="badge" id="cartBadge">0</span></button>
     </nav>
 
-    <main>
+    <main id="orderMain" class="hidden">
       <section id="catalogView" class="view">
         <h1 class="title">Оформити замовлення</h1>
         <p class="hint">Введіть код товару і натисніть «Пошук»</p>
@@ -189,7 +250,15 @@
             <div id="ttnFields" class="hidden">
               <label class="field">
                 <span class="field-label">Номер ТТН Нової Пошти</span>
-                <input id="ttnNumber" name="ttnNumber" type="text" inputmode="numeric" placeholder="Вкажіть ТТН" />
+                <input
+                  id="ttnNumber"
+                  name="ttnNumber"
+                  type="text"
+                  inputmode="numeric"
+                  autocomplete="off"
+                  placeholder="Вкажіть ТТН"
+                />
+                <p class="field-hint">Обовʼязково · лише цифри</p>
               </label>
             </div>
           </div>
@@ -235,21 +304,21 @@
 
             <div id="requisitesBlock" class="hidden">
               <div class="requisites-box">
-                <p>
-                  Виконайте оплату в розмірі <strong id="payAmountLabel">0 грн</strong> за реквізитами
-                  та завантажте фото/скрін квитанції про оплату.
+                <p id="requisitesIntro">
+                  Виконайте оплату в розмірі <strong id="payAmountLabel">0 грн</strong> за реквізитами.
                 </p>
                 <p class="requisites-warn">Зверніть увагу! Реквізити було оновлено.</p>
                 <div class="requisites-details" id="requisitesDetails"></div>
               </div>
-              <label class="field">
+              <label class="field hidden" id="receiptField">
                 <span class="field-label">Квитанція про оплату</span>
                 <input id="paymentReceipt" name="paymentReceipt" type="file" accept="image/*,.pdf" />
+                <span class="field-hint">Обовʼязково при режимі повної передоплати</span>
               </label>
               <label class="field hidden" id="ttnPdfField">
                 <span class="field-label">Файл PDF 100×100</span>
                 <input id="ttnPdf" name="ttnPdf" type="file" accept="application/pdf,.pdf" />
-                <span class="field-hint">Прикріпіть етикетку ТТН у форматі PDF 100×100</span>
+                <span class="field-hint">Обовʼязково · етикетка ТТН у форматі PDF 100×100</span>
               </label>
             </div>
           </div>
@@ -274,6 +343,6 @@
     </main>
   </div>
 
-  <script src="/static/app.js?v=20260718j"></script>
+  <script src="/static/app.js?v=20260718n"></script>
 </body>
 </html>

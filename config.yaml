@@ -5,9 +5,17 @@ bot:
   pending_commands:
     - neobrabotannye
     - pending
-  # Чаты, где доступно меню оформления заказа (Mini App)
-  drop_order_chat_ids:
-    - "-5396872628"  # Test_Kirs_bot
+
+  # Чаты владельца (пока Test_Kirs_bot = все участники = владельцы)
+  # Позже замените на личный/рабочий chat_id владельца бизнеса
+  owner_chat_ids:
+    - "-5396872628"
+
+  # Устаревший allowlist (оставлен для совместимости). Новые дропперы — через регистрацию в SQLite.
+  drop_order_chat_ids: []
+
+  # Опциональные дефолты из yaml (если дроппер ещё не в БД)
+  droppers: {}
 
 modules:
   email_olx:

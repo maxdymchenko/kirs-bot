@@ -123,7 +123,39 @@ body {
   margin: 14px 0 10px;
 }
 
-input, textarea {
+select {
+  width: 100%;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 12px 14px;
+  font-size: 16px;
+  background: #fff;
+  color: var(--text);
+  font-family: inherit;
+}
+
+.owner-card {
+  background: #fff;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 12px 14px;
+  display: grid;
+  gap: 8px;
+}
+
+.owner-card-title {
+  font-weight: 800;
+}
+
+.switch-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 14px;
+}
+
+input, textarea, select {
   width: 100%;
   border: 1px solid var(--line);
   border-radius: 12px;

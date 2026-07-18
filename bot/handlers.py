@@ -6,6 +6,7 @@ from telegram.constants import ParseMode
 from telegram.ext import Application, CallbackQueryHandler, CommandHandler, ContextTypes
 
 from bot.core import BotContext
+from bot.roles import resolve_session
 from bot.storage import NotificationStorage
 
 logger = logging.getLogger(__name__)
@@ -21,9 +22,19 @@ def register_handlers(application: Application, ctx: BotContext) -> None:
     application.add_handler(CommandHandler(["menu", "start"], order_menu_command))
     application.add_handler(CommandHandler("chatid", chat_id_command))
     application.add_handler(
+        CallbackQueryHandler(stub_balance_callback, pattern=r"^stub:balance$")
+    )
+    application.add_handler(
         CallbackQueryHandler(mark_done_callback, pattern=f"^{DONE_CALLBACK_PREFIX}")
     )
     application.add_error_handler(on_error)
+
+
+async def stub_balance_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    if not query:
+        return
+    await query.answer("Баланс — наступний етап", show_alert=True)
 
 
 async def on_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -37,18 +48,10 @@ async def on_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
             pass
 
 
-def _is_drop_order_chat(ctx: BotContext, chat_id: int | None) -> bool:
-    if chat_id is None:
-        return False
-    allowed = {str(c) for c in ctx.settings.drop_order_chat_ids}
-    current = str(chat_id)
-    if current in allowed:
-        return True
-    # После апгрейда группы в супергруппу id может стать -100...
-    for item in allowed:
-        if current.endswith(item.lstrip("-")) or item.endswith(current.lstrip("-")):
-            return True
-    return False
+def _webapp_button(text: str, webapp_url: str, chat_type: str) -> InlineKeyboardButton:
+    if chat_type == "private":
+        return InlineKeyboardButton(text=text, web_app=WebAppInfo(url=webapp_url))
+    return InlineKeyboardButton(text=text, url=webapp_url)
 
 
 async def chat_id_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -64,31 +67,26 @@ async def chat_id_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
 
 async def order_menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Меню оформления заказа — только в разрешённых чатах."""
     if not update.effective_chat or not update.message:
         return
 
     ctx: BotContext = context.bot_data["ctx"]
     chat_id = update.effective_chat.id
     chat_type = update.effective_chat.type
+    user_id = update.effective_user.id if update.effective_user else None
+
+    session = resolve_session(ctx.settings, ctx.app_storage, chat_id, user_id)
+    role = session.get("role")
+    need_registration = bool(session.get("need_registration"))
 
     logger.info(
-        "Команда меню: chat_id=%s type=%s text=%s allowed=%s webapp=%s",
+        "Команда меню: chat_id=%s type=%s role=%s need_reg=%s webapp=%s",
         chat_id,
         chat_type,
-        update.message.text,
-        _is_drop_order_chat(ctx, chat_id),
+        role,
+        need_registration,
         ctx.settings.webapp_url or "-",
     )
-
-    if not _is_drop_order_chat(ctx, chat_id):
-        await update.message.reply_text(
-            "Меню замовлень у цьому чаті недоступне.\n"
-            f"chat_id цього чату: `{chat_id}`\n"
-            "Надішліть цей id, якщо меню має працювати тут.",
-            parse_mode=ParseMode.MARKDOWN,
-        )
-        return
 
     webapp_url = ctx.settings.webapp_url
     if not webapp_url:
@@ -100,44 +98,61 @@ async def order_menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
         )
         return
 
-    keyboard_rows: list[list[InlineKeyboardButton]] = []
-    if chat_type == "private":
-        keyboard_rows.append(
+    if role == "owner":
+        keyboard = InlineKeyboardMarkup(
             [
-                InlineKeyboardButton(
-                    text="Оформити замовлення",
-                    web_app=WebAppInfo(url=webapp_url),
-                )
+                [_webapp_button("Кабінет власника", webapp_url, chat_type)],
+                [
+                    InlineKeyboardButton(
+                        text="Мій баланс",
+                        callback_data="stub:balance",
+                    )
+                ],
             ]
         )
-    else:
-        # В группе inline web_app недоступен — открываем HTTPS-форму кнопкой-ссылкой.
-        keyboard_rows.append(
-            [InlineKeyboardButton(text="Відкрити форму замовлення", url=webapp_url)]
+        await update.message.reply_text(
+            "Меню власника:\n\nКерування дропперами та співробітниками.",
+            reply_markup=keyboard,
         )
+        return
+
+    if role in {"manager", "warehouse"}:
+        await update.message.reply_text(
+            f"Роль: {role}.\nКабінет співробітника з’явиться наступним етапом."
+        )
+        return
+
+    if role == "dropper":
+        keyboard = InlineKeyboardMarkup(
+            [
+                [_webapp_button("Зробити замовлення", webapp_url, chat_type)],
+                [
+                    InlineKeyboardButton(
+                        text="Мій баланс",
+                        callback_data="stub:balance",
+                    )
+                ],
+            ]
+        )
+        await update.message.reply_text("Меню:", reply_markup=keyboard)
+        return
+
+    if need_registration:
+        keyboard = InlineKeyboardMarkup(
+            [[_webapp_button("Зареєструвати дроппера", webapp_url, chat_type)]]
+        )
+        await update.message.reply_text(
+            "Цю групу ще не зареєстровано як дроппера.\n"
+            "Натисніть кнопку нижче, щоб пройти реєстрацію один раз.",
+            reply_markup=keyboard,
+        )
+        return
 
     await update.message.reply_text(
-        "Меню:\n\nНатисніть кнопку нижче, щоб відкрити форму "
-        "(пошук по коду → кошик).",
-        reply_markup=InlineKeyboardMarkup(keyboard_rows),
+        "Меню недоступне в цьому чаті.\n"
+        f"chat_id: `{chat_id}`",
+        parse_mode=ParseMode.MARKDOWN,
     )
-
-    try:
-        from telegram import MenuButtonWebApp
-
-        await context.bot.set_chat_menu_button(
-            chat_id=chat_id,
-            menu_button=MenuButtonWebApp(
-                text="Замовлення",
-                web_app=WebAppInfo(url=webapp_url),
-            ),
-        )
-    except Exception:
-        logger.exception("Не удалось установить MenuButtonWebApp для chat_id=%s", chat_id)
-        await update.message.reply_text(
-            "Кнопку меню чату не вдалося увімкнути автоматично. "
-            "Форму можна відкрити кнопкою вище."
-        )
 
 
 async def pending_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -178,7 +193,9 @@ async def mark_done_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
         return
 
     user = query.from_user
-    user_label = f"@{user.username}" if user and user.username else (user.full_name if user else "менеджер")
+    user_label = (
+        f"@{user.username}" if user and user.username else (user.full_name if user else "менеджер")
+    )
 
     if notification.processed:
         await query.answer("Уже обработано")

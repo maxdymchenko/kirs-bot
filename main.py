@@ -22,7 +22,10 @@ logger = logging.getLogger(__name__)
 
 async def main() -> None:
     settings = load_settings()
-    ctx = BotContext(settings)
+    from bot.accounts import AppStorage
+
+    app_storage = AppStorage()
+    ctx = BotContext(settings, app_storage=app_storage)
     catalog = CatalogService()
 
     # Прогрев каталога (не падаем, если Sheets временно недоступен)
@@ -31,7 +34,7 @@ async def main() -> None:
     except Exception:
         logger.exception("Не удалось заранее загрузить каталог — поиск попробует позже")
 
-    web = create_web_app(catalog)
+    web = create_web_app(catalog, settings, app_storage)
     port = int(os.getenv("PORT", "8000"))
     config = uvicorn.Config(web, host="0.0.0.0", port=port, log_level="info")
     server = uvicorn.Server(config)

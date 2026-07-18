@@ -25,8 +25,8 @@ async def start_telegram_app(ctx: BotContext) -> Application:
         allowed_updates=Update.ALL_TYPES,
     )
     logger.info(
-        "Telegram polling запущен. drop_order_chats=%s webapp=%s",
-        ctx.settings.drop_order_chat_ids,
+        "Telegram polling запущен. owner_chats=%s webapp=%s",
+        ctx.settings.owner_chat_ids,
         ctx.settings.webapp_url or "-",
     )
     return application

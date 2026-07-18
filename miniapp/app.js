@@ -17,6 +17,16 @@
   };
 
   const els = {
+    bootStatus: document.getElementById("bootStatus"),
+    registerView: document.getElementById("registerView"),
+    registerForm: document.getElementById("registerForm"),
+    registerError: document.getElementById("registerError"),
+    ownerView: document.getElementById("ownerView"),
+    ownerDroppers: document.getElementById("ownerDroppers"),
+    ownerStaff: document.getElementById("ownerStaff"),
+    staffForm: document.getElementById("staffForm"),
+    staffError: document.getElementById("staffError"),
+    orderMain: document.getElementById("orderMain"),
     searchForm: document.getElementById("searchForm"),
     searchInput: document.getElementById("searchInput"),
     status: document.getElementById("status"),
@@ -62,6 +72,8 @@
     requisitesDetails: document.getElementById("requisitesDetails"),
     payAmountLabel: document.getElementById("payAmountLabel"),
     paymentReceipt: document.getElementById("paymentReceipt"),
+    receiptField: document.getElementById("receiptField"),
+    requisitesIntro: document.getElementById("requisitesIntro"),
     ttnPdfField: document.getElementById("ttnPdfField"),
     ttnPdf: document.getElementById("ttnPdf"),
     phone: document.getElementById("phone"),
@@ -73,6 +85,19 @@
     warehouse: document.getElementById("warehouse"),
     warehouseRef: document.getElementById("warehouseRef"),
     warehouseDropdown: document.getElementById("warehouseDropdown"),
+  };
+
+  const dropperSettings = {
+    chat_id: "",
+    require_full_payment: false,
+  };
+
+  const sessionState = {
+    role: "guest",
+    chat_id: "",
+    user_id: "",
+    username: "",
+    need_registration: false,
   };
 
   const PHONE_EXAMPLE = "+380(99)999-99-99";
@@ -243,7 +268,7 @@
     if (name === "cart") renderCart();
   }
 
-  function openCheckout() {
+  async function openCheckout() {
     const cart = loadCart();
     if (!cart.length) return;
     els.catalogView.classList.add("hidden");
@@ -251,6 +276,7 @@
     els.checkoutView.classList.remove("hidden");
     els.mainTabs.classList.add("hidden");
     document.querySelectorAll(".tab").forEach((tab) => tab.classList.remove("active"));
+    await loadDropperSettings();
     renderRequisitesDetails();
     syncDeliveryFields();
     syncPaymentAndTtn();
@@ -569,6 +595,55 @@
     );
   }
 
+  function currentTelegramChatId() {
+    if (sessionState.chat_id) return sessionState.chat_id;
+    const unsafe = tg?.initDataUnsafe || {};
+    if (unsafe.chat?.id != null) return String(unsafe.chat.id);
+    return "";
+  }
+
+  function currentTelegramUser() {
+    const unsafe = tg?.initDataUnsafe || {};
+    return {
+      user_id: sessionState.user_id || (unsafe.user?.id != null ? String(unsafe.user.id) : ""),
+      username: sessionState.username || unsafe.user?.username || "",
+    };
+  }
+
+  async function loadDropperSettings() {
+    const chatId = currentTelegramChatId();
+    dropperSettings.chat_id = chatId;
+    try {
+      const response = await fetch(
+        `/api/dropper/settings?chat_id=${encodeURIComponent(chatId)}`
+      );
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data.detail || "settings error");
+      }
+      dropperSettings.require_full_payment = Boolean(data.require_full_payment);
+      if (data.chat_id) dropperSettings.chat_id = String(data.chat_id);
+    } catch (error) {
+      console.warn("dropper settings", error);
+      dropperSettings.require_full_payment = false;
+    }
+  }
+
+  function updateRequisitesIntro(total) {
+    if (!els.requisitesIntro) return;
+    const amount = `${Math.round(total)} грн`;
+    if (dropperSettings.require_full_payment) {
+      els.requisitesIntro.innerHTML =
+        `Виконайте оплату в розмірі <strong id="payAmountLabel">${amount}</strong> за реквізитами ` +
+        `та завантажте фото/скрін квитанції про оплату.`;
+    } else {
+      els.requisitesIntro.innerHTML =
+        `Виконайте оплату в розмірі <strong id="payAmountLabel">${amount}</strong> за реквізитами.`;
+    }
+    // payAmountLabel був перезаписаний innerHTML — оновимо посилання
+    els.payAmountLabel = document.getElementById("payAmountLabel");
+  }
+
   function syncPaymentAndTtn() {
     const ownTtn = Boolean(els.ownTtn.checked);
     els.ttnFields.classList.toggle("hidden", !ownTtn);
@@ -585,15 +660,17 @@
     const payment = selectedPaymentMethod();
     const showRequisites = payment === "requisites";
     const showPrepay = !ownTtn && payment === "cod";
+    const showReceipt = showRequisites && dropperSettings.require_full_payment;
 
     els.prepayBlock.classList.toggle("hidden", !showPrepay);
     els.requisitesBlock.classList.toggle("hidden", !showRequisites);
+    els.receiptField.classList.toggle("hidden", !showReceipt);
     els.ttnPdfField.classList.toggle("hidden", !ownTtn);
 
     const total = Math.round(cartMoneyTotal());
     els.prepayMaxLabel.textContent = String(total);
     els.prepay.max = String(total);
-    els.payAmountLabel.textContent = `${total} грн`;
+    updateRequisitesIntro(total);
   }
 
   function stockLabel(stock) {
@@ -727,7 +804,7 @@
       npWarehouse: npState.warehouse,
       npStreet: npState.street,
       ownTtn: Boolean(form.ownTtn.checked),
-      ttnNumber: form.ttnNumber?.value.trim() || "",
+      ttnNumber: (form.ttnNumber?.value || "").replace(/\D/g, ""),
       paymentMethod,
       prepay: form.prepay.value.trim(),
       comment: form.comment.value.trim(),
@@ -762,6 +839,12 @@
     }
     if (data.ownTtn) {
       if (!data.ttnNumber) return "Вкажіть номер ТТН";
+      if (!/^\d+$/.test(data.ttnNumber)) {
+        return "Номер ТТН має містити лише цифри";
+      }
+      if (data.ttnNumber.length < 10) {
+        return "Вкажіть повний номер ТТН";
+      }
       if (data.paymentMethod !== "requisites") {
         return "При власній ТТН доступна лише оплата на реквізити";
       }
@@ -777,7 +860,11 @@
         return "Файл 100×100 має бути у форматі PDF";
       }
     }
-    if (data.paymentMethod === "requisites" && !data.receiptFile) {
+    if (
+      data.paymentMethod === "requisites" &&
+      dropperSettings.require_full_payment &&
+      !data.receiptFile
+    ) {
       return "Завантажте фото/скрін квитанції про оплату";
     }
     if (!data.rulesAccepted) {
@@ -920,6 +1007,26 @@
     }
   });
 
+  els.ttnNumber.addEventListener("input", () => {
+    const digits = els.ttnNumber.value.replace(/\D/g, "");
+    if (els.ttnNumber.value !== digits) {
+      els.ttnNumber.value = digits;
+    }
+  });
+
+  els.ttnNumber.addEventListener("paste", (event) => {
+    event.preventDefault();
+    const text = event.clipboardData?.getData("text") || "";
+    els.ttnNumber.value = text.replace(/\D/g, "");
+  });
+
+  els.ttnNumber.addEventListener("keydown", (event) => {
+    if (event.ctrlKey || event.metaKey || event.altKey) return;
+    if (event.key.length === 1 && !/\d/.test(event.key)) {
+      event.preventDefault();
+    }
+  });
+
   els.city.addEventListener("input", () => {
     clearCitySelection({ keepText: true });
     scheduleCitySearch(els.city.value);
@@ -1030,5 +1137,230 @@
     }
   });
 
+  async function renderOwnerCabinet() {
+    const chatId = currentTelegramChatId();
+    els.ownerDroppers.innerHTML = `<div class="ac-loading">Завантаження дропперів...</div>`;
+    els.ownerStaff.innerHTML = "";
+    try {
+      const [droppersRes, staffRes] = await Promise.all([
+        fetch(`/api/owner/droppers?owner_chat_id=${encodeURIComponent(chatId)}`),
+        fetch(`/api/owner/staff?owner_chat_id=${encodeURIComponent(chatId)}`),
+      ]);
+      const droppersData = await droppersRes.json();
+      const staffData = await staffRes.json();
+      if (!droppersRes.ok) throw new Error(droppersData.detail || "Помилка дропперів");
+      if (!staffRes.ok) throw new Error(staffData.detail || "Помилка співробітників");
+
+      const droppers = droppersData.items || [];
+      els.ownerDroppers.innerHTML = droppers.length
+        ? droppers
+            .map(
+              (d) => `
+          <article class="owner-card">
+            <div class="owner-card-title">${escapeHtml(d.company_name)}</div>
+            <div class="meta">${escapeHtml(d.contact_name)} · ${escapeHtml(d.phone)}</div>
+            <div class="meta">chat_id: <b>${escapeHtml(d.chat_id)}</b></div>
+            <label class="switch-row">
+              <span>Лише після повної оплати</span>
+              <input type="checkbox" data-pay-flag="${escapeHtml(d.chat_id)}" ${
+                d.require_full_payment ? "checked" : ""
+              } />
+            </label>
+          </article>`
+            )
+            .join("")
+        : `<div class="empty">Поки немає зареєстрованих дропперів</div>`;
+
+      const staff = staffData.items || [];
+      els.ownerStaff.innerHTML = staff.length
+        ? staff
+            .map(
+              (s) => `
+          <article class="owner-card">
+            <div class="owner-card-title">${escapeHtml(s.full_name || s.telegram_user_id)}</div>
+            <div class="meta">role: <b>${escapeHtml(s.role)}</b> · user_id: ${escapeHtml(
+                s.telegram_user_id
+              )}</div>
+          </article>`
+            )
+            .join("")
+        : `<div class="empty">Співробітників ще немає</div>`;
+    } catch (error) {
+      els.ownerDroppers.innerHTML = `<div class="form-error">${escapeHtml(
+        error.message || "Помилка"
+      )}</div>`;
+    }
+  }
+
+  function showMode(mode) {
+    els.bootStatus.classList.add("hidden");
+    els.registerView.classList.add("hidden");
+    els.ownerView.classList.add("hidden");
+    els.orderMain.classList.add("hidden");
+    els.mainTabs.classList.add("hidden");
+    els.cartChip.classList.add("hidden");
+
+    if (mode === "register") {
+      els.registerView.classList.remove("hidden");
+      return;
+    }
+    if (mode === "owner") {
+      els.ownerView.classList.remove("hidden");
+      renderOwnerCabinet();
+      return;
+    }
+    if (mode === "dropper") {
+      els.orderMain.classList.remove("hidden");
+      els.mainTabs.classList.remove("hidden");
+      els.cartChip.classList.remove("hidden");
+      updateCartIndicators();
+      return;
+    }
+    els.bootStatus.classList.remove("hidden");
+    els.bootStatus.textContent = "Немає доступу до цієї Mini App у поточному чаті.";
+  }
+
+  async function bootstrapSession() {
+    const unsafe = tg?.initDataUnsafe || {};
+    sessionState.chat_id = unsafe.chat?.id != null ? String(unsafe.chat.id) : "";
+    sessionState.user_id = unsafe.user?.id != null ? String(unsafe.user.id) : "";
+    sessionState.username = unsafe.user?.username || "";
+
+    try {
+      const response = await fetch(
+        `/api/session?chat_id=${encodeURIComponent(sessionState.chat_id)}&user_id=${encodeURIComponent(
+          sessionState.user_id
+        )}`
+      );
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.detail || "session error");
+      sessionState.role = data.role || "guest";
+      sessionState.need_registration = Boolean(data.need_registration);
+      if (data.chat_id) sessionState.chat_id = String(data.chat_id);
+
+      if (sessionState.role === "owner") {
+        showMode("owner");
+        return;
+      }
+      if (sessionState.role === "dropper") {
+        showMode("dropper");
+        return;
+      }
+      if (sessionState.need_registration) {
+        showMode("register");
+        return;
+      }
+      if (sessionState.role === "manager" || sessionState.role === "warehouse") {
+        els.bootStatus.classList.remove("hidden");
+        els.bootStatus.textContent = `Роль «${sessionState.role}». Кабінет співробітника — наступний етап.`;
+        return;
+      }
+      showMode("denied");
+    } catch (error) {
+      els.bootStatus.classList.remove("hidden");
+      els.bootStatus.textContent = error.message || "Помилка завантаження сесії";
+    }
+  }
+
+  if (els.registerForm) {
+    els.registerForm.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      els.registerError.classList.add("hidden");
+      const payload = {
+        chat_id: currentTelegramChatId(),
+        company_name: document.getElementById("regCompany").value.trim(),
+        contact_name: document.getElementById("regContact").value.trim(),
+        phone: document.getElementById("regPhone").value.trim(),
+        comment: document.getElementById("regComment").value.trim(),
+        user_id: currentTelegramUser().user_id,
+        username: currentTelegramUser().username,
+      };
+      try {
+        const response = await fetch("/api/droppers/register", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+        const data = await response.json();
+        if (!response.ok) {
+          throw new Error(
+            typeof data.detail === "string" ? data.detail : "Помилка реєстрації"
+          );
+        }
+        showToast("Реєстрацію завершено");
+        if (tg?.showAlert) {
+          tg.showAlert("Реєстрацію успішно завершено. Можна відкривати /menu для замовлень.");
+        }
+        sessionState.role = "dropper";
+        sessionState.need_registration = false;
+        showMode("dropper");
+      } catch (error) {
+        els.registerError.textContent = error.message || "Помилка реєстрації";
+        els.registerError.classList.remove("hidden");
+      }
+    });
+  }
+
+  if (els.staffForm) {
+    els.staffForm.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      els.staffError.classList.add("hidden");
+      const payload = {
+        owner_chat_id: currentTelegramChatId(),
+        telegram_user_id: document.getElementById("staffUserId").value.trim(),
+        full_name: document.getElementById("staffName").value.trim(),
+        role: document.getElementById("staffRole").value,
+        created_by_user_id: currentTelegramUser().user_id,
+      };
+      try {
+        const response = await fetch("/api/owner/staff", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+        const data = await response.json();
+        if (!response.ok) {
+          throw new Error(typeof data.detail === "string" ? data.detail : "Помилка");
+        }
+        showToast("Співробітника додано");
+        els.staffForm.reset();
+        renderOwnerCabinet();
+      } catch (error) {
+        els.staffError.textContent = error.message || "Помилка";
+        els.staffError.classList.remove("hidden");
+      }
+    });
+  }
+
+  if (els.ownerDroppers) {
+    els.ownerDroppers.addEventListener("change", async (event) => {
+      const input = event.target.closest("[data-pay-flag]");
+      if (!input) return;
+      const chatId = input.getAttribute("data-pay-flag");
+      try {
+        const response = await fetch(
+          `/api/owner/droppers/${encodeURIComponent(chatId)}/payment-flag`,
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              owner_chat_id: currentTelegramChatId(),
+              require_full_payment: Boolean(input.checked),
+            }),
+          }
+        );
+        const data = await response.json();
+        if (!response.ok) {
+          throw new Error(typeof data.detail === "string" ? data.detail : "Помилка");
+        }
+        showToast("Налаштування збережено");
+      } catch (error) {
+        showToast(error.message || "Не вдалося зберегти");
+        input.checked = !input.checked;
+      }
+    });
+  }
+
   updateCartIndicators();
+  bootstrapSession();
 })();

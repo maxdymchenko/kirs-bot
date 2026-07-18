@@ -14,6 +14,20 @@ logger = logging.getLogger(__name__)
 
 
 @dataclass
+class DropperConfig:
+    chat_id: str
+    name: str = ""
+    require_full_payment: bool = False
+
+    def to_public_dict(self) -> dict:
+        return {
+            "chat_id": self.chat_id,
+            "name": self.name,
+            "require_full_payment": self.require_full_payment,
+        }
+
+
+@dataclass
 class Settings:
     telegram_token: str
     telegram_chat_id: str
@@ -24,7 +38,9 @@ class Settings:
     poll_interval: int
     modules_config: dict
     pending_commands: list[str] = field(default_factory=lambda: ["neobrabotannye", "pending"])
+    owner_chat_ids: list[str] = field(default_factory=list)
     drop_order_chat_ids: list[str] = field(default_factory=list)
+    droppers: dict[str, DropperConfig] = field(default_factory=dict)
     webapp_url: str = ""
 
 
@@ -48,8 +64,31 @@ def load_settings(config_path: str | Path | None = None) -> Settings:
         raise ValueError("EMAIL_USER и EMAIL_PASSWORD должны быть заданы (Render Environment или .env)")
 
     bot_config = config.get("bot", {})
+    owner_chats = bot_config.get("owner_chat_ids") or []
+    owner_chats = [str(c).strip() for c in owner_chats if str(c).strip()]
+    # Временный дефолт, пока владелец не задан явно
+    if not owner_chats:
+        owner_chats = ["-5396872628"]
+
     drop_chats = bot_config.get("drop_order_chat_ids") or []
     drop_chats = [str(c).strip() for c in drop_chats if str(c).strip()]
+
+    droppers_raw = bot_config.get("droppers") or {}
+    droppers: dict[str, DropperConfig] = {}
+    if isinstance(droppers_raw, dict):
+        for raw_id, raw_cfg in droppers_raw.items():
+            chat_key = str(raw_id).strip()
+            if not chat_key:
+                continue
+            cfg = raw_cfg if isinstance(raw_cfg, dict) else {}
+            droppers[chat_key] = DropperConfig(
+                chat_id=chat_key,
+                name=str(cfg.get("name") or "").strip(),
+                require_full_payment=bool(cfg.get("require_full_payment", False)),
+            )
+    for chat_key in drop_chats:
+        if chat_key not in droppers:
+            droppers[chat_key] = DropperConfig(chat_id=chat_key)
 
     webapp_url = (
         os.getenv("WEBAPP_URL", "").strip().rstrip("/")
@@ -66,7 +105,9 @@ def load_settings(config_path: str | Path | None = None) -> Settings:
         poll_interval=bot_config.get("poll_interval", 60),
         modules_config=config.get("modules", {}),
         pending_commands=bot_config.get("pending_commands", ["neobrabotannye", "pending"]),
+        owner_chat_ids=owner_chats,
         drop_order_chat_ids=drop_chats,
+        droppers=droppers,
         webapp_url=webapp_url,
     )
 
@@ -74,10 +115,18 @@ def load_settings(config_path: str | Path | None = None) -> Settings:
 class BotContext:
     """Общий контекст для всех модулей."""
 
-    def __init__(self, settings: Settings, storage: NotificationStorage | None = None):
+    def __init__(
+        self,
+        settings: Settings,
+        storage: NotificationStorage | None = None,
+        app_storage=None,
+    ):
+        from bot.accounts import AppStorage
+
         self.settings = settings
         self.bot = Bot(token=settings.telegram_token)
         self.storage = storage or NotificationStorage()
+        self.app_storage = app_storage or AppStorage()
 
     async def send_notification(
         self,
