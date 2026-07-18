@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -19,6 +20,9 @@ SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets.readonly",
     "https://www.googleapis.com/auth/drive.readonly",
 ]
+
+# Роздільники в кодах комплектів: "010 + 009K", "010+009К", "010/009K"
+_CODE_TOKEN_SPLIT_RE = re.compile(r"[^0-9A-Za-zА-Яа-яЁё]+", re.UNICODE)
 
 
 @dataclass
@@ -66,31 +70,77 @@ def _norm_text(value: str) -> str:
     return " ".join(str(value or "").casefold().split())
 
 
+def _code_tokens(code: str) -> list[str]:
+    """Частини коду комплекту: '010 + 009K' → ['010', '009K']."""
+    raw = str(code or "").strip().lstrip("'")
+    if not raw:
+        return []
+    return [t for t in _CODE_TOKEN_SPLIT_RE.split(raw) if t]
+
+
+def _token_relevance(query: str, token: str) -> int | None:
+    """
+    Точний / префіксний збіг одного токена коду.
+    Без «голого» norm-startswith (інакше 010 → 110 через '10').
+    """
+    q_raw = _code_raw(query)
+    t_raw = _code_raw(token)
+    q_norm = _normalize_code(query).casefold()
+    t_norm = _normalize_code(token).casefold()
+    if not q_raw and not q_norm:
+        return None
+
+    if q_raw and t_raw == q_raw:
+        return 0
+    if q_norm and t_norm == q_norm:
+        return 1
+    if q_raw and t_raw.startswith(q_raw):
+        return 10 + (len(t_raw) - len(q_raw))
+    return None
+
+
 def _code_relevance(query: str, code: str) -> int | None:
     """
     Оцінка релевантності коду (менше = краще).
     None = не підходить.
+
+    Порядок:
+    0–1   точний код (010)
+    10+   префікс цілого коду (010T, 010TK)
+    60+   токен у комплекті (010 + 009K, 009K + 010) — менш релевантно
+    Голий 009K за запитом 010 — не потрапляє.
     """
     q_raw = _code_raw(query)
-    c_raw = _code_raw(code)
     q_norm = _normalize_code(query).casefold()
-    c_norm = _normalize_code(code).casefold()
     if not q_raw and not q_norm:
         return None
 
-    if q_raw and c_raw == q_raw:
-        return 0
-    if q_norm and c_norm == q_norm:
-        return 1
-    if q_raw and c_raw.startswith(q_raw):
-        return 10 + (len(c_raw) - len(q_raw))
-    if q_norm and c_norm.startswith(q_norm):
-        return 20 + (len(c_norm) - len(q_norm))
-    if q_raw and q_raw in c_raw:
-        return 40 + c_raw.find(q_raw)
-    if q_norm and q_norm in c_norm:
-        return 50 + c_norm.find(q_norm)
-    return None
+    tokens = _code_tokens(code)
+    if not tokens:
+        return None
+
+    best: int | None = None
+
+    # Цілий рядок коду (звичайні артикули 010 / 010T)
+    full = _token_relevance(query, code.strip().lstrip("'"))
+    if full is not None and len(tokens) == 1:
+        return full
+
+    # Комплект / складний код: шукаємо збіг будь-якої частини
+    if len(tokens) > 1:
+        # Якщо весь рядок починається з запиту («010 + 009K») —
+        # це все одно комплект, ставимо нижче за чисті 010/010T
+        if full is not None:
+            best = 50 + full
+        for idx, tok in enumerate(tokens):
+            part = _token_relevance(query, tok)
+            if part is None:
+                continue
+            score = 60 + part + idx
+            best = score if best is None else min(best, score)
+        return best
+
+    return full
 
 
 def _name_relevance(query: str, name: str) -> int | None:
@@ -224,8 +274,8 @@ class CatalogService:
     ) -> list[ProductVariant]:
         """
         Гибридный поиск с ранжированием:
-        - код: точний → починається з → містить (010 → 010, 010T, 010TK)
-        - назва: точна → починається з → містить
+        - код: точний → префікс (010 → 010, 010T, 010TK) → токен у комплекті (010 + 009K)
+        - назва: точна → починається з → містить; також код-токени в назві комплекту
         - опційний фільтр кольору
         """
         self.refresh()
@@ -250,6 +300,16 @@ class CatalogService:
             name_score = None
             if mode in {"auto", "code"}:
                 code_score = _code_relevance(query, v.code)
+                # Комплект інколи описаний у назві, а не лише в полі коду
+                name_as_code = _code_relevance(query, v.name)
+                if name_as_code is not None:
+                    # Нижче за збіг у полі коду
+                    name_as_code = 80 + name_as_code
+                    code_score = (
+                        name_as_code
+                        if code_score is None
+                        else min(code_score, name_as_code)
+                    )
             if mode in {"auto", "name"}:
                 name_score = _name_relevance(query, v.name)
 

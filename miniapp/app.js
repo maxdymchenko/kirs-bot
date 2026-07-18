@@ -1624,17 +1624,20 @@
         ? droppers
             .map(
               (d) => `
-          <article class="owner-card" data-dropper-chat="${escapeHtml(d.chat_id)}">
-            <div class="owner-card-head">
-              <h3 class="owner-card-title">${escapeHtml(d.company_name)}</h3>
-              <p class="meta">${escapeHtml(d.contact_name)} · ${escapeHtml(d.phone)}</p>
-              <p class="meta">chat_id: <b>${escapeHtml(d.chat_id)}</b></p>
-              <p class="meta">
-                Реф. код: <b>${escapeHtml(d.referral_code || "—")}</b>
-                ${d.referred_by_name ? ` · запрошений: ${escapeHtml(d.referred_by_name)}` : ""}
-                ${d.referrals_count ? ` · привів: ${escapeHtml(String(d.referrals_count))}` : ""}
-              </p>
-            </div>
+          <article class="owner-card is-collapsed" data-dropper-chat="${escapeHtml(d.chat_id)}">
+            <button type="button" class="owner-card-toggle" aria-expanded="false">
+              <div class="owner-card-head">
+                <h3 class="owner-card-title">${escapeHtml(d.company_name)}</h3>
+                <p class="meta">${escapeHtml(d.contact_name)} · ${escapeHtml(d.phone)}</p>
+                <p class="meta">chat_id: <b>${escapeHtml(d.chat_id)}</b></p>
+                <p class="meta">
+                  Реф. код: <b>${escapeHtml(d.referral_code || "—")}</b>
+                  ${d.referred_by_name ? ` · запрошений: ${escapeHtml(d.referred_by_name)}` : ""}
+                  ${d.referrals_count ? ` · привів: ${escapeHtml(String(d.referrals_count))}` : ""}
+                </p>
+              </div>
+              <span class="owner-card-chevron" aria-hidden="true"></span>
+            </button>
             <div class="owner-settings">
               <label class="setting-row">
                 <span class="setting-copy">
@@ -1943,6 +1946,15 @@
         if (typeof rollback === "function") rollback();
       }
     };
+
+    els.ownerDroppers.addEventListener("click", (event) => {
+      const toggle = event.target.closest(".owner-card-toggle");
+      if (!toggle || !els.ownerDroppers.contains(toggle)) return;
+      const card = toggle.closest(".owner-card");
+      if (!card) return;
+      const collapsed = card.classList.toggle("is-collapsed");
+      toggle.setAttribute("aria-expanded", collapsed ? "false" : "true");
+    });
 
     els.ownerDroppers.addEventListener("change", async (event) => {
       const card = event.target.closest("[data-dropper-chat]");
