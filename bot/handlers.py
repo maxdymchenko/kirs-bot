@@ -332,7 +332,12 @@ async def pending_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     pending = storage.list_unprocessed()
 
     if not pending:
-        await update.message.reply_text("✅ Все чаты обработаны.")
+        await update.message.reply_text(
+            "✅ У базі немає необроблених чатів.\n\n"
+            "Якщо вище в стрічці ще видно кнопку «Обработано» — це старе повідомлення "
+            "після перезапуску/очищення БД. Натисніть її, щоб прибрати кнопку "
+            "(запис у базі вже не існує)."
+        )
         return
 
     lines = [f"⏳ Необработанные чаты ({len(pending)}):", ""]
@@ -360,7 +365,12 @@ async def mark_done_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     notification = storage.get(notification_id)
     if not notification:
-        await query.answer("Уведомление не найдено")
+        # Старе повідомлення в Telegram після wipe БД / зміни APP_DATA_DIR
+        try:
+            await query.edit_message_reply_markup(reply_markup=None)
+        except Exception:
+            logger.exception("Не вдалося прибрати кнопки у застарілому повідомленні")
+        await query.answer("Запис застарів (немає в БД)", show_alert=True)
         return
 
     user = query.from_user
