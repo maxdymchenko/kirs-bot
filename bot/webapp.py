@@ -199,7 +199,40 @@ def create_web_app(
 
     @app.get("/health")
     async def health() -> dict:
-        return {"ok": True, "nova_poshta": np_client.configured()}
+        from bot.paths import data_dir, notifications_db_path
+        from bot.storage import NotificationStorage
+
+        data_path = data_dir()
+        notif_path = notifications_db_path()
+        notif_count = 0
+        notif_max_id = 0
+        unprocessed = 0
+        try:
+            ns = NotificationStorage(notif_path)
+            with ns._connect() as conn:
+                row = conn.execute(
+                    "SELECT COUNT(*) AS c, COALESCE(MAX(id), 0) AS m FROM notifications"
+                ).fetchone()
+                notif_count = int(row["c"] or 0)
+                notif_max_id = int(row["m"] or 0)
+                row2 = conn.execute(
+                    "SELECT COUNT(*) AS c FROM notifications WHERE processed = 0"
+                ).fetchone()
+                unprocessed = int(row2["c"] or 0)
+        except Exception:
+            logger.exception("health notifications check failed")
+
+        return {
+            "ok": True,
+            "nova_poshta": np_client.configured(),
+            "app_data_dir_env": (os.getenv("APP_DATA_DIR") or "").strip() or None,
+            "data_dir": str(data_path),
+            "notifications_db": str(notif_path),
+            "notifications_db_exists": notif_path.exists(),
+            "notifications_count": notif_count,
+            "notifications_max_id": notif_max_id,
+            "notifications_unprocessed": unprocessed,
+        }
 
     @app.get("/api/session")
     async def session(
