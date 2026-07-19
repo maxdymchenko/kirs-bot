@@ -61,6 +61,8 @@ class DropperSettingsUpdateRequest(BaseModel):
     extra_discount_percent: float | None = None
     orders_disabled: bool | None = None
     referral_percent: float | None = None
+    owner_comment: str | None = None
+    credit_holidays_days: int | None = None
 
 
 class OrderCreateRequest(BaseModel):
@@ -246,7 +248,7 @@ def create_web_app(
     async def dropper_settings(chat_id: str = Query("", max_length=64)) -> dict:
         db_dropper = storage.get_dropper_by_chat(chat_id)
         if db_dropper:
-            data = db_dropper.to_dict()
+            data = db_dropper.to_public_dict()
             data["name"] = db_dropper.company_name
             data["source"] = "db"
             if db_dropper.referred_by_dropper_id:
@@ -382,14 +384,19 @@ def create_web_app(
         _require_owner(owner_chat_id, owner_user_id)
         items = []
         for d in storage.list_droppers():
+            if d.status != "active":
+                continue
             data = d.to_dict()
             data["referrals_count"] = len(storage.list_referrals(d.id))
+            data["turnover"] = round(storage.dropper_turnover(d.id), 2)
+            data["balance"] = storage.get_balance(d.id)
             if d.referred_by_dropper_id:
                 ref = storage.get_dropper_by_id(d.referred_by_dropper_id)
                 data["referred_by_name"] = ref.company_name if ref else ""
             else:
                 data["referred_by_name"] = ""
             items.append(data)
+        items.sort(key=lambda x: (-float(x.get("turnover") or 0), str(x.get("company_name") or "").casefold()))
         return {"count": len(items), "items": items}
 
     @app.get("/api/dropper/balance")
@@ -400,7 +407,7 @@ def create_web_app(
         ledger = storage.list_ledger(dropper.id, limit=100)
         referrals = [x for x in ledger if x["entry_type"] == "referral_credit"]
         return {
-            "dropper": dropper.to_dict(),
+            "dropper": dropper.to_public_dict(),
             "balance": storage.get_balance(dropper.id),
             "referral_earned_total": round(sum(x["amount"] for x in referrals), 2),
             "ledger": ledger,
@@ -494,10 +501,33 @@ def create_web_app(
             extra_discount_percent=payload.extra_discount_percent,
             orders_disabled=payload.orders_disabled,
             referral_percent=payload.referral_percent,
+            owner_comment=payload.owner_comment,
+            credit_holidays_days=payload.credit_holidays_days,
         )
         if not dropper:
             raise HTTPException(status_code=404, detail="Дроппера не знайдено")
+        # Після зміни ліміту/канікул — перерахувати стан боргу
+        from bot.credit_holidays import evaluate_credit_holidays
+
+        evaluate_credit_holidays(storage, dropper)
+        dropper = storage.get_dropper_by_chat(chat_id) or dropper
         return {"ok": True, "dropper": dropper.to_dict()}
+
+    @app.delete("/api/owner/droppers/{chat_id}")
+    async def owner_delete_dropper(
+        chat_id: str,
+        owner_chat_id: str = Query("", max_length=64),
+        owner_user_id: str = Query("", max_length=64),
+    ) -> dict:
+        _require_owner(owner_chat_id, owner_user_id)
+        dropper = storage.get_dropper_by_chat(chat_id)
+        if not dropper:
+            raise HTTPException(status_code=404, detail="Дроппера не знайдено")
+        name = dropper.company_name
+        ok = storage.delete_dropper(chat_id)
+        if not ok:
+            raise HTTPException(status_code=404, detail="Дроппера не знайдено")
+        return {"ok": True, "deleted": name, "chat_id": chat_id}
 
     @app.get("/api/products/colors")
     async def product_colors(
@@ -628,6 +658,11 @@ def create_web_app(
     def _validate_order_payload(payload: OrderCreateRequest, dropper) -> tuple[float, float, float]:
         if dropper.orders_disabled:
             raise HTTPException(status_code=403, detail="Передачу замовлень заблоковано")
+        if dropper.credit_holidays_blocked:
+            raise HTTPException(
+                status_code=403,
+                detail="Передачу заблоковано: вичерпано кредитні канікули. Погасіть борг повністю.",
+            )
         if not payload.cart:
             raise HTTPException(status_code=400, detail="Кошик порожній")
         total = max(0.0, float(payload.total or 0))
@@ -799,6 +834,9 @@ def create_web_app(
                 note="Різниця передплати і суми замовлення",
                 related_order_id=order["order_number"],
             )
+            from bot.credit_holidays import evaluate_credit_holidays
+
+            evaluate_credit_holidays(storage, dropper)
 
         storage.accrue_referral_from_drop_total(
             source_dropper_id=dropper.id,

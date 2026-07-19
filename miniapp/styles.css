@@ -1216,3 +1216,51 @@ input[type="file"] {
   color: var(--text);
   border: 0;
 }
+
+.setting-block {
+  display: grid;
+  gap: 8px;
+  padding: 12px 16px 14px;
+  border-top: 1px solid var(--line);
+}
+
+.setting-block .setting-label {
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.setting-comment {
+  width: 100%;
+  min-height: 72px;
+  margin: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #fff;
+  color: var(--text);
+  font: inherit;
+  resize: vertical;
+}
+
+.setting-comment:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(47, 111, 237, 0.15);
+}
+
+.danger-block {
+  padding-bottom: 16px;
+}
+
+.btn.danger {
+  background: #fde8e8;
+  color: #b42318;
+  border: 1px solid #f3c1c1;
+  font-weight: 700;
+}
+
+.btn.danger:hover {
+  background: #d64545;
+  color: #fff;
+  border-color: #d64545;
+}

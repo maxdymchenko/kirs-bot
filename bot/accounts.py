@@ -37,6 +37,11 @@ class Dropper:
     negative_balance_limit: float
     extra_discount_percent: float
     orders_disabled: bool
+    owner_comment: str
+    credit_holidays_days: int
+    credit_debt_started_at: str | None
+    credit_holidays_blocked: bool
+    credit_last_notified_at: str | None
     referral_code: str
     referred_by_dropper_id: int | None
     referral_percent: float
@@ -59,6 +64,11 @@ class Dropper:
             "negative_balance_limit": self.negative_balance_limit,
             "extra_discount_percent": self.extra_discount_percent,
             "orders_disabled": self.orders_disabled,
+            "owner_comment": self.owner_comment,
+            "credit_holidays_days": self.credit_holidays_days,
+            "credit_debt_started_at": self.credit_debt_started_at,
+            "credit_holidays_blocked": self.credit_holidays_blocked,
+            "credit_last_notified_at": self.credit_last_notified_at,
             "referral_code": self.referral_code,
             "referred_by_dropper_id": self.referred_by_dropper_id,
             "referral_percent": self.referral_percent,
@@ -67,6 +77,12 @@ class Dropper:
             "registered_by_username": self.registered_by_username,
             "created_at": self.created_at,
         }
+
+    def to_public_dict(self) -> dict[str, Any]:
+        """Без owner_comment — для відповідей дропперу."""
+        data = self.to_dict()
+        data.pop("owner_comment", None)
+        return data
 
 
 @dataclass
@@ -140,6 +156,11 @@ class AppStorage:
                 ("referral_code", "referral_code TEXT NOT NULL DEFAULT ''"),
                 ("referred_by_dropper_id", "referred_by_dropper_id INTEGER"),
                 ("referral_percent", "referral_percent REAL NOT NULL DEFAULT 0"),
+                ("owner_comment", "owner_comment TEXT NOT NULL DEFAULT ''"),
+                ("credit_holidays_days", "credit_holidays_days INTEGER NOT NULL DEFAULT 0"),
+                ("credit_debt_started_at", "credit_debt_started_at TEXT"),
+                ("credit_holidays_blocked", "credit_holidays_blocked INTEGER NOT NULL DEFAULT 0"),
+                ("credit_last_notified_at", "credit_last_notified_at TEXT"),
             ):
                 self._ensure_column(conn, "droppers", column, ddl)
 
@@ -294,6 +315,15 @@ class AppStorage:
             negative_balance_limit=float(self._row_get(row, "negative_balance_limit", 0) or 0),
             extra_discount_percent=float(self._row_get(row, "extra_discount_percent", 0) or 0),
             orders_disabled=bool(self._row_get(row, "orders_disabled", 0)),
+            owner_comment=str(self._row_get(row, "owner_comment", "") or ""),
+            credit_holidays_days=int(self._row_get(row, "credit_holidays_days", 0) or 0),
+            credit_debt_started_at=(
+                str(self._row_get(row, "credit_debt_started_at") or "").strip() or None
+            ),
+            credit_holidays_blocked=bool(self._row_get(row, "credit_holidays_blocked", 0)),
+            credit_last_notified_at=(
+                str(self._row_get(row, "credit_last_notified_at") or "").strip() or None
+            ),
             referral_code=str(self._row_get(row, "referral_code", "") or ""),
             referred_by_dropper_id=int(ref_by) if ref_by not in (None, "") else None,
             referral_percent=float(self._row_get(row, "referral_percent", 0) or 0),
@@ -521,6 +551,8 @@ class AppStorage:
         extra_discount_percent: float | None = None,
         orders_disabled: bool | None = None,
         referral_percent: float | None = None,
+        owner_comment: str | None = None,
+        credit_holidays_days: int | None = None,
     ) -> Dropper | None:
         raw = str(chat_id).strip()
         key = self.resolve_chat_id(raw) or raw
@@ -545,6 +577,10 @@ class AppStorage:
             fields["orders_disabled"] = 1 if orders_disabled else 0
         if referral_percent is not None:
             fields["referral_percent"] = max(0.0, min(100.0, float(referral_percent)))
+        if owner_comment is not None:
+            fields["owner_comment"] = str(owner_comment).strip()[:2000]
+        if credit_holidays_days is not None:
+            fields["credit_holidays_days"] = max(0, int(credit_holidays_days))
 
         if not fields:
             return current
@@ -563,6 +599,60 @@ class AppStorage:
                 )
             conn.commit()
         return self.get_dropper_by_chat(key)
+
+    def delete_dropper(self, chat_id: str) -> bool:
+        raw = str(chat_id).strip()
+        key = self.resolve_chat_id(raw) or raw
+        dropper = self.get_dropper_by_chat(key)
+        if not dropper:
+            return False
+        with self._connect() as conn:
+            conn.execute(
+                "UPDATE droppers SET referred_by_dropper_id = NULL WHERE referred_by_dropper_id = ?",
+                (dropper.id,),
+            )
+            conn.execute("DELETE FROM droppers WHERE id = ?", (dropper.id,))
+            conn.commit()
+        return True
+
+    def dropper_turnover(self, dropper_id: int) -> float:
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT COALESCE(SUM(total), 0) AS s
+                FROM orders
+                WHERE dropper_id = ? AND status != 'cancelled'
+                """,
+                (int(dropper_id),),
+            ).fetchone()
+        return float(row["s"] or 0)
+
+    def update_credit_holidays_state(
+        self,
+        dropper_id: int,
+        *,
+        credit_debt_started_at: str | None | object = ...,
+        credit_holidays_blocked: bool | None = None,
+        credit_last_notified_at: str | None | object = ...,
+    ) -> Dropper | None:
+        fields: dict[str, Any] = {}
+        if credit_debt_started_at is not ...:
+            fields["credit_debt_started_at"] = credit_debt_started_at
+        if credit_holidays_blocked is not None:
+            fields["credit_holidays_blocked"] = 1 if credit_holidays_blocked else 0
+        if credit_last_notified_at is not ...:
+            fields["credit_last_notified_at"] = credit_last_notified_at
+        if not fields:
+            return self.get_dropper_by_id(dropper_id)
+        assignments = ", ".join(f"{k} = ?" for k in fields)
+        values = list(fields.values()) + [int(dropper_id)]
+        with self._connect() as conn:
+            conn.execute(
+                f"UPDATE droppers SET {assignments} WHERE id = ?",
+                values,
+            )
+            conn.commit()
+        return self.get_dropper_by_id(dropper_id)
 
     def set_dropper_require_full_payment(
         self, chat_id: str, require_full_payment: bool

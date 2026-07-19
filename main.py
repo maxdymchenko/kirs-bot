@@ -71,7 +71,7 @@ async def main() -> None:
         except NotImplementedError:
             signal.signal(sig, request_stop)
 
-    run_task = asyncio.create_task(run_modules(modules), name="modules")
+    run_task = asyncio.create_task(run_modules(modules, ctx), name="modules")
     stop_task = asyncio.create_task(stop_event.wait(), name="stop")
 
     done, _ = await asyncio.wait(

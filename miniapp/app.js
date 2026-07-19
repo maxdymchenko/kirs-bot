@@ -173,6 +173,7 @@
     user_id: "",
     username: "",
     need_registration: false,
+    block_reason: "",
   };
 
   const PHONE_EXAMPLE = "+380(99)999-99-99";
@@ -2305,6 +2306,9 @@ ${data.ownTtn ? `Власна ТТН: ${escapeHtml(data.ttnNumber || "")}` : "Т
                   ${d.referred_by_name ? ` · запрошений: ${escapeHtml(d.referred_by_name)}` : ""}
                   ${d.referrals_count ? ` · привів: ${escapeHtml(String(d.referrals_count))}` : ""}
                 </p>
+                <p class="meta">Оборот: <b>${escapeHtml(String(Math.round(Number(d.turnover) || 0)))} ₴</b>
+                  ${d.credit_holidays_blocked ? ` · <span class="stock-out">канікули: блок</span>` : ""}
+                </p>
               </div>
               <span class="owner-card-chevron" aria-hidden="true"></span>
             </button>
@@ -2365,6 +2369,20 @@ ${data.ownTtn ? `Власна ТТН: ${escapeHtml(data.ttnNumber || "")}` : "Т
                     ${d.allow_negative_balance ? "" : "disabled"} />
                 </span>
               </label>
+              <label class="setting-row is-nested${
+                d.allow_negative_balance ? "" : " is-disabled"
+              }" data-credit-holidays-row>
+                <span class="setting-copy">
+                  <span class="setting-label">Кредитні канікули</span>
+                  <span class="setting-hint">Днів до блоку після 85% ліміту боргу (0 = вимкнено)</span>
+                </span>
+                <span class="setting-control">
+                  <input class="setting-input" type="number" min="0" step="1"
+                    data-rule-num="credit_holidays_days"
+                    value="${escapeHtml(String(d.credit_holidays_days || 0))}"
+                    ${d.allow_negative_balance ? "" : "disabled"} />
+                </span>
+              </label>
               <label class="setting-row">
                 <span class="setting-copy">
                   <span class="setting-label">Додаткова знижка</span>
@@ -2401,6 +2419,18 @@ ${data.ownTtn ? `Власна ТТН: ${escapeHtml(data.ttnNumber || "")}` : "Т
                   </span>
                 </span>
               </label>
+              <div class="setting-block">
+                <span class="setting-label">Коментар</span>
+                <span class="setting-hint">Бачать лише власник, адмін і менеджер</span>
+                <textarea class="setting-comment" rows="3" data-owner-comment
+                  placeholder="Нотатка про дроппера...">${escapeHtml(d.owner_comment || "")}</textarea>
+                <button type="button" class="btn secondary block" data-save-comment>Зберегти</button>
+              </div>
+              <div class="setting-block danger-block">
+                <button type="button" class="btn danger block" data-delete-dropper>
+                  ✕ Видалити дропшиппера
+                </button>
+              </div>
             </div>
           </article>`
             )
@@ -2477,8 +2507,12 @@ ${data.ownTtn ? `Власна ТТН: ${escapeHtml(data.ttnNumber || "")}` : "Т
     }
     if (mode === "dropper_blocked") {
       els.bootStatus.classList.remove("hidden");
-      els.bootStatus.innerHTML =
-        `<div class="blocked-box">Вас заблоковано для повного погашення боргу.<br/>Передача замовлень недоступна. Звʼяжіться з власником.</div>`;
+      const reason = sessionState.block_reason || "";
+      const text =
+        reason === "credit_holidays"
+          ? "Вичерпано кредитні канікули. Передачу замовлень заблоковано, доки борг не буде погашено повністю (баланс ≥ 0)."
+          : "Вас заблоковано для повного погашення боргу. Передача замовлень недоступна. Звʼяжіться з власником.";
+      els.bootStatus.innerHTML = `<div class="blocked-box">${text}</div>`;
       return;
     }
     els.bootStatus.classList.remove("hidden");
@@ -2504,6 +2538,7 @@ ${data.ownTtn ? `Власна ТТН: ${escapeHtml(data.ttnNumber || "")}` : "Т
       if (!response.ok) throw new Error(data.detail || "session error");
       sessionState.role = data.role || "guest";
       sessionState.need_registration = Boolean(data.need_registration);
+      sessionState.block_reason = data.block_reason || "";
       if (data.chat_id) sessionState.chat_id = String(data.chat_id);
 
       if (sessionState.role === "owner") {
@@ -2776,15 +2811,69 @@ ${data.ownTtn ? `Власна ТТН: ${escapeHtml(data.ttnNumber || "")}` : "Т
       }
     };
 
-    els.ownerDroppers.addEventListener("click", (event) => {
+    els.ownerDroppers.addEventListener("click", async (event) => {
       const toggle = event.target.closest(".owner-card-toggle");
-      if (!toggle || !els.ownerDroppers.contains(toggle)) return;
-      const card = toggle.closest(".owner-card");
-      if (!card) return;
-      const collapsed = card.classList.toggle("is-collapsed");
-      toggle.setAttribute("aria-expanded", collapsed ? "false" : "true");
-      if (!collapsed) {
-        loadOwnerDropperOrders(card);
+      if (toggle && els.ownerDroppers.contains(toggle)) {
+        const card = toggle.closest(".owner-card");
+        if (!card) return;
+        const collapsed = card.classList.toggle("is-collapsed");
+        toggle.setAttribute("aria-expanded", collapsed ? "false" : "true");
+        if (!collapsed) {
+          loadOwnerDropperOrders(card);
+        }
+        return;
+      }
+
+      const saveBtn = event.target.closest("[data-save-comment]");
+      if (saveBtn && els.ownerDroppers.contains(saveBtn)) {
+        const card = saveBtn.closest("[data-dropper-chat]");
+        if (!card) return;
+        const area = card.querySelector("[data-owner-comment]");
+        const text = area ? area.value : "";
+        saveBtn.disabled = true;
+        try {
+          await saveDropperSetting(card.getAttribute("data-dropper-chat"), {
+            owner_comment: text,
+          });
+          showToast("Коментар збережено");
+        } catch (error) {
+          showToast(error.message || "Не вдалося зберегти");
+        } finally {
+          saveBtn.disabled = false;
+        }
+        return;
+      }
+
+      const delBtn = event.target.closest("[data-delete-dropper]");
+      if (delBtn && els.ownerDroppers.contains(delBtn)) {
+        const card = delBtn.closest("[data-dropper-chat]");
+        if (!card) return;
+        const chatId = card.getAttribute("data-dropper-chat");
+        const title =
+          card.querySelector(".owner-card-title")?.textContent?.trim() || chatId;
+        if (
+          !window.confirm(
+            `Видалити дроппера «${title}»?\nПісля цього йому потрібна нова реєстрація.`
+          )
+        ) {
+          return;
+        }
+        delBtn.disabled = true;
+        try {
+          const response = await fetch(
+            `/api/owner/droppers/${encodeURIComponent(chatId)}?${ownerAuthParams()}`,
+            { method: "DELETE" }
+          );
+          const data = await response.json();
+          if (!response.ok) {
+            throw new Error(typeof data.detail === "string" ? data.detail : "Помилка");
+          }
+          showToast("Дроппера видалено");
+          renderOwnerCabinet();
+        } catch (error) {
+          showToast(error.message || "Не вдалося видалити");
+          delBtn.disabled = false;
+        }
       }
     });
 
@@ -2799,10 +2888,17 @@ ${data.ownTtn ? `Власна ТТН: ${escapeHtml(data.ttnNumber || "")}` : "Т
         if (key === "allow_negative_balance") {
           const limitRow = card.querySelector("[data-negative-limit-row]");
           const limitInput = card.querySelector('[data-rule-num="negative_balance_limit"]');
+          const holidaysRow = card.querySelector("[data-credit-holidays-row]");
+          const holidaysInput = card.querySelector('[data-rule-num="credit_holidays_days"]');
           if (limitRow && limitInput) {
             const enabled = Boolean(check.checked);
             limitRow.classList.toggle("is-disabled", !enabled);
             limitInput.disabled = !enabled;
+          }
+          if (holidaysRow && holidaysInput) {
+            const enabled = Boolean(check.checked);
+            holidaysRow.classList.toggle("is-disabled", !enabled);
+            holidaysInput.disabled = !enabled;
           }
         }
         await persistRule(card, { [key]: Boolean(check.checked) }, () => {
@@ -2810,10 +2906,17 @@ ${data.ownTtn ? `Власна ТТН: ${escapeHtml(data.ttnNumber || "")}` : "Т
           if (key === "allow_negative_balance") {
             const limitRow = card.querySelector("[data-negative-limit-row]");
             const limitInput = card.querySelector('[data-rule-num="negative_balance_limit"]');
+            const holidaysRow = card.querySelector("[data-credit-holidays-row]");
+            const holidaysInput = card.querySelector('[data-rule-num="credit_holidays_days"]');
             if (limitRow && limitInput) {
               const enabled = Boolean(check.checked);
               limitRow.classList.toggle("is-disabled", !enabled);
               limitInput.disabled = !enabled;
+            }
+            if (holidaysRow && holidaysInput) {
+              const enabled = Boolean(check.checked);
+              holidaysRow.classList.toggle("is-disabled", !enabled);
+              holidaysInput.disabled = !enabled;
             }
           }
         });

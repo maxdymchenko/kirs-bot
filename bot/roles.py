@@ -52,10 +52,16 @@ def is_owner(
     user_id: str | int | None = None,
     storage: AppStorage | None = None,
 ) -> bool:
-    """Владелец: личный user_id (предпочтительно) или owner-чат (временно/тест)."""
+    """Владелец / адмін / менеджер: доступ до кабінету з коментарями дропперів."""
     if is_owner_user(settings, user_id):
         return True
-    return is_owner_chat(settings, chat_id, storage)
+    if is_owner_chat(settings, chat_id, storage):
+        return True
+    if storage and user_id:
+        staff = storage.get_staff_by_user(_norm(user_id))
+        if staff and staff.role in {"admin", "manager"}:
+            return True
+    return False
 
 
 def resolve_session(
@@ -93,21 +99,28 @@ def resolve_session(
         storage.get_dropper_by_chat(chat or chat_raw) if (chat or chat_raw) else None
     )
     if dropper and dropper.status == "active":
-        if dropper.orders_disabled:
+        from bot.credit_holidays import is_orders_blocked
+
+        if is_orders_blocked(dropper):
             return {
                 "role": "dropper_blocked",
                 "need_registration": False,
                 "chat_id": dropper.chat_id,
                 "user_id": user,
-                "dropper": dropper.to_dict(),
+                "dropper": dropper.to_public_dict(),
                 "staff": None,
+                "block_reason": (
+                    "credit_holidays"
+                    if dropper.credit_holidays_blocked
+                    else "orders_disabled"
+                ),
             }
         return {
             "role": "dropper",
             "need_registration": False,
             "chat_id": dropper.chat_id,
             "user_id": user,
-            "dropper": dropper.to_dict(),
+            "dropper": dropper.to_public_dict(),
             "staff": None,
         }
 
@@ -122,4 +135,4 @@ def resolve_session(
         "dropper": None,
         "staff": None,
     }
-
+
