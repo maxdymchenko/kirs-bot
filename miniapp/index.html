@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
   <title>Kirs — Замовлення</title>
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
-  <link rel="stylesheet" href="/static/styles.css?v=20260719ch" />
+  <link rel="stylesheet" href="/static/styles.css?v=20260721pv" />
 </head>
 <body>
   <div class="app">
@@ -16,6 +16,29 @@
         <span id="cartChipText">0</span>
       </button>
     </header>
+
+    <div id="rolePreviewBar" class="role-preview-bar hidden">
+      <label class="role-preview-field">
+        <span class="role-preview-label">Режим перегляду</span>
+        <select id="previewRoleSelect">
+          <option value="owner">Власник</option>
+          <option value="dropper">Дроппер</option>
+          <option value="admin">Адмін</option>
+          <option value="manager">Менеджер</option>
+          <option value="warehouse">Кладовщик</option>
+        </select>
+      </label>
+      <label id="previewDropperWrap" class="role-preview-field hidden">
+        <span class="role-preview-label">Дроппер</span>
+        <select id="previewDropperSelect">
+          <option value="">Оберіть дроппера…</option>
+        </select>
+      </label>
+      <button type="button" id="previewBackOwner" class="btn secondary role-preview-back hidden">
+        ← До кабінету власника
+      </button>
+    </div>
+    <div id="previewBanner" class="preview-banner hidden" role="status"></div>
 
     <div id="bootStatus" class="view status">Завантаження...</div>
 
@@ -495,6 +518,6 @@
   </div>
 
   <button type="button" id="photoZoomBackdrop" class="photo-zoom-backdrop hidden" aria-label="Закрити фото"></button>
-  <script src="/static/app.js?v=20260719ch"></script>
+  <script src="/static/app.js?v=20260721pv"></script>
 </body>
 </html>

@@ -475,6 +475,57 @@ select {
   box-shadow: 0 0 0 3px rgba(47, 111, 237, 0.28);
 }
 
+.role-preview-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 10px 12px;
+  margin: 0 0 10px;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: #f7f9fc;
+}
+
+.role-preview-field {
+  display: grid;
+  gap: 4px;
+  min-width: min(100%, 160px);
+  flex: 1 1 140px;
+}
+
+.role-preview-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted, #667085);
+}
+
+.role-preview-bar select {
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #fff;
+  color: var(--text);
+  font: inherit;
+}
+
+.role-preview-back {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
+.preview-banner {
+  margin: 0 0 10px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: #eef4ff;
+  border: 1px solid #c9daf8;
+  color: #1d4f91;
+  font-size: 13px;
+  font-weight: 600;
+}
+
 .owner-tabs {
   margin: 8px 0 14px;
   display: grid;

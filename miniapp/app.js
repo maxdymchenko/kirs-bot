@@ -152,6 +152,12 @@
     warehouse: document.getElementById("warehouse"),
     warehouseRef: document.getElementById("warehouseRef"),
     warehouseDropdown: document.getElementById("warehouseDropdown"),
+    rolePreviewBar: document.getElementById("rolePreviewBar"),
+    previewRoleSelect: document.getElementById("previewRoleSelect"),
+    previewDropperWrap: document.getElementById("previewDropperWrap"),
+    previewDropperSelect: document.getElementById("previewDropperSelect"),
+    previewBackOwner: document.getElementById("previewBackOwner"),
+    previewBanner: document.getElementById("previewBanner"),
   };
 
   const dropperSettings = {
@@ -174,6 +180,12 @@
     username: "",
     need_registration: false,
     block_reason: "",
+  };
+
+  const previewState = {
+    mode: "owner",
+    dropperChatId: "",
+    droppersLoaded: false,
   };
 
   const PHONE_EXAMPLE = "+380(99)999-99-99";
@@ -721,6 +733,21 @@
     return "";
   }
 
+  function isOwnerRolePreview() {
+    return sessionState.role === "owner" && previewState.mode !== "owner";
+  }
+
+  function effectiveDropperChatId() {
+    if (
+      sessionState.role === "owner" &&
+      previewState.mode === "dropper" &&
+      previewState.dropperChatId
+    ) {
+      return previewState.dropperChatId;
+    }
+    return currentTelegramChatId();
+  }
+
   function currentTelegramUser() {
     const unsafe = tg?.initDataUnsafe || {};
     return {
@@ -732,8 +759,11 @@
     };
   }
 
-  async function loadDropperSettings() {
-    const chatId = currentTelegramChatId();
+  async function loadDropperSettings(chatIdOverride) {
+    const chatId =
+      chatIdOverride != null && String(chatIdOverride).trim()
+        ? String(chatIdOverride).trim()
+        : effectiveDropperChatId();
     dropperSettings.chat_id = chatId;
     try {
       const response = await fetch(
@@ -1338,7 +1368,7 @@ ${data.ownTtn ? `Власна ТТН: ${escapeHtml(data.ttnNumber || "")}` : "Т
 
   function buildOrderApiPayload(data) {
     return {
-      chat_id: currentTelegramChatId(),
+      chat_id: effectiveDropperChatId(),
       user_id: currentTelegramUser().user_id,
       first_name: data.firstName,
       patronymic: data.patronymic || "",
@@ -1380,6 +1410,14 @@ ${data.ownTtn ? `Власна ТТН: ${escapeHtml(data.ttnNumber || "")}` : "Т
 
   async function submitOrder() {
     if (!checkoutDraft) return;
+    if (isOwnerRolePreview()) {
+      showToast("Режим перегляду — замовлення не створюється");
+      if (els.confirmError) {
+        els.confirmError.textContent = "Режим перегляду — замовлення не створюється";
+        els.confirmError.classList.remove("hidden");
+      }
+      return;
+    }
     if (els.confirmSubmit) els.confirmSubmit.disabled = true;
     if (els.confirmError) {
       els.confirmError.classList.add("hidden");
@@ -1459,7 +1497,7 @@ ${data.ownTtn ? `Власна ТТН: ${escapeHtml(data.ttnNumber || "")}` : "Т
 
   async function renderOrdersHistory() {
     if (!els.ordersHistory) return;
-    const chatId = currentTelegramChatId();
+    const chatId = effectiveDropperChatId();
     els.ordersHistory.innerHTML = `<div class="ac-loading">Завантаження історії...</div>`;
     try {
       const response = await fetch(
@@ -1943,7 +1981,7 @@ ${data.ownTtn ? `Власна ТТН: ${escapeHtml(data.ttnNumber || "")}` : "Т
     els.balanceHero.textContent = "…";
     els.balanceLedger.innerHTML = `<div class="ac-loading">Завантаження...</div>`;
     try {
-      const chatId = currentTelegramChatId();
+      const chatId = effectiveDropperChatId();
       const response = await fetch(
         `/api/dropper/balance?chat_id=${encodeURIComponent(chatId)}`
       );
@@ -2458,7 +2496,85 @@ ${data.ownTtn ? `Власна ТТН: ${escapeHtml(data.ttnNumber || "")}` : "Т
     }
   }
 
-  function showMode(mode) {
+  function previewModeLabel(mode) {
+    const map = {
+      owner: "Власник",
+      dropper: "Дроппер",
+      admin: "Адмін",
+      manager: "Менеджер",
+      warehouse: "Кладовщик",
+    };
+    return map[mode] || mode;
+  }
+
+  function syncPreviewBarControls() {
+    if (!els.rolePreviewBar) return;
+    const isOwner = sessionState.role === "owner";
+    els.rolePreviewBar.classList.toggle("hidden", !isOwner);
+    if (!isOwner) {
+      if (els.previewBanner) els.previewBanner.classList.add("hidden");
+      return;
+    }
+    if (els.previewRoleSelect) els.previewRoleSelect.value = previewState.mode;
+    if (els.previewDropperWrap) {
+      els.previewDropperWrap.classList.toggle("hidden", previewState.mode !== "dropper");
+    }
+    if (els.previewDropperSelect && previewState.dropperChatId) {
+      els.previewDropperSelect.value = previewState.dropperChatId;
+    }
+    if (els.previewBackOwner) {
+      els.previewBackOwner.classList.toggle("hidden", previewState.mode === "owner");
+    }
+    if (els.previewBanner) {
+      if (previewState.mode === "owner") {
+        els.previewBanner.classList.add("hidden");
+        els.previewBanner.textContent = "";
+      } else {
+        let text = `Режим перегляду: ${previewModeLabel(previewState.mode)}`;
+        if (previewState.mode === "dropper") {
+          const opt = els.previewDropperSelect?.selectedOptions?.[0];
+          const name = opt && opt.value ? opt.textContent.trim() : "";
+          if (name) text += ` · ${name}`;
+          else text += " · оберіть дроппера";
+        }
+        els.previewBanner.textContent = text;
+        els.previewBanner.classList.remove("hidden");
+      }
+    }
+  }
+
+  async function ensurePreviewDroppersLoaded() {
+    if (previewState.droppersLoaded || !els.previewDropperSelect) return;
+    try {
+      const response = await fetch(`/api/owner/droppers?${ownerAuthParams()}`);
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.detail || "Помилка списку дропперів");
+      const items = data.items || [];
+      const prev = previewState.dropperChatId;
+      els.previewDropperSelect.innerHTML =
+        `<option value="">Оберіть дроппера…</option>` +
+        items
+          .map(
+            (d) =>
+              `<option value="${escapeHtml(d.chat_id)}">${escapeHtml(
+                d.company_name || d.chat_id
+              )}</option>`
+          )
+          .join("");
+      if (prev && items.some((d) => String(d.chat_id) === String(prev))) {
+        els.previewDropperSelect.value = prev;
+        previewState.dropperChatId = prev;
+      } else {
+        previewState.dropperChatId = "";
+      }
+      previewState.droppersLoaded = true;
+    } catch (error) {
+      console.warn("preview droppers", error);
+      showToast(error.message || "Не вдалося завантажити дропперів");
+    }
+  }
+
+  function resetVisibleViews() {
     els.bootStatus.classList.add("hidden");
     els.registerView.classList.add("hidden");
     els.ownerView.classList.add("hidden");
@@ -2466,12 +2582,60 @@ ${data.ownTtn ? `Власна ТТН: ${escapeHtml(data.ttnNumber || "")}` : "Т
     els.mainTabs.classList.add("hidden");
     els.cartChip.classList.add("hidden");
     if (els.balanceView) els.balanceView.classList.add("hidden");
+  }
+
+  async function applyPreviewMode() {
+    if (sessionState.role !== "owner") {
+      syncPreviewBarControls();
+      return;
+    }
+    syncPreviewBarControls();
+
+    if (previewState.mode === "owner") {
+      showMode("owner");
+      return;
+    }
+
+    resetVisibleViews();
+
+    if (previewState.mode === "dropper") {
+      await ensurePreviewDroppersLoaded();
+      syncPreviewBarControls();
+      if (!previewState.dropperChatId) {
+        els.bootStatus.classList.remove("hidden");
+        els.bootStatus.innerHTML =
+          `<div class="blocked-box">Оберіть дроппера у списку вище, щоб побачити його форму.</div>`;
+        return;
+      }
+      els.orderMain.classList.remove("hidden");
+      els.mainTabs.classList.remove("hidden");
+      els.cartChip.classList.remove("hidden");
+      loadColorOptions();
+      await loadDropperSettings(previewState.dropperChatId);
+      syncPaymentAndTtn();
+      updateCartIndicators();
+      switchTab("catalog");
+      return;
+    }
+
+    // staff stubs
+    els.bootStatus.classList.remove("hidden");
+    els.bootStatus.innerHTML = `<div class="blocked-box">Роль «${escapeHtml(
+      staffRoleLabel(previewState.mode)
+    )}». Кабінет співробітника — наступний етап.</div>`;
+  }
+
+  function showMode(mode) {
+    resetVisibleViews();
 
     if (mode === "register") {
       els.registerView.classList.remove("hidden");
       return;
     }
     if (mode === "owner") {
+      previewState.mode = "owner";
+      if (els.previewRoleSelect) els.previewRoleSelect.value = "owner";
+      syncPreviewBarControls();
       els.ownerView.classList.remove("hidden");
       const initial =
         queryParam("view") === "balances" || queryParam("view") === "balance"
@@ -2479,6 +2643,7 @@ ${data.ownTtn ? `Власна ТТН: ${escapeHtml(data.ttnNumber || "")}` : "Т
           : "droppers";
       setOwnerTab(initial);
       renderOwnerCabinet();
+      ensurePreviewDroppersLoaded();
       return;
     }
     if (mode === "balance") {
@@ -2612,6 +2777,38 @@ ${data.ownTtn ? `Власна ТТН: ${escapeHtml(data.ttnNumber || "")}` : "Т
       const btn = event.target.closest("[data-owner-tab]");
       if (!btn) return;
       setOwnerTab(btn.getAttribute("data-owner-tab"));
+    });
+  }
+
+  if (els.previewRoleSelect) {
+    els.previewRoleSelect.addEventListener("change", async () => {
+      if (sessionState.role !== "owner") return;
+      const next = els.previewRoleSelect.value || "owner";
+      previewState.mode = next;
+      if (next === "dropper") {
+        await ensurePreviewDroppersLoaded();
+        previewState.dropperChatId = els.previewDropperSelect?.value || "";
+      }
+      await applyPreviewMode();
+    });
+  }
+
+  if (els.previewDropperSelect) {
+    els.previewDropperSelect.addEventListener("change", async () => {
+      if (sessionState.role !== "owner") return;
+      previewState.dropperChatId = els.previewDropperSelect.value || "";
+      previewState.mode = "dropper";
+      if (els.previewRoleSelect) els.previewRoleSelect.value = "dropper";
+      await applyPreviewMode();
+    });
+  }
+
+  if (els.previewBackOwner) {
+    els.previewBackOwner.addEventListener("click", async () => {
+      if (sessionState.role !== "owner") return;
+      previewState.mode = "owner";
+      if (els.previewRoleSelect) els.previewRoleSelect.value = "owner";
+      await applyPreviewMode();
     });
   }
 
@@ -2869,7 +3066,12 @@ ${data.ownTtn ? `Власна ТТН: ${escapeHtml(data.ttnNumber || "")}` : "Т
             throw new Error(typeof data.detail === "string" ? data.detail : "Помилка");
           }
           showToast("Дроппера видалено");
+          previewState.droppersLoaded = false;
+          if (previewState.dropperChatId === chatId) {
+            previewState.dropperChatId = "";
+          }
           renderOwnerCabinet();
+          ensurePreviewDroppersLoaded();
         } catch (error) {
           showToast(error.message || "Не вдалося видалити");
           delBtn.disabled = false;
