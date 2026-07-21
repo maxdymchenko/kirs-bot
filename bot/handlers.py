@@ -333,10 +333,7 @@ async def pending_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
     if not pending:
         await update.message.reply_text(
-            "✅ У базі немає необроблених чатів.\n\n"
-            "Якщо вище в стрічці ще видно кнопку «Обработано» — це старе повідомлення "
-            "після перезапуску/очищення БД. Натисніть її, щоб прибрати кнопку "
-            "(запис у базі вже не існує)."
+            "✅ У базі немає необроблених чатів."
         )
         return
 
