@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import calendar
 import logging
 import secrets
 import sqlite3
@@ -21,6 +22,38 @@ def _now() -> str:
 
 def _gen_referral_code() -> str:
     return secrets.token_hex(3).upper()
+
+
+def _norm_staff_username(value: str | None) -> str:
+    raw = str(value or "").strip()
+    if raw.startswith("@"):
+        raw = raw[1:]
+    return raw.lower()
+
+
+def _parse_iso_dt(value: str | None) -> datetime | None:
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    try:
+        if raw.endswith("Z"):
+            raw = raw[:-1] + "+00:00"
+        dt = datetime.fromisoformat(raw)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt
+    except ValueError:
+        return None
+
+
+def _add_months_iso(start_iso: str, months: int) -> str:
+    dt = _parse_iso_dt(start_iso) or datetime.now(timezone.utc)
+    months = max(0, int(months or 0))
+    month_idx = dt.month - 1 + months
+    year = dt.year + month_idx // 12
+    month = month_idx % 12 + 1
+    day = min(dt.day, calendar.monthrange(year, month)[1])
+    return dt.replace(year=year, month=month, day=day).isoformat()
 
 
 @dataclass
@@ -45,8 +78,11 @@ class Dropper:
     credit_last_notified_at: str | None
     notify_shipping_events: bool
     referral_code: str
+    referral_program_enabled: bool
+    referral_months: int
     referred_by_dropper_id: int | None
     referral_percent: float
+    referral_expires_at: str | None
     status: str
     registered_by_user_id: str
     registered_by_username: str
@@ -74,8 +110,11 @@ class Dropper:
             "credit_last_notified_at": self.credit_last_notified_at,
             "notify_shipping_events": self.notify_shipping_events,
             "referral_code": self.referral_code,
+            "referral_program_enabled": self.referral_program_enabled,
+            "referral_months": self.referral_months,
             "referred_by_dropper_id": self.referred_by_dropper_id,
             "referral_percent": self.referral_percent,
+            "referral_expires_at": self.referral_expires_at,
             "status": self.status,
             "registered_by_user_id": self.registered_by_user_id,
             "registered_by_username": self.registered_by_username,
@@ -83,9 +122,16 @@ class Dropper:
         }
 
     def to_public_dict(self) -> dict[str, Any]:
-        """Без owner_comment — для відповідей дропперу."""
+        """Без owner_comment — для відповідей дропперу.
+        Якщо реферальна програма вимкнена — не віддаємо код/%/строк, щоб у UI не було згадок.
+        """
         data = self.to_dict()
         data.pop("owner_comment", None)
+        if not self.referral_program_enabled:
+            data["referral_code"] = ""
+            data["referral_percent"] = 0
+            data["referral_months"] = 0
+            data["referral_expires_at"] = None
         return data
 
 
@@ -167,6 +213,9 @@ class AppStorage:
                 ("credit_holidays_blocked", "credit_holidays_blocked INTEGER NOT NULL DEFAULT 0"),
                 ("credit_last_notified_at", "credit_last_notified_at TEXT"),
                 ("notify_shipping_events", "notify_shipping_events INTEGER NOT NULL DEFAULT 0"),
+                ("referral_program_enabled", "referral_program_enabled INTEGER NOT NULL DEFAULT 0"),
+                ("referral_months", "referral_months INTEGER NOT NULL DEFAULT 12"),
+                ("referral_expires_at", "referral_expires_at TEXT"),
             ):
                 self._ensure_column(conn, "droppers", column, ddl)
 
@@ -178,21 +227,29 @@ class AppStorage:
                 """
             )
 
-            # Згенерувати referral_code для старих записів
-            rows = conn.execute(
-                "SELECT id FROM droppers WHERE referral_code IS NULL OR referral_code = ''"
-            ).fetchall()
-            for row in rows:
-                for _ in range(8):
-                    code = _gen_referral_code()
-                    try:
-                        conn.execute(
-                            "UPDATE droppers SET referral_code = ? WHERE id = ?",
-                            (code, row["id"]),
-                        )
-                        break
-                    except sqlite3.IntegrityError:
-                        continue
+            # Старі дроппери з % > 0 — програму вважаємо увімкненою
+            conn.execute(
+                """
+                UPDATE droppers
+                SET referral_program_enabled = 1
+                WHERE referral_percent > 0
+                  AND (referral_program_enabled IS NULL OR referral_program_enabled = 0)
+                  AND referral_code IS NOT NULL AND referral_code != ''
+                """
+            )
+
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS referral_fingerprints (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    fingerprint_type TEXT NOT NULL,
+                    fingerprint_value TEXT NOT NULL,
+                    first_dropper_id INTEGER,
+                    first_seen_at TEXT NOT NULL,
+                    UNIQUE(fingerprint_type, fingerprint_value)
+                )
+                """
+            )
 
             conn.execute(
                 """
@@ -333,8 +390,13 @@ class AppStorage:
             ),
             notify_shipping_events=bool(self._row_get(row, "notify_shipping_events", 0)),
             referral_code=str(self._row_get(row, "referral_code", "") or ""),
+            referral_program_enabled=bool(self._row_get(row, "referral_program_enabled", 0)),
+            referral_months=max(0, int(self._row_get(row, "referral_months", 12) or 12)),
             referred_by_dropper_id=int(ref_by) if ref_by not in (None, "") else None,
             referral_percent=float(self._row_get(row, "referral_percent", 0) or 0),
+            referral_expires_at=(
+                str(self._row_get(row, "referral_expires_at") or "").strip() or None
+            ),
             status=row["status"],
             registered_by_user_id=row["registered_by_user_id"] or "",
             registered_by_username=row["registered_by_username"] or "",
@@ -460,7 +522,9 @@ class AppStorage:
             ).fetchone()
         return self._row_dropper(row) if row else None
 
-    def get_dropper_by_referral_code(self, code: str) -> Dropper | None:
+    def get_dropper_by_referral_code(
+        self, code: str, *, only_enabled: bool = True
+    ) -> Dropper | None:
         key = str(code or "").strip().upper()
         if not key:
             return None
@@ -468,7 +532,108 @@ class AppStorage:
             row = conn.execute(
                 "SELECT * FROM droppers WHERE upper(referral_code) = ?", (key,)
             ).fetchone()
-        return self._row_dropper(row) if row else None
+        if not row:
+            return None
+        dropper = self._row_dropper(row)
+        if only_enabled and not dropper.referral_program_enabled:
+            return None
+        return dropper
+
+    def ensure_referral_code(self, dropper_id: int) -> str:
+        """Згенерувати код якщо немає; існуючий не змінювати."""
+        dropper = self.get_dropper_by_id(dropper_id)
+        if not dropper:
+            return ""
+        if dropper.referral_code:
+            return dropper.referral_code
+        with self._connect() as conn:
+            code = ""
+            for _ in range(12):
+                code = _gen_referral_code()
+                try:
+                    conn.execute(
+                        "UPDATE droppers SET referral_code = ? WHERE id = ? AND (referral_code = '' OR referral_code IS NULL)",
+                        (code, int(dropper_id)),
+                    )
+                    conn.commit()
+                    break
+                except sqlite3.IntegrityError:
+                    continue
+            row = conn.execute(
+                "SELECT referral_code FROM droppers WHERE id = ?", (int(dropper_id),)
+            ).fetchone()
+        return str((row["referral_code"] if row else "") or code or "")
+
+    def referral_fingerprint_taken(
+        self,
+        *,
+        user_id: str = "",
+        username: str = "",
+        phone: str = "",
+    ) -> dict[str, Any] | None:
+        """Чи вже реєструвались з цими відбитками (антифрод рефералки)."""
+        checks: list[tuple[str, str]] = []
+        uid = str(user_id or "").strip()
+        if uid:
+            checks.append(("user_id", uid))
+        uname = _norm_staff_username(username)
+        if uname:
+            checks.append(("username", uname))
+        digits = "".join(ch for ch in str(phone or "") if ch.isdigit())
+        if len(digits) >= 10:
+            checks.append(("phone", digits[-10:]))
+        if not checks:
+            return None
+        with self._connect() as conn:
+            for ftype, fval in checks:
+                row = conn.execute(
+                    """
+                    SELECT * FROM referral_fingerprints
+                    WHERE fingerprint_type = ? AND fingerprint_value = ?
+                    """,
+                    (ftype, fval),
+                ).fetchone()
+                if row:
+                    return {
+                        "type": row["fingerprint_type"],
+                        "value": row["fingerprint_value"],
+                        "first_dropper_id": row["first_dropper_id"],
+                        "first_seen_at": row["first_seen_at"],
+                    }
+        return None
+
+    def remember_referral_fingerprints(
+        self,
+        *,
+        dropper_id: int,
+        user_id: str = "",
+        username: str = "",
+        phone: str = "",
+    ) -> None:
+        now = _now()
+        pairs: list[tuple[str, str]] = []
+        uid = str(user_id or "").strip()
+        if uid:
+            pairs.append(("user_id", uid))
+        uname = _norm_staff_username(username)
+        if uname:
+            pairs.append(("username", uname))
+        digits = "".join(ch for ch in str(phone or "") if ch.isdigit())
+        if len(digits) >= 10:
+            pairs.append(("phone", digits[-10:]))
+        if not pairs:
+            return
+        with self._connect() as conn:
+            for ftype, fval in pairs:
+                conn.execute(
+                    """
+                    INSERT OR IGNORE INTO referral_fingerprints (
+                        fingerprint_type, fingerprint_value, first_dropper_id, first_seen_at
+                    ) VALUES (?, ?, ?, ?)
+                    """,
+                    (ftype, fval, int(dropper_id), now),
+                )
+            conn.commit()
 
     def list_referrals(self, dropper_id: int) -> list[Dropper]:
         with self._connect() as conn:
@@ -500,48 +665,47 @@ class AppStorage:
         registered_by_username: str = "",
         require_full_payment: bool = False,
         referral_code_used: str = "",
+        skip_referral_link: bool = False,
     ) -> Dropper:
         now = _now()
-        referrer = self.get_dropper_by_referral_code(referral_code_used)
+        referrer = (
+            None
+            if skip_referral_link
+            else self.get_dropper_by_referral_code(referral_code_used)
+        )
         referred_by = referrer.id if referrer else None
+        referral_expires_at = (
+            _add_months_iso(now, max(1, int(referrer.referral_months or 12)))
+            if referrer
+            else None
+        )
 
         with self._connect() as conn:
-            dropper_id = None
-            code = ""
-            for _ in range(10):
-                code = _gen_referral_code()
-                try:
-                    cur = conn.execute(
-                        """
-                        INSERT INTO droppers (
-                            chat_id, company_name, contact_name, phone, comment,
-                            require_full_payment, status,
-                            registered_by_user_id, registered_by_username, created_at,
-                            referral_code, referred_by_dropper_id
-                        ) VALUES (?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?)
-                        """,
-                        (
-                            str(chat_id).strip(),
-                            company_name.strip(),
-                            contact_name.strip(),
-                            phone.strip(),
-                            (comment or "").strip(),
-                            1 if require_full_payment else 0,
-                            str(registered_by_user_id or ""),
-                            str(registered_by_username or ""),
-                            now,
-                            code,
-                            referred_by,
-                        ),
-                    )
-                    dropper_id = int(cur.lastrowid)
-                    break
-                except sqlite3.IntegrityError as exc:
-                    if "referral_code" in str(exc).lower():
-                        continue
-                    raise
-            if dropper_id is None:
-                raise RuntimeError("Не вдалося створити referral_code")
+            cur = conn.execute(
+                """
+                INSERT INTO droppers (
+                    chat_id, company_name, contact_name, phone, comment,
+                    require_full_payment, status,
+                    registered_by_user_id, registered_by_username, created_at,
+                    referral_code, referred_by_dropper_id, referral_expires_at,
+                    referral_program_enabled, referral_months
+                ) VALUES (?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, '', ?, ?, 0, 12)
+                """,
+                (
+                    str(chat_id).strip(),
+                    company_name.strip(),
+                    contact_name.strip(),
+                    phone.strip(),
+                    (comment or "").strip(),
+                    1 if require_full_payment else 0,
+                    str(registered_by_user_id or ""),
+                    str(registered_by_username or ""),
+                    now,
+                    referred_by,
+                    referral_expires_at,
+                ),
+            )
+            dropper_id = int(cur.lastrowid)
             conn.commit()
             row = conn.execute(
                 "SELECT * FROM droppers WHERE id = ?", (dropper_id,)
@@ -560,6 +724,8 @@ class AppStorage:
         extra_discount_percent: float | None = None,
         orders_disabled: bool | None = None,
         referral_percent: float | None = None,
+        referral_program_enabled: bool | None = None,
+        referral_months: int | None = None,
         owner_comment: str | None = None,
         credit_holidays_days: int | None = None,
         notify_shipping_events: bool | None = None,
@@ -589,6 +755,10 @@ class AppStorage:
             fields["orders_disabled"] = 1 if orders_disabled else 0
         if referral_percent is not None:
             fields["referral_percent"] = max(0.0, min(100.0, float(referral_percent)))
+        if referral_months is not None:
+            fields["referral_months"] = max(1, min(120, int(referral_months)))
+        if referral_program_enabled is not None:
+            fields["referral_program_enabled"] = 1 if referral_program_enabled else 0
         if owner_comment is not None:
             fields["owner_comment"] = str(owner_comment).strip()[:2000]
         if credit_holidays_days is not None:
@@ -612,7 +782,16 @@ class AppStorage:
                     list(fields.values()) + [raw],
                 )
             conn.commit()
-        return self.get_dropper_by_chat(key)
+
+        updated = self.get_dropper_by_chat(key)
+        if (
+            updated
+            and referral_program_enabled is True
+            and not (updated.referral_code or "").strip()
+        ):
+            self.ensure_referral_code(updated.id)
+            updated = self.get_dropper_by_chat(key)
+        return updated
 
     def delete_dropper(self, chat_id: str) -> bool:
         raw = str(chat_id).strip()
@@ -676,15 +855,31 @@ class AppStorage:
         )
 
     def get_staff_by_user(self, telegram_user_id: str) -> StaffMember | None:
-        key = str(telegram_user_id or "").strip()
-        if not key:
-            return None
+        return self.get_staff_by_identity(telegram_user_id=telegram_user_id)
+
+    def get_staff_by_identity(
+        self,
+        telegram_user_id: str = "",
+        username: str = "",
+    ) -> StaffMember | None:
+        uid = str(telegram_user_id or "").strip()
+        uname = _norm_staff_username(username)
         with self._connect() as conn:
-            row = conn.execute(
-                "SELECT * FROM staff WHERE telegram_user_id = ? AND active = 1",
-                (key,),
-            ).fetchone()
-        return self._row_staff(row) if row else None
+            if uid:
+                row = conn.execute(
+                    "SELECT * FROM staff WHERE telegram_user_id = ? AND active = 1",
+                    (uid,),
+                ).fetchone()
+                if row:
+                    return self._row_staff(row)
+            if uname:
+                rows = conn.execute(
+                    "SELECT * FROM staff WHERE active = 1 AND username != ''"
+                ).fetchall()
+                for row in rows:
+                    if _norm_staff_username(row["username"]) == uname:
+                        return self._row_staff(row)
+        return None
 
     def list_staff(self) -> list[StaffMember]:
         with self._connect() as conn:
@@ -863,8 +1058,16 @@ class AppStorage:
         if not source or not source.referred_by_dropper_id:
             return None
         referrer = self.get_dropper_by_id(source.referred_by_dropper_id)
-        if not referrer or float(referrer.referral_percent or 0) <= 0:
+        if (
+            not referrer
+            or not referrer.referral_program_enabled
+            or float(referrer.referral_percent or 0) <= 0
+        ):
             return None
+        if source.referral_expires_at:
+            expires = _parse_iso_dt(source.referral_expires_at)
+            if expires and datetime.now(timezone.utc) > expires:
+                return None
         total = float(drop_total or 0)
         if total <= 0:
             return None
@@ -1089,10 +1292,29 @@ class AppStorage:
                 SELECT * FROM orders
                 WHERE ttn_number IS NOT NULL AND ttn_number != ''
                   AND ttn_status NOT IN (
-                    'received', 'returned', 'failed', 'cancelled', 'provided'
+                    'received', 'returned', 'refused', 'failed', 'cancelled',
+                    'provided', 'return_at_warehouse'
                   )
                   AND status != 'cancelled'
                 ORDER BY id DESC
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+        return [self._row_order(r) for r in rows]
+
+    def list_orders_at_warehouse(self, limit: int = 500) -> list[dict[str, Any]]:
+        """Замовлення, що зараз лежать на відділенні (для нагадувань 5/7 день)."""
+        limit = max(1, min(int(limit or 500), 1000))
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT * FROM orders
+                WHERE ttn_status = 'at_warehouse'
+                  AND ttn_number IS NOT NULL AND ttn_number != ''
+                  AND status != 'cancelled'
+                  AND own_ttn = 0
+                ORDER BY id ASC
                 LIMIT ?
                 """,
                 (limit,),

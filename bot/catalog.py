@@ -17,12 +17,19 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_SHEET_ID = "1HE1HmyuSevSIYBvk3UiRkoYZgRSdmGqH7ZvK6BFBBCg"
 SCOPES = [
-    "https://www.googleapis.com/auth/spreadsheets.readonly",
+    "https://www.googleapis.com/auth/spreadsheets",
     "https://www.googleapis.com/auth/drive.readonly",
 ]
 
 # Роздільники в кодах комплектів: "010 + 009K", "010+009К", "010/009K"
 _CODE_TOKEN_SPLIT_RE = re.compile(r"[^0-9A-Za-zА-Яа-яЁё]+", re.UNICODE)
+# Комплект лише за + або / (дефіс у коді на кшталт 1469Д-7080 — це не комплект)
+_KIT_SEP_RE = re.compile(r"\s*[+/]\s*")
+_KIT_MARK_RE = re.compile(r"[+/]")
+
+
+class InsufficientStockError(Exception):
+    """Недостатньо залишку для списання / оформлення замовлення."""
 
 
 @dataclass
@@ -35,6 +42,7 @@ class ProductVariant:
     drop_price: str
     photo_url: str
     live_photo_url: str = ""
+    sheet_row: int = 0  # 1-based рядок у Google Sheet (0 = невідомо)
 
     def to_dict(self) -> dict:
         return {
@@ -158,6 +166,119 @@ def _parse_stock(raw: str) -> int | None:
         return int(float(raw))
     except ValueError:
         return None
+
+
+def _is_kit_code(code: str) -> bool:
+    return bool(_KIT_MARK_RE.search(str(code or "")))
+
+
+def _kit_components(code: str) -> list[str]:
+    """
+    Складові комплекту.
+    '405+625' → ['405', '625']
+    '063+К' / '425+В' → ['063'] / ['425']  (літерний суфікс без цифр ігноруємо)
+    '1469Д-7080' → [] (не комплект)
+    """
+    raw = str(code or "").strip().lstrip("'")
+    if not raw or not _is_kit_code(raw):
+        return []
+    parts: list[str] = []
+    for part in _KIT_SEP_RE.split(raw):
+        token = part.strip().lstrip("'")
+        if not token:
+            continue
+        # Суфікси на кшталт К / В — не окремий товар
+        if not re.search(r"\d", token):
+            continue
+        parts.append(token)
+    return parts
+
+
+def _atomic_stock_by_code(variants: list[ProductVariant]) -> dict[str, int | None]:
+    """
+    Наявність «простих» товарів (не комплектів) за кодом.
+    Сума по всіх рядках з цим кодом (різні кольори).
+    None = у таблиці немає числа по цьому коду.
+    """
+    buckets: dict[str, list[int]] = {}
+    for v in variants:
+        if _is_kit_code(v.code):
+            continue
+        if v.stock is None:
+            continue
+        key = _code_raw(v.code)
+        if not key:
+            continue
+        buckets.setdefault(key, []).append(int(v.stock))
+    return {key: sum(vals) for key, vals in buckets.items()}
+
+
+def _lookup_atomic_stock(
+    stock_map: dict[str, int | None], code: str
+) -> int | None:
+    raw = _code_raw(code)
+    if raw in stock_map:
+        return stock_map[raw]
+    # Fallback лише якщо точного коду немає (різний регістр / зайві пробіли вже в raw)
+    norm = _normalize_code(code).casefold()
+    if not norm:
+        return None
+    matches = [
+        stock_map[k]
+        for k in stock_map
+        if _normalize_code(k).casefold() == norm
+    ]
+    if not matches:
+        return None
+    # Якщо кілька кодів зійшлись після зрізання нулів — беремо мінімум (безпечніше)
+    return min(int(x) for x in matches)
+
+
+def apply_component_stock_to_kits(
+    variants: list[ProductVariant],
+) -> tuple[list[ProductVariant], list[tuple[int, int]]]:
+    """
+    Якщо складова = 0 → комплект з цим кодом теж 0.
+    Якщо складові знову в наявності → комплект = min(складових).
+    Повертає (variants, [(sheet_row, new_stock), ...]) для запису в таблицю.
+    """
+    stock_map = _atomic_stock_by_code(variants)
+    sheet_updates: list[tuple[int, int]] = []
+
+    for v in variants:
+        parts = _kit_components(v.code)
+        if not parts:
+            continue
+
+        part_stocks: list[int] = []
+        unknown = False
+        forced_zero = False
+        for part in parts:
+            qty = _lookup_atomic_stock(stock_map, part)
+            if qty is None:
+                unknown = True
+                continue
+            if qty <= 0:
+                forced_zero = True
+                break
+            part_stocks.append(qty)
+
+        if forced_zero:
+            new_stock = 0
+        elif part_stocks and not unknown:
+            new_stock = min(part_stocks)
+        elif part_stocks and unknown:
+            # Є відомі складові >0, але не всі — не чіпаємо, окрім випадку 0 вище
+            continue
+        else:
+            continue
+
+        if v.stock != new_stock:
+            v.stock = new_stock
+            if v.sheet_row > 0:
+                sheet_updates.append((v.sheet_row, new_stock))
+
+    return variants, sheet_updates
 
 
 def _norm_text(value: str) -> str:
@@ -296,51 +417,308 @@ class CatalogService:
             )
         return gspread.authorize(creds)
 
+    @staticmethod
+    def _write_stock_column(ws: gspread.Worksheet, updates: list[tuple[int, int]]) -> None:
+        """Пакетний запис колонки F (наявність)."""
+        if not updates:
+            return
+        by_row: dict[int, int] = {}
+        for row_num, stock in updates:
+            if row_num > 0:
+                by_row[int(row_num)] = max(0, int(stock))
+        if not by_row:
+            return
+        data = [
+            {"range": f"F{row}", "values": [[stock]]}
+            for row, stock in sorted(by_row.items())
+        ]
+        chunk = 80
+        for i in range(0, len(data), chunk):
+            ws.batch_update(data[i : i + chunk], value_input_option="USER_ENTERED")
+
+    def _codes_equal(self, left: str, right: str) -> bool:
+        a = _code_raw(left)
+        b = _code_raw(right)
+        if a and b and a == b:
+            return True
+        return _normalize_code(left).casefold() == _normalize_code(right).casefold()
+
+    def _find_atomic_rows(
+        self,
+        variants: list[ProductVariant],
+        code: str,
+        *,
+        color: str = "",
+        product_id: str = "",
+    ) -> list[ProductVariant]:
+        rows = [v for v in variants if not _is_kit_code(v.code) and self._codes_equal(v.code, code)]
+        if not rows:
+            return []
+        pid = str(product_id or "").strip()
+        if pid:
+            by_id = [v for v in rows if str(v.product_id or "").strip() == pid]
+            if by_id:
+                rows = by_id
+        color_n = _norm_text(color)
+        if color_n:
+            by_color = [v for v in rows if color_n == _norm_text(v.color)]
+            if by_color:
+                return by_color
+        return rows
+
+    def _available_on_rows(self, rows: list[ProductVariant]) -> int | None:
+        """Сума числових залишків; None якщо жоден рядок не трекає наявність."""
+        vals = [int(v.stock) for v in rows if v.stock is not None]
+        if not vals:
+            return None
+        return sum(vals)
+
+    def _decrement_rows(
+        self, rows: list[ProductVariant], qty: int
+    ) -> list[tuple[int, int]]:
+        """Списати qty з рядків із числовим stock. Повертає [(sheet_row, new_stock)]."""
+        need = max(0, int(qty or 0))
+        if need <= 0:
+            return []
+        tracked = [v for v in rows if v.stock is not None]
+        if not tracked:
+            return []
+        available = sum(max(0, int(v.stock or 0)) for v in tracked)
+        if available < need:
+            raise InsufficientStockError(
+                f"Недостатньо залишку (потрібно {need}, є {available})"
+            )
+        # Спочатку рядки з більшим залишком
+        tracked.sort(key=lambda v: int(v.stock or 0), reverse=True)
+        updates: list[tuple[int, int]] = []
+        left = need
+        for v in tracked:
+            if left <= 0:
+                break
+            have = max(0, int(v.stock or 0))
+            if have <= 0:
+                continue
+            take = min(have, left)
+            new_stock = have - take
+            v.stock = new_stock
+            if v.sheet_row > 0:
+                updates.append((v.sheet_row, new_stock))
+            left -= take
+        if left > 0:
+            raise InsufficientStockError(
+                f"Недостатньо залишку (не списано {left} шт.)"
+            )
+        return updates
+
+    def _check_item_stock(
+        self, variants: list[ProductVariant], item: dict
+    ) -> None:
+        code = str(item.get("code") or "").strip().lstrip("'")
+        qty = max(1, int(item.get("qty") or 1))
+        color = str(item.get("color") or "").strip()
+        product_id = str(item.get("product_id") or "").strip()
+        if not code:
+            return
+
+        if _is_kit_code(code):
+            parts = _kit_components(code)
+            if parts:
+                for part in parts:
+                    rows = self._find_atomic_rows(
+                        variants, part, color=color, product_id=""
+                    )
+                    avail = self._available_on_rows(rows)
+                    if avail is None:
+                        continue
+                    if avail < qty:
+                        raise InsufficientStockError(
+                            f"Немає в наявності складової {part} для комплекту {code} "
+                            f"(потрібно {qty}, є {avail})"
+                        )
+                return
+            # Комплект без розпізнаних складових — перевіряємо сам рядок
+            rows = [
+                v
+                for v in variants
+                if self._codes_equal(v.code, code)
+                and (not color or _norm_text(v.color) == _norm_text(color))
+            ]
+            if product_id:
+                by_id = [v for v in rows if str(v.product_id or "").strip() == product_id]
+                if by_id:
+                    rows = by_id
+            avail = self._available_on_rows(rows)
+            if avail is not None and avail < qty:
+                raise InsufficientStockError(
+                    f"Немає в наявності {code} (потрібно {qty}, є {avail})"
+                )
+            return
+
+        rows = self._find_atomic_rows(
+            variants, code, color=color, product_id=product_id
+        )
+        avail = self._available_on_rows(rows)
+        if avail is not None and avail < qty:
+            raise InsufficientStockError(
+                f"Немає в наявності {code} (потрібно {qty}, є {avail})"
+            )
+
+    def _consume_item(
+        self, variants: list[ProductVariant], item: dict
+    ) -> list[tuple[int, int]]:
+        code = str(item.get("code") or "").strip().lstrip("'")
+        qty = max(1, int(item.get("qty") or 1))
+        color = str(item.get("color") or "").strip()
+        product_id = str(item.get("product_id") or "").strip()
+        if not code:
+            return []
+
+        updates: list[tuple[int, int]] = []
+        if _is_kit_code(code):
+            parts = _kit_components(code)
+            if parts:
+                for part in parts:
+                    rows = self._find_atomic_rows(
+                        variants, part, color=color, product_id=""
+                    )
+                    # Якщо по кольору нічого з числовим stock — беремо будь-які атомарні
+                    if not any(v.stock is not None for v in rows):
+                        rows = self._find_atomic_rows(variants, part, color="", product_id="")
+                    if any(v.stock is not None for v in rows):
+                        updates.extend(self._decrement_rows(rows, qty))
+                return updates
+
+            rows = [
+                v
+                for v in variants
+                if self._codes_equal(v.code, code)
+                and (not color or _norm_text(v.color) == _norm_text(color))
+            ]
+            if product_id:
+                by_id = [v for v in rows if str(v.product_id or "").strip() == product_id]
+                if by_id:
+                    rows = by_id
+            if any(v.stock is not None for v in rows):
+                updates.extend(self._decrement_rows(rows, qty))
+            return updates
+
+        rows = self._find_atomic_rows(
+            variants, code, color=color, product_id=product_id
+        )
+        if any(v.stock is not None for v in rows):
+            updates.extend(self._decrement_rows(rows, qty))
+        return updates
+
+    def _load_variants_from_sheet(
+        self, ws: gspread.Worksheet, client: gspread.Client
+    ) -> list[ProductVariant]:
+        rows = ws.get_all_values()
+        data_rows = rows[1:] if rows else []
+        live_urls = _fetch_live_photo_urls(
+            client, self.spreadsheet_id, ws.title, len(data_rows)
+        )
+        variants: list[ProductVariant] = []
+        for idx, row in enumerate(data_rows):
+            while len(row) < 14:
+                row.append("")
+            product_id = str(row[0]).strip()
+            code = str(row[1]).strip().lstrip("'")
+            name = str(row[2]).strip()
+            color = str(row[4]).strip()
+            if not code or not name:
+                continue
+            live_photo_url = live_urls[idx] if idx < len(live_urls) else ""
+            if not live_photo_url:
+                live_photo_url = _extract_url(str(row[13]).strip())
+            variants.append(
+                ProductVariant(
+                    product_id=product_id,
+                    code=code,
+                    name=name,
+                    color=color,
+                    stock=_parse_stock(row[5]),
+                    drop_price=str(row[6]).strip(),
+                    photo_url=str(row[12]).strip(),
+                    live_photo_url=live_photo_url,
+                    sheet_row=idx + 2,
+                )
+            )
+        return variants
+
+    def _refresh_unlocked(self, *, sync_kits: bool = True) -> gspread.Worksheet | None:
+        """Оновлення кешу без захоплення lock (викликати лише під self._lock)."""
+        now = time.time()
+        client = self._build_client()
+        ws = client.open_by_key(self.spreadsheet_id).sheet1
+        variants = self._load_variants_from_sheet(ws, client)
+        kit_updates: list[tuple[int, int]] = []
+        if sync_kits:
+            variants, kit_updates = apply_component_stock_to_kits(variants)
+            if kit_updates:
+                try:
+                    self._write_stock_column(ws, kit_updates)
+                    logger.info(
+                        "Наявність комплектів синхронізовано в таблицю: %d рядків",
+                        len(kit_updates),
+                    )
+                except Exception:
+                    logger.exception(
+                        "Не вдалося записати наявність комплектів у Google Sheet "
+                        "(у застосунку вже застосовано)"
+                    )
+        self._variants = variants
+        self._loaded_at = now
+        logger.info("Каталог загружен: %d позиций", len(variants))
+        return ws
+
     def refresh(self, force: bool = False) -> None:
         with self._lock:
             now = time.time()
             if not force and self._variants and now - self._loaded_at < self.cache_ttl_seconds:
                 return
+            self._refresh_unlocked(sync_kits=True)
 
+    def consume_cart_stock(self, cart: list[dict]) -> dict:
+        """
+        Списати залишки після продажу.
+        Комплект → мінус по кожній складовій, потім перерахунок комплектів.
+        Звичайний товар → мінус по його рядку + перерахунок комплектів.
+        """
+        items = [x for x in (cart or []) if isinstance(x, dict)]
+        if not items:
+            return {"ok": True, "updated_rows": 0, "items": 0}
+
+        with self._lock:
             client = self._build_client()
             ws = client.open_by_key(self.spreadsheet_id).sheet1
-            rows = ws.get_all_values()
-            data_rows = rows[1:] if rows else []
-            # N: «Ссылка гугл фото» — часто smart chip / rich link, не звичайний HYPERLINK
-            live_urls = _fetch_live_photo_urls(
-                client, self.spreadsheet_id, ws.title, len(data_rows)
-            )
-            variants: list[ProductVariant] = []
+            variants = self._load_variants_from_sheet(ws, client)
 
-            # A ID, B код, C назва, E колір, F наявність, G дроп-ціна, M фото, N живі фото
-            for idx, row in enumerate(data_rows):
-                while len(row) < 14:
-                    row.append("")
-                product_id = str(row[0]).strip()
-                code = str(row[1]).strip().lstrip("'")
-                name = str(row[2]).strip()
-                color = str(row[4]).strip()
-                if not code or not name:
-                    continue
-                live_photo_url = live_urls[idx] if idx < len(live_urls) else ""
-                if not live_photo_url:
-                    live_photo_url = _extract_url(str(row[13]).strip())
-                variants.append(
-                    ProductVariant(
-                        product_id=product_id,
-                        code=code,
-                        name=name,
-                        color=color,
-                        stock=_parse_stock(row[5]),
-                        drop_price=str(row[6]).strip(),
-                        photo_url=str(row[12]).strip(),
-                        live_photo_url=live_photo_url,
-                    )
-                )
+            # Перевірка до списання
+            for item in items:
+                self._check_item_stock(variants, item)
+
+            sheet_updates: list[tuple[int, int]] = []
+            for item in items:
+                sheet_updates.extend(self._consume_item(variants, item))
+
+            variants, kit_updates = apply_component_stock_to_kits(variants)
+            sheet_updates.extend(kit_updates)
+
+            if sheet_updates:
+                self._write_stock_column(ws, sheet_updates)
 
             self._variants = variants
-            self._loaded_at = now
-            logger.info("Каталог загружен: %d позиций", len(variants))
+            self._loaded_at = time.time()
+            logger.info(
+                "Списання наявності: items=%d sheet_rows=%d",
+                len(items),
+                len({r for r, _ in sheet_updates}),
+            )
+            return {
+                "ok": True,
+                "updated_rows": len({r for r, _ in sheet_updates}),
+                "items": len(items),
+            }
 
     def list_colors(self, query: str = "", limit: int = 40) -> list[str]:
         self.refresh()

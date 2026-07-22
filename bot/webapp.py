@@ -14,7 +14,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from bot.accounts import AppStorage
-from bot.catalog import CatalogService
+from bot.catalog import CatalogService, InsufficientStockError
 from bot.core import DropperConfig, Settings
 from bot.novaposhta import NovaPoshtaClient, NovaPoshtaError
 from bot.roles import is_owner, is_owner_chat, resolve_session
@@ -22,6 +22,82 @@ from bot.roles import is_owner, is_owner_chat, resolve_session
 logger = logging.getLogger(__name__)
 
 MINIAPP_DIR = Path(__file__).resolve().parent.parent / "miniapp"
+_USERNAME_RE = re.compile(r"^[A-Za-z0-9_]{5,32}$")
+
+
+def _norm_tg_username(raw: str) -> str:
+    value = str(raw or "").strip()
+    if value.startswith("@"):
+        value = value[1:]
+    return value.strip()
+
+
+async def _resolve_telegram_staff_identity(
+    settings: Settings, raw: str
+) -> tuple[str, str]:
+    """
+    Повертає (telegram_user_id, username).
+    Приймає числовий id або @username / username.
+    """
+    text = str(raw or "").strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="Вкажіть Telegram @username")
+
+    if text.isdigit() or (text.startswith("-") and text[1:].isdigit()):
+        return text.lstrip("+"), ""
+
+    username = _norm_tg_username(text)
+    if not _USERNAME_RE.match(username):
+        raise HTTPException(
+            status_code=400,
+            detail="Нікнейм має бути у форматі @nickname (5–32 символи: літери, цифри, _)",
+        )
+
+    import json
+    import urllib.error
+    import urllib.parse
+    import urllib.request
+
+    def _get_chat() -> dict:
+        url = (
+            f"https://api.telegram.org/bot{settings.telegram_token}/getChat?"
+            + urllib.parse.urlencode({"chat_id": f"@{username}"})
+        )
+        req = urllib.request.Request(url, method="GET")
+        with urllib.request.urlopen(req, timeout=20) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+
+    try:
+        data = await asyncio.to_thread(_get_chat)
+    except urllib.error.HTTPError as exc:
+        logger.warning("getChat(@%s) HTTP %s", username, exc.code)
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Не знайдено @{username}. Перевірте нік або попросіть людину "
+                "спочатку написати боту /menu."
+            ),
+        ) from exc
+    except Exception as exc:
+        logger.exception("getChat(@%s) failed", username)
+        raise HTTPException(
+            status_code=502, detail="Не вдалося перевірити username у Telegram"
+        ) from exc
+
+    if not data.get("ok"):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Не знайдено @{username}. Перевірте нік або попросіть людину "
+                "спочатку написати боту /menu."
+            ),
+        )
+    chat = data.get("result") or {}
+    user_id = str(chat.get("id") or "").strip()
+    resolved_username = str(chat.get("username") or username).strip()
+    if not user_id:
+        raise HTTPException(status_code=400, detail="Telegram не повернув user_id")
+    return user_id, resolved_username
 
 
 class DropperRegisterRequest(BaseModel):
@@ -36,7 +112,8 @@ class DropperRegisterRequest(BaseModel):
 
 
 class StaffCreateRequest(BaseModel):
-    telegram_user_id: str = Field(..., min_length=2, max_length=64)
+    telegram: str = Field("", max_length=64)  # @username або числовий user_id
+    telegram_user_id: str = Field("", max_length=64)  # legacy
     role: str = Field(..., min_length=3, max_length=32)
     full_name: str = Field("", max_length=120)
     username: str = Field("", max_length=64)
@@ -62,6 +139,8 @@ class DropperSettingsUpdateRequest(BaseModel):
     extra_discount_percent: float | None = None
     orders_disabled: bool | None = None
     referral_percent: float | None = None
+    referral_program_enabled: bool | None = None
+    referral_months: int | None = None
     owner_comment: str | None = None
     credit_holidays_days: int | None = None
 
@@ -259,9 +338,10 @@ def create_web_app(
     async def session(
         chat_id: str = Query("", max_length=64),
         user_id: str = Query("", max_length=64),
+        username: str = Query("", max_length=64),
     ) -> dict:
         cfg = _require_settings()
-        return resolve_session(cfg, storage, chat_id, user_id)
+        return resolve_session(cfg, storage, chat_id, user_id, username)
 
     @app.get("/api/dropper/settings")
     async def dropper_settings(chat_id: str = Query("", max_length=64)) -> dict:
@@ -270,27 +350,18 @@ def create_web_app(
             data = db_dropper.to_public_dict()
             data["name"] = db_dropper.company_name
             data["source"] = "db"
-            if db_dropper.referred_by_dropper_id:
-                referrer = storage.get_dropper_by_id(db_dropper.referred_by_dropper_id)
-                data["referred_by"] = (
+            # Реферальні деталі — лише якщо програма увімкнена у цього дроппера.
+            data["referred_by"] = None
+            data["referrals"] = []
+            if db_dropper.referral_program_enabled:
+                data["referrals"] = [
                     {
-                        "id": referrer.id,
-                        "company_name": referrer.company_name,
-                        "referral_code": referrer.referral_code,
+                        "id": r.id,
+                        "company_name": r.company_name,
+                        "chat_id": r.chat_id,
                     }
-                    if referrer
-                    else None
-                )
-            else:
-                data["referred_by"] = None
-            data["referrals"] = [
-                {
-                    "id": r.id,
-                    "company_name": r.company_name,
-                    "chat_id": r.chat_id,
-                }
-                for r in storage.list_referrals(db_dropper.id)
-            ]
+                    for r in storage.list_referrals(db_dropper.id)
+                ]
             data["balance"] = storage.get_balance(db_dropper.id)
             return data
         yaml_dropper = _yaml_dropper(chat_id)
@@ -358,11 +429,26 @@ def create_web_app(
             raise HTTPException(status_code=400, detail="Некоректний телефон")
         phone = phone_digits
 
+        skip_referral = False
+        referral_block_reason = ""
         if payload.referral_code.strip():
             if not storage.get_dropper_by_referral_code(payload.referral_code):
                 raise HTTPException(
                     status_code=400,
-                    detail="Реферальний код не знайдено. Перевірте або залиште поле порожнім.",
+                    detail=(
+                        "Реферальний код не знайдено або програма вимкнена. "
+                        "Перевірте код або залиште поле порожнім."
+                    ),
+                )
+            taken = storage.referral_fingerprint_taken(
+                user_id=payload.user_id,
+                username=payload.username,
+                phone=phone,
+            )
+            if taken:
+                skip_referral = True
+                referral_block_reason = (
+                    f"тип={taken.get('type')} значення={taken.get('value')}"
                 )
 
         try:
@@ -375,6 +461,7 @@ def create_web_app(
                 registered_by_user_id=payload.user_id,
                 registered_by_username=payload.username,
                 referral_code_used=payload.referral_code,
+                skip_referral_link=skip_referral,
             )
         except Exception as exc:
             logger.exception("register dropper failed")
@@ -384,13 +471,23 @@ def create_web_app(
                     return {"ok": True, "already_registered": True, "dropper": again.to_dict()}
             raise HTTPException(status_code=500, detail="Не вдалося зберегти реєстрацію") from exc
 
+        storage.remember_referral_fingerprints(
+            dropper_id=dropper.id,
+            user_id=payload.user_id,
+            username=payload.username,
+            phone=phone,
+        )
+
+        code_line = ""
+        if dropper.referral_program_enabled and dropper.referral_code:
+            code_line = f"Ваш реферальний код: {dropper.referral_code}\n\n"
         group_text = (
             "✅ Реєстрацію дроппера успішно завершено!\n\n"
             f"Компанія: {dropper.company_name}\n"
             f"Контакт: {dropper.contact_name}\n"
             f"Телефон: {dropper.phone}\n"
             f"chat_id цієї групи: {dropper.chat_id}\n"
-            f"Ваш реферальний код: {dropper.referral_code}\n\n"
+            f"{code_line}"
             "Тепер можна оформлювати замовлення через /menu."
         )
         owner_text = (
@@ -400,7 +497,7 @@ def create_web_app(
             f"Телефон: {dropper.phone}\n"
             f"Коментар: {dropper.comment or '—'}\n"
             f"chat_id групи: `{dropper.chat_id}`\n"
-            f"Реферальний код: `{dropper.referral_code}`\n"
+            f"Реферальний код: `{dropper.referral_code or '—'}`\n"
             f"Хто зареєстрував: @{dropper.registered_by_username or '—'} "
             f"(user_id={dropper.registered_by_user_id or '—'})\n\n"
             "Дроппер уже активний у базі (SQLite)."
@@ -408,7 +505,15 @@ def create_web_app(
         if dropper.referred_by_dropper_id:
             referrer = storage.get_dropper_by_id(dropper.referred_by_dropper_id)
             if referrer:
-                owner_text += f"\nЗапросив: {referrer.company_name} ({referrer.referral_code})"
+                owner_text += (
+                    f"\nЗапросив: {referrer.company_name} ({referrer.referral_code})"
+                    f" · до {dropper.referral_expires_at or '—'}"
+                )
+        elif skip_referral and payload.referral_code.strip():
+            owner_text += (
+                "\n⚠️ Реферальний код вказано, але привʼязку заблоковано "
+                f"(повторна реєстрація: {referral_block_reason})."
+            )
 
         await _notify(chat_id, group_text)
         await _notify_owners(owner_text)
@@ -450,19 +555,28 @@ def create_web_app(
         debited_total = round(
             abs(sum(x["amount"] for x in ledger_all if x["amount"] < 0)), 2
         )
-        referral_earned_total = round(sum(x["amount"] for x in referral_rows), 2)
+        program_on = bool(dropper.referral_program_enabled)
+        referral_earned_total = (
+            round(sum(x["amount"] for x in referral_rows), 2) if program_on else 0.0
+        )
 
         enriched = []
         for row in ledger:
             item = dict(row)
             related_id = row.get("related_dropper_id")
-            if related_id:
+            if program_on and related_id:
                 source = storage.get_dropper_by_id(related_id)
                 item["related_dropper_name"] = (
                     source.company_name if source else ""
                 )
             else:
                 item["related_dropper_name"] = ""
+            # Без увімкненої програми — без реферальних підписів у історії.
+            if not program_on and item.get("entry_type") == "referral_credit":
+                item["entry_type"] = "manual_credit"
+                item["title"] = "Нарахування"
+                item["note"] = ""
+                item["related_dropper_id"] = None
             enriched.append(item)
 
         balance = storage.get_balance(dropper.id)
@@ -474,6 +588,17 @@ def create_web_app(
         spend_room = (
             max(0.0, balance - floor) if dropper.allow_balance_payment else 0.0
         )
+        note = (
+            "Тут усі операції по балансу: прибуток з наложки після отримання посилки, "
+            "списання за замовлення, передплата понад «Разом», реферали тощо. "
+            "Самі замовлення — у вкладці «Історія»."
+            if program_on
+            else (
+                "Тут усі операції по балансу: прибуток з наложки після отримання посилки, "
+                "списання за замовлення, передплата понад «Разом» тощо. "
+                "Самі замовлення — у вкладці «Історія»."
+            )
+        )
         return {
             "dropper": dropper.to_public_dict(),
             "balance": balance,
@@ -482,14 +607,12 @@ def create_web_app(
             "credited_total": credited_total,
             "debited_total": debited_total,
             "ledger": enriched,
-            "referrals": [
-                x for x in enriched if x["entry_type"] == "referral_credit"
-            ],
-            "note": (
-                "Тут усі операції по балансу: прибуток з наложки після отримання посилки, "
-                "списання за замовлення, передплата понад «Разом», реферали тощо. "
-                "Самі замовлення — у вкладці «Історія»."
+            "referrals": (
+                [x for x in enriched if x["entry_type"] == "referral_credit"]
+                if program_on
+                else []
             ),
+            "note": note,
         }
 
     @app.get("/api/owner/balances")
@@ -534,13 +657,20 @@ def create_web_app(
 
     @app.post("/api/owner/staff")
     async def owner_add_staff(payload: StaffCreateRequest) -> dict:
-        _require_owner(payload.owner_chat_id, payload.owner_user_id or payload.created_by_user_id)
+        cfg = _require_owner(
+            payload.owner_chat_id, payload.owner_user_id or payload.created_by_user_id
+        )
+        identity = (payload.telegram or payload.telegram_user_id or "").strip()
+        if not identity:
+            raise HTTPException(status_code=400, detail="Вкажіть Telegram @username")
+        user_id, resolved_username = await _resolve_telegram_staff_identity(cfg, identity)
+        username = resolved_username or _norm_tg_username(payload.username or identity)
         try:
             member = storage.upsert_staff(
-                telegram_user_id=payload.telegram_user_id,
+                telegram_user_id=user_id,
                 role=payload.role,
                 full_name=payload.full_name,
-                username=payload.username,
+                username=username,
                 created_by_user_id=payload.created_by_user_id,
             )
         except ValueError as exc:
@@ -576,6 +706,8 @@ def create_web_app(
             extra_discount_percent=payload.extra_discount_percent,
             orders_disabled=payload.orders_disabled,
             referral_percent=payload.referral_percent,
+            referral_program_enabled=payload.referral_program_enabled,
+            referral_months=payload.referral_months,
             owner_comment=payload.owner_comment,
             credit_holidays_days=payload.credit_holidays_days,
         )
@@ -975,6 +1107,18 @@ def create_web_app(
                     "stock": item.get("stock"),
                     "photo_url": item.get("photo_url") or "",
                 }
+            )
+
+        # Списання наявності до створення замовлення (комплект → складові)
+        try:
+            catalog.consume_cart_stock(safe_cart)
+        except InsufficientStockError as exc:
+            raise HTTPException(status_code=400, detail=str(exc) or "Немає в наявності") from exc
+        except Exception:
+            logger.exception("Stock consume failed before order create")
+            raise HTTPException(
+                status_code=503,
+                detail="Не вдалося оновити наявність у таблиці. Спробуйте ще раз.",
             )
 
         order_payload = {

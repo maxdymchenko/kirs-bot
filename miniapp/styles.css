@@ -46,6 +46,32 @@ body {
   font-size: 18px;
 }
 
+.topbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.settings-chip {
+  border: 0;
+  background: var(--primary);
+  color: #fff;
+  border-radius: 999px;
+  width: 40px;
+  height: 40px;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.settings-chip svg {
+  width: 20px;
+  height: 20px;
+  display: block;
+}
+
 .cart-chip {
   border: 0;
   background: var(--primary);
@@ -1109,9 +1135,18 @@ textarea {
 .toggle-text {
   font-weight: 700;
   font-size: 15px;
-  letter-spacing: 0.02em;
-  line-height: 1.25;
-  text-transform: uppercase;
+  letter-spacing: 0;
+  line-height: 1.35;
+  text-transform: none;
+}
+
+.toggle-text .setting-hint {
+  font-weight: 500;
+  font-size: 13px;
+  color: var(--muted);
+  margin-top: 4px;
+  display: block;
+  line-height: 1.4;
 }
 
 .toggle-input {
@@ -1393,11 +1428,34 @@ input[type="file"] {
   font-size: 15px;
 }
 
+.order-card-status-wrap {
+  text-align: right;
+  max-width: 58%;
+}
+
 .order-card-status {
   font-size: 12px;
   font-weight: 700;
   color: var(--accent);
+  line-height: 1.25;
 }
+
+.order-card-status-sub {
+  margin-top: 2px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--muted);
+  line-height: 1.3;
+}
+
+.order-card-status.status-accepted { color: #2f6fed; }
+.order-card-status.status-transit { color: #0f766e; }
+.order-card-status.status-warehouse { color: #b45309; }
+.order-card-status.status-received { color: #15803d; }
+.order-card-status.status-refused { color: #b91c1c; }
+.order-card-status.status-returned { color: #a16207; }
+.order-card-status.status-return_warehouse { color: #6d28d9; }
+.order-card-status.status-other { color: var(--muted); }
 
 .owner-orders {
   border-top: 1px solid var(--line);
@@ -1411,11 +1469,25 @@ input[type="file"] {
   display: none;
 }
 
-.owner-orders-title {
-  margin: 0;
-  font-size: 13px;
-  font-weight: 700;
-  color: var(--muted);
+.owner-orders-filters {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px 10px;
+  margin: 4px 0 8px;
+}
+
+@media (max-width: 520px) {
+  .owner-orders-filters {
+    grid-template-columns: 1fr;
+  }
+}
+
+.owner-orders-filters .field {
+  margin-bottom: 0;
+}
+
+.owner-orders-filters input {
+  width: 100%;
 }
 
 .np-keys-list {

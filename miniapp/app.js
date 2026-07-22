@@ -114,6 +114,8 @@
     cartBadge: document.getElementById("cartBadge"),
     cartChipText: document.getElementById("cartChipText"),
     cartChip: document.getElementById("cartChip"),
+    topbarActions: document.getElementById("topbarActions"),
+    settingsChip: document.getElementById("settingsChip"),
     photoZoomBackdrop: document.getElementById("photoZoomBackdrop"),
     checkoutBtn: document.getElementById("checkoutBtn"),
     checkoutBack: document.getElementById("checkoutBack"),
@@ -1678,13 +1680,78 @@ ${
   function orderDropperProfit(order) {
     if (orderPaymentMethod(order) !== "cod") return null;
     const payload = order.payload || {};
-    if (order.ttn_status === "returned" || payload.return_delivery_debited) {
+    const ttn = String(order.ttn_status || "");
+    if (
+      ttn === "returned" ||
+      ttn === "refused" ||
+      ttn === "return_at_warehouse" ||
+      payload.return_delivery_debited
+    ) {
       return null;
     }
     const cod = orderCodAmount(order);
     const prepay = roundMoney(order.prepay || 0);
     const total = roundMoney(order.total || 0);
     return roundMoney(cod - prepay - total);
+  }
+
+  function daysWordUk(n) {
+    const abs = Math.abs(Number(n) || 0);
+    const mod10 = abs % 10;
+    const mod100 = abs % 100;
+    if (mod10 === 1 && mod100 !== 11) return "день";
+    if (mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14)) return "дні";
+    return "днів";
+  }
+
+  function daysAtWarehouse(order) {
+    const raw = (order.payload || {}).np_at_warehouse_at;
+    if (!raw) return null;
+    const start = new Date(raw).getTime();
+    if (!Number.isFinite(start)) return null;
+    return Math.max(0, Math.floor((Date.now() - start) / 86400000));
+  }
+
+  /** Статус для бейджа в історії замовлень (українською). */
+  function orderHistoryStatus(order) {
+    const payload = order.payload || {};
+    const ttn = String(order.ttn_status || "");
+    const hasTtn = Boolean(order.ttn_number || payload.ttn_number);
+
+    if (payload.return_at_warehouse || ttn === "return_at_warehouse") {
+      return { kind: "return_warehouse", label: "Отримано повернення на склад", sub: "" };
+    }
+    if (
+      payload.dropper_return ||
+      payload.return_after_received ||
+      (ttn === "returned" && (payload.ever_received || payload.profit_reversed))
+    ) {
+      return { kind: "returned", label: "Повернено", sub: "" };
+    }
+    if (ttn === "refused" || ttn === "returned") {
+      return { kind: "refused", label: "Відмова", sub: "" };
+    }
+    if (ttn === "received") {
+      return { kind: "received", label: "Отримано", sub: "" };
+    }
+    if (ttn === "at_warehouse") {
+      const days = daysAtWarehouse(order);
+      const sub =
+        days == null ? "" : `На відділенні: ${days} ${daysWordUk(days)}`;
+      return { kind: "warehouse", label: "Прибуло до відділення", sub };
+    }
+    if (ttn === "in_transit") {
+      return { kind: "transit", label: "В дорозі", sub: "" };
+    }
+    // Прийнято: заказ принят ботом (с ТТН / своей накладной / ещё создаётся)
+    if (
+      String(order.status || "") === "accepted" ||
+      hasTtn ||
+      ["created", "provided", "pending_create", "create_error", "none"].includes(ttn)
+    ) {
+      return { kind: "accepted", label: "Прийнято", sub: "" };
+    }
+    return { kind: "other", label: String(order.status || "—"), sub: "" };
   }
 
   function renderOrderDetailsHtml(order) {
@@ -1750,7 +1817,13 @@ ${escapeHtml(deliveryExtra)}</div>
           <div class="confirm-value">${escapeHtml(paymentMethodLabel(method))}
 Разом: ${escapeHtml(formatMoneyAmount(order.total || 0))} ₴
 ${
-  method === "cod" && !(payload.return_delivery_debited || order.ttn_status === "returned")
+  method === "cod" &&
+  !(
+    payload.return_delivery_debited ||
+    order.ttn_status === "returned" ||
+    order.ttn_status === "refused" ||
+    order.ttn_status === "return_at_warehouse"
+  )
     ? `Накладений платіж: ${escapeHtml(formatMoneyAmount(orderCodAmount(order)))} ₴\nПередплата: ${escapeHtml(formatMoneyAmount(order.prepay || 0))} ₴\nПрибуток: ${escapeHtml(formatMoneyAmount(profit || 0))} ₴`
     : ""
 }
@@ -1795,7 +1868,9 @@ ${
         in_transit: "в дорозі",
         at_warehouse: "у відділенні",
         received: "отримано",
-        returned: "відмова/повернення",
+        refused: "відмова",
+        returned: "повернено",
+        return_at_warehouse: "повернення на складі",
         failed: "помилка",
         provided: "власна ТТН",
       };
@@ -1821,19 +1896,28 @@ ${
       .join(", ");
     const more = cart.length > (compact ? 3 : 8) ? ` +${cart.length - (compact ? 3 : 8)}` : "";
     const ttnLine = ttnStatusLabel(order);
+    const hist = orderHistoryStatus(order);
     const profit = orderDropperProfit(order);
     const profitHtml =
       profit == null
         ? ""
         : `<div class="order-card-profit">${escapeHtml(formatMoney(profit))}</div>`;
     const orderId = escapeHtml(String(order.id || order.order_number || ""));
+    const statusSub = hist.sub
+      ? `<div class="order-card-status-sub">${escapeHtml(hist.sub)}</div>`
+      : "";
     return `
       <article class="order-card" data-order-id="${orderId}">
         <button type="button" class="order-card-toggle" aria-expanded="false">
           <div class="order-card-main">
             <div class="order-card-head">
               <div class="order-card-num">${escapeHtml(order.order_number || "")}</div>
-              <div class="order-card-status">${escapeHtml(order.status || "")}</div>
+              <div class="order-card-status-wrap">
+                <div class="order-card-status status-${escapeHtml(hist.kind)}">${escapeHtml(
+                  hist.label
+                )}</div>
+                ${statusSub}
+              </div>
             </div>
             <div class="meta">${escapeHtml(formatOrderDate(order.created_at))}</div>
             <div class="meta">${escapeHtml(name || "—")} · ${escapeHtml(recipient.phone || "")}</div>
@@ -1895,7 +1979,10 @@ ${
   }
 
   async function loadOwnerDropperOrders(card) {
-    const chatId = card.getAttribute("data-dropper-chat");
+    const chatId =
+      card.getAttribute("data-balance-chat") || card.getAttribute("data-dropper-chat");
+    if (!chatId) return;
+
     let box = card.querySelector("[data-owner-orders]");
     if (!box) {
       box = document.createElement("div");
@@ -1903,27 +1990,143 @@ ${
       box.setAttribute("data-owner-orders", "1");
       card.appendChild(box);
     }
-    box.innerHTML = `<div class="ac-loading">Завантаження замовлень...</div>`;
-    try {
-      const response = await fetch(
-        `/api/owner/droppers/${encodeURIComponent(chatId)}/orders?${ownerAuthParams()}&limit=20`
-      );
-      const data = await response.json();
-      if (!response.ok) {
-        throw new Error(typeof data.detail === "string" ? data.detail : "Помилка");
-      }
-      const items = data.items || [];
-      box.innerHTML = `
-        <p class="owner-orders-title">Замовлення дроппера (${items.length})</p>
-        ${
-          items.length
-            ? items.map((o) => renderOrderCard(o, { compact: true })).join("")
-            : `<div class="empty">Замовлень ще немає</div>`
+
+    if (!box.dataset.loaded) {
+      box.innerHTML = `<div class="ac-loading">Завантаження замовлень...</div>`;
+      try {
+        const response = await fetch(
+          `/api/owner/droppers/${encodeURIComponent(chatId)}/orders?${ownerAuthParams()}&limit=100`
+        );
+        const data = await response.json();
+        if (!response.ok) {
+          throw new Error(typeof data.detail === "string" ? data.detail : "Помилка");
         }
+        box._ordersCache = data.items || [];
+        box.dataset.loaded = "1";
+      } catch (error) {
+        box.innerHTML = `<div class="form-error">${escapeHtml(error.message || "Помилка")}</div>`;
+        return;
+      }
+    }
+
+    renderOwnerDropperOrdersPanel(box);
+  }
+
+  function ownerOrderFilterValues(box) {
+    return {
+      productCode: box.querySelector("[data-filter-code]")?.value?.trim() || "",
+      orderNumber: box.querySelector("[data-filter-order]")?.value?.trim() || "",
+      phone: box.querySelector("[data-filter-phone]")?.value?.trim() || "",
+      clientName: box.querySelector("[data-filter-name]")?.value?.trim() || "",
+    };
+  }
+
+  function orderMatchesOwnerFilters(order, filters) {
+    const payload = order.payload || {};
+    const recipient = payload.recipient || {};
+    const cart = payload.cart || [];
+
+    if (filters.productCode) {
+      const q = filters.productCode.toLowerCase();
+      const hit = cart.some((item) => String(item.code || "").toLowerCase().includes(q));
+      if (!hit) return false;
+    }
+
+    if (filters.orderNumber) {
+      const q = filters.orderNumber.toLowerCase();
+      if (!String(order.order_number || "").toLowerCase().includes(q)) return false;
+    }
+
+    if (filters.phone) {
+      const q = String(filters.phone).replace(/\D/g, "");
+      const phone = String(recipient.phone || "").replace(/\D/g, "");
+      if (!q || !phone.includes(q)) return false;
+    }
+
+    if (filters.clientName) {
+      const tokens = filters.clientName
+        .toLowerCase()
+        .split(/\s+/)
+        .map((t) => t.trim())
+        .filter(Boolean);
+      const last = String(recipient.last_name || "").toLowerCase();
+      const first = String(recipient.first_name || "").toLowerCase();
+      const full = `${last} ${first}`.trim();
+      const fullRev = `${first} ${last}`.trim();
+      if (!tokens.length) return true;
+      if (tokens.length === 1) {
+        const t = tokens[0];
+        if (!(last.includes(t) || first.includes(t) || full.includes(t))) return false;
+      } else {
+        const joined = tokens.join(" ");
+        const [a, b] = tokens;
+        const pairOk =
+          full.includes(joined) ||
+          fullRev.includes(joined) ||
+          (last.includes(a) && first.includes(b)) ||
+          (last.includes(b) && first.includes(a));
+        if (!pairOk) return false;
+      }
+    }
+
+    return true;
+  }
+
+  function renderOwnerDropperOrdersPanel(box) {
+    const all = Array.isArray(box._ordersCache) ? box._ordersCache : [];
+
+    if (!box.querySelector("[data-owner-order-filters]")) {
+      box.innerHTML = `
+        <p class="owner-orders-title">Історія замовлень</p>
+        <div class="owner-orders-filters" data-owner-order-filters>
+          <label class="field compact-field">
+            <span class="field-label">Код товару</span>
+            <input type="text" data-filter-code placeholder="Напр. 1469Д" />
+          </label>
+          <label class="field compact-field">
+            <span class="field-label">№ замовлення</span>
+            <input type="text" data-filter-order placeholder="К-…" />
+          </label>
+          <label class="field compact-field">
+            <span class="field-label">Телефон клієнта</span>
+            <input type="text" data-filter-phone placeholder="+380…" />
+          </label>
+          <label class="field compact-field">
+            <span class="field-label">Прізвище / імʼя</span>
+            <input type="text" data-filter-name placeholder="Прізвище або Імʼя Прізвище" />
+          </label>
+        </div>
+        <p class="meta-soft" data-orders-count></p>
+        <div data-owner-orders-list></div>
       `;
-      bindOrderCardClicks(box);
-    } catch (error) {
-      box.innerHTML = `<div class="form-error">${escapeHtml(error.message || "Помилка")}</div>`;
+      if (!box.dataset.filtersBound) {
+        box.dataset.filtersBound = "1";
+        box.addEventListener("input", (event) => {
+          if (!event.target.closest("[data-owner-order-filters]")) return;
+          renderOwnerDropperOrdersList(box);
+        });
+      }
+    }
+
+    renderOwnerDropperOrdersList(box);
+  }
+
+  function renderOwnerDropperOrdersList(box) {
+    const all = Array.isArray(box._ordersCache) ? box._ordersCache : [];
+    const filters = ownerOrderFilterValues(box);
+    const filtered = all.filter((o) => orderMatchesOwnerFilters(o, filters));
+    const countEl = box.querySelector("[data-orders-count]");
+    const listEl = box.querySelector("[data-owner-orders-list]");
+    if (countEl) {
+      countEl.textContent = `Показано ${filtered.length} з ${all.length}`;
+    }
+    if (listEl) {
+      listEl.innerHTML = filtered.length
+        ? filtered.map((o) => renderOrderCard(o, { compact: true })).join("")
+        : `<div class="empty">${
+            all.length ? "Нічого не знайдено за фільтрами" : "Замовлень ще немає"
+          }</div>`;
+      bindOrderCardClicks(listEl);
     }
   }
 
@@ -2076,6 +2279,9 @@ ${
   });
 
   els.cartChip.addEventListener("click", () => switchTab("cart"));
+  if (els.settingsChip) {
+    els.settingsChip.addEventListener("click", () => switchTab("settings"));
+  }
   els.checkoutBtn.addEventListener("click", openCheckout);
   els.checkoutBack.addEventListener("click", () => switchTab("cart"));
 
@@ -2377,7 +2583,7 @@ ${
     const showOrder = name === "order";
     if (els.orderMain) els.orderMain.classList.toggle("hidden", !showOrder);
     if (els.mainTabs) els.mainTabs.classList.toggle("hidden", !showOrder);
-    if (els.cartChip) els.cartChip.classList.toggle("hidden", !showOrder);
+    setTopbarOrderVisible(showOrder);
 
     if (name === "balances") {
       renderOwnerBalances();
@@ -2456,22 +2662,28 @@ ${
       const balance = Number(data.balance || 0);
       els.balanceHero.textContent = formatMoney(balance);
       const dropper = data.dropper || {};
+      const programOn = Boolean(dropper.referral_program_enabled);
       const spendRoom = Number(data.spend_room != null ? data.spend_room : 0);
       const refTotal = Number(data.referral_earned_total || 0);
       const debited = Number(data.debited_total || 0);
       const credited = Number(data.credited_total || 0);
       if (els.balanceStats) {
-        const bits = [
-          `<div class="balance-stat"><span class="balance-stat-label">Реферально нараховано</span><span class="balance-stat-value">${escapeHtml(
-            formatMoney(refTotal)
-          )}</span></div>`,
+        const bits = [];
+        if (programOn) {
+          bits.push(
+            `<div class="balance-stat"><span class="balance-stat-label">Реферально нараховано</span><span class="balance-stat-value">${escapeHtml(
+              formatMoney(refTotal)
+            )}</span></div>`
+          );
+        }
+        bits.push(
           `<div class="balance-stat"><span class="balance-stat-label">Усього нараховано</span><span class="balance-stat-value ledger-amount-plus">+${escapeHtml(
             formatMoney(credited)
           )}</span></div>`,
           `<div class="balance-stat"><span class="balance-stat-label">Усього списано</span><span class="balance-stat-value ledger-amount-minus">${escapeHtml(
             formatMoney(-Math.abs(debited))
-          )}</span></div>`,
-        ];
+          )}</span></div>`
+        );
         if (dropper.allow_balance_payment) {
           bits.push(
             `<div class="balance-stat"><span class="balance-stat-label">Доступно до списання</span><span class="balance-stat-value">${escapeHtml(
@@ -2479,7 +2691,7 @@ ${
             )}</span></div>`
           );
         }
-        if (dropper.referral_code) {
+        if (programOn && dropper.referral_code) {
           bits.push(
             `<div class="balance-stat"><span class="balance-stat-label">Ваш реферальний код</span><span class="balance-stat-value">${escapeHtml(
               dropper.referral_code
@@ -2491,11 +2703,21 @@ ${
       if (els.balanceReferralTotal) {
         els.balanceReferralTotal.textContent = "";
       }
-      if (data.note && els.balanceHint) els.balanceHint.textContent = data.note;
+      if (els.balanceHint) {
+        els.balanceHint.textContent =
+          data.note ||
+          (programOn
+            ? "Усі нарахування та списання: оплата з балансу, передплата понад «Разом», реферали тощо."
+            : "Усі нарахування та списання: оплата з балансу, передплата понад «Разом» тощо.");
+      }
       const rows = data.ledger || [];
       els.balanceLedger.innerHTML = rows.length
         ? rows.map(renderLedgerRow).join("")
-        : `<div class="empty">Поки немає операцій по балансу. Тут з’являться списання, нарахування та реферали.</div>`;
+        : `<div class="empty">${
+            programOn
+              ? "Поки немає операцій по балансу. Тут з’являться списання, нарахування та реферали."
+              : "Поки немає операцій по балансу. Тут з’являться списання та нарахування."
+          }</div>`;
     } catch (error) {
       els.balanceHero.textContent = "—";
       if (els.balanceStats) els.balanceStats.innerHTML = "";
@@ -2824,12 +3046,19 @@ ${
             .map((row) => {
               const d = row.dropper || {};
               return `
-            <article class="owner-card">
-              <div class="owner-card-title">${escapeHtml(d.company_name || "")}</div>
-              <div class="meta">Баланс: <b>${escapeHtml(formatMoney(row.balance || 0))}</b></div>
-              <div class="meta-soft">Реф. нараховано: ${escapeHtml(
-                formatMoney(row.referral_earned_total || 0)
-              )} · код ${escapeHtml(d.referral_code || "—")}</div>
+            <article class="owner-card is-collapsed" data-balance-chat="${escapeHtml(
+              d.chat_id || ""
+            )}">
+              <button type="button" class="owner-card-toggle" aria-expanded="false">
+                <div class="owner-card-head">
+                  <div class="owner-card-title">${escapeHtml(d.company_name || "")}</div>
+                  <div class="meta">Баланс: <b>${escapeHtml(formatMoney(row.balance || 0))}</b></div>
+                  <div class="meta-soft">Реф. нараховано: ${escapeHtml(
+                    formatMoney(row.referral_earned_total || 0)
+                  )} · код ${escapeHtml(d.referral_code || "—")}</div>
+                </div>
+                <span class="owner-card-chevron" aria-hidden="true"></span>
+              </button>
             </article>`;
             })
             .join("")
@@ -2902,7 +3131,13 @@ ${
                 <p class="meta">${escapeHtml(d.contact_name)} · ${escapeHtml(d.phone)}</p>
                 <p class="meta">chat_id: <b>${escapeHtml(d.chat_id)}</b></p>
                 <p class="meta">
-                  Реф. код: <b>${escapeHtml(d.referral_code || "—")}</b>
+                  ${
+                    d.referral_program_enabled && d.referral_code
+                      ? `Реф. код: <b>${escapeHtml(d.referral_code)}</b> · ${escapeHtml(
+                          String(d.referral_percent || 0)
+                        )}% · ${escapeHtml(String(d.referral_months || 12))} міс.`
+                      : `Реферальна програма: <b>вимкнено</b>`
+                  }
                   ${d.referred_by_name ? ` · запрошений: ${escapeHtml(d.referred_by_name)}` : ""}
                   ${d.referrals_count ? ` · привів: ${escapeHtml(String(d.referrals_count))}` : ""}
                 </p>
@@ -3010,13 +3245,48 @@ ${
               </label>
               <label class="setting-row">
                 <span class="setting-copy">
+                  <span class="setting-label">Реферальна програма</span>
+                  <span class="setting-hint">Код згенерується і збережеться; вимкнення не змінює код</span>
+                </span>
+                <span class="setting-control">
+                  <span class="toggle">
+                    <input type="checkbox" data-rule="referral_program_enabled" ${
+                      d.referral_program_enabled ? "checked" : ""
+                    } />
+                    <span class="toggle-ui"></span>
+                  </span>
+                </span>
+              </label>
+              <label class="setting-row is-nested${
+                d.referral_program_enabled ? "" : " is-disabled"
+              }" data-referral-percent-row>
+                <span class="setting-copy">
                   <span class="setting-label">Реферальний %</span>
-                  <span class="setting-hint">З дроп-ціни приведених</span>
+                  <span class="setting-hint">З дроп-ціни приведених${
+                    d.referral_code
+                      ? ` · код ${escapeHtml(d.referral_code)}`
+                      : " · код зʼявиться після увімкнення"
+                  }</span>
                 </span>
                 <span class="setting-control">
                   <input class="setting-input" type="number" min="0" max="100" step="0.1"
                     data-rule-num="referral_percent"
-                    value="${escapeHtml(String(Math.min(100, Number(d.referral_percent) || 0)))}" />
+                    value="${escapeHtml(String(Math.min(100, Number(d.referral_percent) || 0)))}"
+                    ${d.referral_program_enabled ? "" : "disabled"} />
+                </span>
+              </label>
+              <label class="setting-row is-nested${
+                d.referral_program_enabled ? "" : " is-disabled"
+              }" data-referral-months-row>
+                <span class="setting-copy">
+                  <span class="setting-label">Період, місяців</span>
+                  <span class="setting-hint">Скільки місяців нараховувати % з продажів приведеного</span>
+                </span>
+                <span class="setting-control">
+                  <input class="setting-input" type="number" min="1" max="120" step="1"
+                    data-rule-num="referral_months"
+                    value="${escapeHtml(String(Math.max(1, Number(d.referral_months) || 12)))}"
+                    ${d.referral_program_enabled ? "" : "disabled"} />
                 </span>
               </label>
               <label class="setting-row">
@@ -3058,8 +3328,8 @@ ${
               (s) => `
           <article class="owner-card">
             <div class="owner-card-title">${escapeHtml(s.full_name || s.telegram_user_id)}</div>
-            <div class="meta">${escapeHtml(staffRoleLabel(s.role))} · user_id: ${escapeHtml(
-                s.telegram_user_id
+            <div class="meta">${escapeHtml(staffRoleLabel(s.role))} · ${escapeHtml(
+                s.username ? `@${String(s.username).replace(/^@/, "")}` : s.telegram_user_id
               )}</div>
           </article>`
             )
@@ -3150,13 +3420,19 @@ ${
     }
   }
 
+  function setTopbarOrderVisible(show) {
+    if (els.topbarActions) els.topbarActions.classList.toggle("hidden", !show);
+    if (els.cartChip) els.cartChip.classList.toggle("hidden", !show);
+    if (els.settingsChip) els.settingsChip.classList.toggle("hidden", !show);
+  }
+
   function resetVisibleViews() {
     els.bootStatus.classList.add("hidden");
     els.registerView.classList.add("hidden");
     els.ownerView.classList.add("hidden");
     els.orderMain.classList.add("hidden");
     els.mainTabs.classList.add("hidden");
-    els.cartChip.classList.add("hidden");
+    setTopbarOrderVisible(false);
     if (els.balanceView) els.balanceView.classList.add("hidden");
     if (els.dropperSettingsView) els.dropperSettingsView.classList.add("hidden");
   }
@@ -3205,7 +3481,7 @@ ${
       resetOrderUiForPreviewDropper(previewState.dropperChatId);
       els.orderMain.classList.remove("hidden");
       els.mainTabs.classList.remove("hidden");
-      els.cartChip.classList.remove("hidden");
+      setTopbarOrderVisible(true);
       loadColorOptions();
       await loadDropperSettings(previewState.dropperChatId);
       syncPaymentAndTtn();
@@ -3246,7 +3522,7 @@ ${
     if (mode === "balance") {
       els.orderMain.classList.remove("hidden");
       els.mainTabs.classList.remove("hidden");
-      els.cartChip.classList.remove("hidden");
+      setTopbarOrderVisible(true);
       loadColorOptions();
       loadDropperSettings().then(() => {
         syncPaymentAndTtn();
@@ -3258,7 +3534,7 @@ ${
     if (mode === "dropper") {
       els.orderMain.classList.remove("hidden");
       els.mainTabs.classList.remove("hidden");
-      els.cartChip.classList.remove("hidden");
+      setTopbarOrderVisible(true);
       loadColorOptions();
       loadDropperSettings().then(() => {
         syncPaymentAndTtn();
@@ -3298,7 +3574,7 @@ ${
       const response = await fetch(
         `/api/session?chat_id=${encodeURIComponent(sessionState.chat_id)}&user_id=${encodeURIComponent(
           sessionState.user_id
-        )}`
+        )}&username=${encodeURIComponent(sessionState.username || "")}`
       );
       const data = await response.json();
       if (!response.ok) throw new Error(data.detail || "session error");
@@ -3572,7 +3848,7 @@ ${
       els.staffError.classList.add("hidden");
       const payload = {
         ...ownerAuthBody(),
-        telegram_user_id: document.getElementById("staffUserId").value.trim(),
+        telegram: document.getElementById("staffUsername").value.trim(),
         full_name: document.getElementById("staffName").value.trim(),
         role: document.getElementById("staffRole").value,
         created_by_user_id: currentTelegramUser().user_id,
@@ -3597,6 +3873,20 @@ ${
     });
   }
 
+  if (els.ownerBalances) {
+    els.ownerBalances.addEventListener("click", (event) => {
+      const toggle = event.target.closest(".owner-card-toggle");
+      if (!toggle || !els.ownerBalances.contains(toggle)) return;
+      const card = toggle.closest(".owner-card");
+      if (!card) return;
+      const collapsed = card.classList.toggle("is-collapsed");
+      toggle.setAttribute("aria-expanded", collapsed ? "false" : "true");
+      if (!collapsed) {
+        loadOwnerDropperOrders(card);
+      }
+    });
+  }
+
   if (els.ownerDroppers) {
     const persistRule = async (card, patch, rollback) => {
       const chatId = card.getAttribute("data-dropper-chat");
@@ -3616,9 +3906,6 @@ ${
         if (!card) return;
         const collapsed = card.classList.toggle("is-collapsed");
         toggle.setAttribute("aria-expanded", collapsed ? "false" : "true");
-        if (!collapsed) {
-          loadOwnerDropperOrders(card);
-        }
         return;
       }
 
@@ -3704,6 +3991,21 @@ ${
             holidaysInput.disabled = !enabled;
           }
         }
+        if (key === "referral_program_enabled") {
+          const percentRow = card.querySelector("[data-referral-percent-row]");
+          const percentInput = card.querySelector('[data-rule-num="referral_percent"]');
+          const monthsRow = card.querySelector("[data-referral-months-row]");
+          const monthsInput = card.querySelector('[data-rule-num="referral_months"]');
+          const enabled = Boolean(check.checked);
+          if (percentRow && percentInput) {
+            percentRow.classList.toggle("is-disabled", !enabled);
+            percentInput.disabled = !enabled;
+          }
+          if (monthsRow && monthsInput) {
+            monthsRow.classList.toggle("is-disabled", !enabled);
+            monthsInput.disabled = !enabled;
+          }
+        }
         await persistRule(card, { [key]: Boolean(check.checked) }, () => {
           check.checked = prev;
           if (key === "allow_negative_balance") {
@@ -3722,7 +4024,25 @@ ${
               holidaysInput.disabled = !enabled;
             }
           }
+          if (key === "referral_program_enabled") {
+            const percentRow = card.querySelector("[data-referral-percent-row]");
+            const percentInput = card.querySelector('[data-rule-num="referral_percent"]');
+            const monthsRow = card.querySelector("[data-referral-months-row]");
+            const monthsInput = card.querySelector('[data-rule-num="referral_months"]');
+            const enabled = Boolean(check.checked);
+            if (percentRow && percentInput) {
+              percentRow.classList.toggle("is-disabled", !enabled);
+              percentInput.disabled = !enabled;
+            }
+            if (monthsRow && monthsInput) {
+              monthsRow.classList.toggle("is-disabled", !enabled);
+              monthsInput.disabled = !enabled;
+            }
+          }
         });
+        if (key === "referral_program_enabled") {
+          renderOwnerCabinet();
+        }
         return;
       }
       if (num) {
@@ -3735,6 +4055,9 @@ ${
           value > 100
         ) {
           value = 100;
+        }
+        if (key === "referral_months") {
+          value = Math.max(1, Math.min(120, Math.round(value) || 12));
         }
         num.value = String(value);
         const prev = num.defaultValue;

@@ -130,18 +130,59 @@ async def main() -> None:
             except asyncio.TimeoutError:
                 pass
 
+    async def warehouse_reminders_loop() -> None:
+        """О 10:00 Київ — разові нагадування на 5-й і 7-й день на відділенні."""
+        from bot.warehouse_reminders import (
+            run_warehouse_reminders_pass,
+            seconds_until_next_notify_hour,
+        )
+
+        await asyncio.sleep(45)
+        while not stop_event.is_set():
+            try:
+                delay = seconds_until_next_notify_hour(allow_current_hour=True)
+                if delay > 0:
+                    logger.info(
+                        "Warehouse reminders: next pass in %.0f min", delay / 60.0
+                    )
+                    try:
+                        await asyncio.wait_for(stop_event.wait(), timeout=delay)
+                        break
+                    except asyncio.TimeoutError:
+                        pass
+                stats = await run_warehouse_reminders_pass(
+                    app_storage, notify=_np_notify
+                )
+                logger.info("Warehouse reminders: %s", stats)
+                # Наступний прохід — завтра о 10:00 (не в межах тієї ж години)
+                delay = seconds_until_next_notify_hour(allow_current_hour=False)
+                try:
+                    await asyncio.wait_for(stop_event.wait(), timeout=delay)
+                    break
+                except asyncio.TimeoutError:
+                    pass
+            except Exception:
+                logger.exception("Warehouse reminders loop error")
+                try:
+                    await asyncio.wait_for(stop_event.wait(), timeout=300)
+                except asyncio.TimeoutError:
+                    pass
+
     run_task = asyncio.create_task(run_modules(modules, ctx), name="modules")
     np_task = asyncio.create_task(np_maintenance_loop(), name="np-maintenance")
+    warehouse_task = asyncio.create_task(
+        warehouse_reminders_loop(), name="warehouse-reminders"
+    )
     stop_task = asyncio.create_task(stop_event.wait(), name="stop")
 
     done, _ = await asyncio.wait(
-        {run_task, stop_task, web_task, np_task},
+        {run_task, stop_task, web_task, np_task, warehouse_task},
         return_when=asyncio.FIRST_COMPLETED,
     )
 
     server.should_exit = True
     stop_event.set()
-    for task in (run_task, np_task):
+    for task in (run_task, np_task, warehouse_task):
         if not task.done():
             task.cancel()
             try:

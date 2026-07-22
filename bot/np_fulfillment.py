@@ -13,6 +13,7 @@ from bot.novaposhta import (
     NovaPoshtaClient,
     NovaPoshtaError,
     extract_delivery_cost,
+    extract_warehouse_arrival_iso,
     map_np_status_code,
 )
 
@@ -23,7 +24,15 @@ OwnerNotifyFn = Callable[[str], Any]
 T = TypeVar("T")
 
 TERMINAL_TTN_STATUSES = frozenset(
-    {"received", "returned", "failed", "provided", "cancelled"}
+    {
+        "received",
+        "returned",
+        "refused",
+        "failed",
+        "provided",
+        "cancelled",
+        "return_at_warehouse",
+    }
 )
 
 
@@ -454,7 +463,8 @@ def debit_return_delivery_if_needed(
     return entry
 
 
-def _dropper_allows_shipping_notify(storage: AppStorage, order: dict[str, Any]) -> bool:
+def _dropper_allows_profit_notify(storage: AppStorage, order: dict[str, Any]) -> bool:
+    """Опційне сповіщення: посилку отримано / прибуток на баланс."""
     dropper_id = int(order.get("dropper_id") or 0)
     if not dropper_id:
         return False
@@ -462,20 +472,43 @@ def _dropper_allows_shipping_notify(storage: AppStorage, order: dict[str, Any]) 
     return bool(dropper and getattr(dropper, "notify_shipping_events", False))
 
 
-async def _maybe_shipping_notify(
-    storage: AppStorage,
-    order: dict[str, Any],
+def _order_is_cod(order: dict[str, Any]) -> bool:
+    return str(order.get("payment_method") or "") == "cod"
+
+
+async def _send_dropper_chat(
     notify: NotifyFn | None,
     chat_id: str,
     text: str,
 ) -> None:
     if not notify or not text or not chat_id:
         return
-    if not _dropper_allows_shipping_notify(storage, order):
-        return
     result = notify(chat_id, text)
     if hasattr(result, "__await__"):
         await result
+
+
+async def _notify_ttn_created_cod(
+    order: dict[str, Any],
+    notify: NotifyFn | None,
+    text: str,
+) -> None:
+    """ТТН створено — завжди пишемо дропперу для замовлень з наложки."""
+    if not _order_is_cod(order):
+        return
+    await _send_dropper_chat(notify, str(order.get("chat_id") or ""), text)
+
+
+async def _maybe_profit_notify(
+    storage: AppStorage,
+    order: dict[str, Any],
+    notify: NotifyFn | None,
+    text: str,
+) -> None:
+    """Отримання / нарахування / повернення — лише якщо дроппер увімкнув у налаштуваннях."""
+    if not _dropper_allows_profit_notify(storage, order):
+        return
+    await _send_dropper_chat(notify, str(order.get("chat_id") or ""), text)
 
 
 async def _notify_owner_backup_ttn(
@@ -539,6 +572,15 @@ async def apply_tracking_event(
 
     mapped = map_np_status_code(status_code, status_text)
     prev = str(order.get("ttn_status") or "")
+    payload_prev = order.get("payload") or {}
+    ever_received = bool(
+        payload_prev.get("ever_received")
+        or prev == "received"
+        or payload_prev.get("profit_credited")
+    )
+    # Після отримання клієнтом подальший «return» показуємо як повернення дроппера
+    if mapped in {"refused", "returned"} and ever_received:
+        mapped = "returned"
     result["mapped"] = mapped
 
     patch = {
@@ -550,7 +592,19 @@ async def apply_tracking_event(
     if delivery_cost > 0:
         patch["np_delivery_cost"] = delivery_cost
 
-    if mapped != prev or status_text or delivery_cost > 0:
+    if mapped == "at_warehouse" and not payload_prev.get("np_at_warehouse_at"):
+        arrived = extract_warehouse_arrival_iso(tracking_row) or datetime.now().isoformat(
+            timespec="seconds"
+        )
+        patch["np_at_warehouse_at"] = arrived
+
+    if mapped == "received":
+        patch["ever_received"] = True
+
+    if mapped == "returned" and ever_received:
+        patch["return_after_received"] = True
+
+    if mapped != prev or status_text or delivery_cost > 0 or len(patch) > 3:
         storage.update_order_flags(order["id"], ttn_status=mapped)
         storage.merge_order_payload(order["id"], patch)
         result["updated"] = True
@@ -563,11 +617,10 @@ async def apply_tracking_event(
             result["received"] = True
             amount = round(float(entry.get("amount") or 0), 2)
             try:
-                await _maybe_shipping_notify(
+                await _maybe_profit_notify(
                     storage,
                     order,
                     notify,
-                    str(order.get("chat_id") or ""),
                     (
                         f"💰 Посилку отримано · {order.get('order_number')}\n"
                         f"ТТН: {order.get('ttn_number')}\n"
@@ -579,7 +632,7 @@ async def apply_tracking_event(
             order = storage.get_order(order["id"]) or order
             result["order"] = order
 
-    if mapped == "returned" and prev != "returned":
+    if mapped in {"returned", "refused"} and prev not in {"returned", "refused"}:
         # Якщо прибуток уже встигли нарахувати — сторнуємо
         payload = order.get("payload") or {}
         if payload.get("profit_credited") and not payload.get("profit_reversed"):
@@ -603,14 +656,14 @@ async def apply_tracking_event(
         entry = debit_return_delivery_if_needed(storage, order, cost)
         result["returned"] = True
         amount = round(abs(float((entry or {}).get("amount") or cost or 0)), 2)
+        label = "Повернення" if mapped == "returned" and ever_received else "Відмова"
         try:
-            await _maybe_shipping_notify(
+            await _maybe_profit_notify(
                 storage,
                 order,
                 notify,
-                str(order.get("chat_id") or ""),
                 (
-                    f"↩️ Відмова/повернення · {order.get('order_number')}\n"
+                    f"↩️ {label} · {order.get('order_number')}\n"
                     f"ТТН: {order.get('ttn_number')}\n"
                     + (
                         f"Вартість доставки списано з балансу: −{amount} ₴"
@@ -808,11 +861,9 @@ async def fulfill_new_order(
         order = create_ttn_for_order(storage, order)
         if order.get("ttn_number"):
             await _notify_owner_backup_ttn(storage, order, owner_notify)
-            await _maybe_shipping_notify(
-                storage,
+            await _notify_ttn_created_cod(
                 order,
                 notify,
-                str(order.get("chat_id") or ""),
                 (
                     f"✅ ТТН створено для {order.get('order_number')}\n"
                     f"Номер: {order.get('ttn_number')}\n"
@@ -824,11 +875,9 @@ async def fulfill_new_order(
         storage.update_order_flags(order["id"], ttn_status="create_error")
         storage.merge_order_payload(order["id"], {"np_error": str(exc)[:500]})
         try:
-            await _maybe_shipping_notify(
-                storage,
+            await _notify_ttn_created_cod(
                 order,
                 notify,
-                str(order.get("chat_id") or ""),
                 (
                     f"⚠️ Замовлення {order.get('order_number')} прийнято, "
                     f"але ТТН поки не створено: {exc}"
@@ -856,11 +905,9 @@ async def run_np_maintenance_once(
                 if (updated.get("payload") or {}).get("np_used_backup_key"):
                     stats["backup_used"] += 1
                 await _notify_owner_backup_ttn(storage, updated, owner_notify)
-                await _maybe_shipping_notify(
-                    storage,
+                await _notify_ttn_created_cod(
                     updated,
                     notify,
-                    str(updated.get("chat_id") or ""),
                     (
                         f"✅ ТТН створено для {updated.get('order_number')}\n"
                         f"Номер: {updated.get('ttn_number')}"

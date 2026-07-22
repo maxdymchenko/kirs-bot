@@ -51,14 +51,15 @@ def is_owner(
     chat_id: str | int | None = None,
     user_id: str | int | None = None,
     storage: AppStorage | None = None,
+    username: str | int | None = None,
 ) -> bool:
     """Владелец / адмін / менеджер: доступ до кабінету з коментарями дропперів."""
     if is_owner_user(settings, user_id):
         return True
     if is_owner_chat(settings, chat_id, storage):
         return True
-    if storage and user_id:
-        staff = storage.get_staff_by_user(_norm(user_id))
+    if storage and (user_id or username):
+        staff = storage.get_staff_by_identity(_norm(user_id), _norm(username))
         if staff and staff.role in {"admin", "manager"}:
             return True
     return False
@@ -69,12 +70,14 @@ def resolve_session(
     storage: AppStorage,
     chat_id: str | int | None,
     user_id: str | int | None = None,
+    username: str | int | None = None,
 ) -> dict:
     chat_raw = _norm(chat_id)
     chat = storage.resolve_chat_id(chat_raw) if chat_raw else ""
     user = _norm(user_id)
+    uname = _norm(username)
 
-    if is_owner(settings, chat_raw or chat, user, storage):
+    if is_owner(settings, chat_raw or chat, user, storage, uname):
         return {
             "role": "owner",
             "need_registration": False,
@@ -84,7 +87,9 @@ def resolve_session(
             "staff": None,
         }
 
-    staff: StaffMember | None = storage.get_staff_by_user(user) if user else None
+    staff: StaffMember | None = (
+        storage.get_staff_by_identity(user, uname) if (user or uname) else None
+    )
     if staff:
         return {
             "role": staff.role,

@@ -9,6 +9,7 @@ import re
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -506,8 +507,11 @@ def map_np_status_code(status_code: str | int | None, status_text: str = "") -> 
     # Отримано / гроші по налогу в дорозі / видані відправнику
     if code in {"9", "10", "11"}:
         return "received"
-    # Повернення / відмова від отримання
-    if code in {"102", "103", "104", "105", "106", "108", "111"}:
+    # Відмова від отримання (клієнт не забрав)
+    if code in {"102", "103", "104", "105", "106", "108"}:
+        return "refused"
+    # Повернення відправнику / утилізація тощо
+    if code in {"111"}:
         return "returned"
     if code in {"2", "3"}:
         return "failed"
@@ -515,6 +519,8 @@ def map_np_status_code(status_code: str | int | None, status_text: str = "") -> 
         return "at_warehouse"
     # Код 6 у деяких джерелах — повернення; перевіряємо текст
     if code == "6" and any(w in text for w in ("поверн", "відмов", "отказ", "возврат")):
+        if any(w in text for w in ("відмов", "отказ", "refuse")):
+            return "refused"
         return "returned"
     if code in {"4", "5", "6", "41", "101"}:
         return "in_transit"
@@ -522,9 +528,34 @@ def map_np_status_code(status_code: str | int | None, status_text: str = "") -> 
         return "created"
     if any(w in text for w in ("отримано", "получен")):
         return "received"
-    if any(w in text for w in ("поверн", "відмов", "отказ", "возврат")):
+    if any(w in text for w in ("відмов", "отказ", "refuse")):
+        return "refused"
+    if any(w in text for w in ("поверн", "возврат")):
         return "returned"
     return "in_transit" if code else "unknown"
+
+
+def extract_warehouse_arrival_iso(row: dict[str, Any] | None) -> str:
+    """Дата прибуття на відділення з відповіді трекінгу (якщо є)."""
+    if not isinstance(row, dict):
+        return ""
+    for key in (
+        "RecipientDateTime",
+        "DateReceived",
+        "ActualDeliveryDate",
+        "ScheduledDeliveryDate",
+        "DateScan",
+    ):
+        raw = str(row.get(key) or "").strip()
+        if not raw:
+            continue
+        # НП часто дає dd.mm.yyyy [HH:MM:SS]
+        for fmt in ("%d.%m.%Y %H:%M:%S", "%d.%m.%Y %H:%M", "%d.%m.%Y", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%d"):
+            try:
+                return datetime.strptime(raw[:19], fmt).isoformat(timespec="seconds")
+            except ValueError:
+                continue
+    return ""
 
 
 def extract_delivery_cost(row: dict[str, Any] | None, order: dict[str, Any] | None = None) -> float:
