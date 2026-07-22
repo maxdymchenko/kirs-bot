@@ -124,6 +124,11 @@
     ttnRmpBlock: document.getElementById("ttnRmpBlock"),
     ttnNumber: document.getElementById("ttnNumber"),
     rmpNumber: document.getElementById("rmpNumber"),
+    recipientNameFields: document.getElementById("recipientNameFields"),
+    deliverySection: document.getElementById("deliverySection"),
+    phoneFieldLabel: document.getElementById("phoneFieldLabel"),
+    balancePaymentCard: document.getElementById("balancePaymentCard"),
+    balancePayHint: document.getElementById("balancePayHint"),
     warehouseField: document.getElementById("warehouseField"),
     courierAddressFields: document.getElementById("courierAddressFields"),
     warehouseLabel: document.getElementById("warehouseLabel"),
@@ -968,6 +973,11 @@
   function syncOwnTtnCarrierUi() {
     const ownTtn = Boolean(els.ownTtn?.checked);
     if (els.ttnFields) els.ttnFields.classList.toggle("hidden", !ownTtn);
+    if (els.recipientNameFields) els.recipientNameFields.classList.toggle("hidden", ownTtn);
+    if (els.deliverySection) els.deliverySection.classList.toggle("hidden", ownTtn);
+    if (els.phoneFieldLabel) {
+      els.phoneFieldLabel.textContent = ownTtn ? "Номер телефону клієнта" : "Телефон";
+    }
     if (!ownTtn) return;
     const carrier = selectedOwnTtnCarrier();
     const isNp = carrier === "nova_poshta";
@@ -978,30 +988,50 @@
   function syncPaymentAndTtn() {
     const ownTtn = Boolean(els.ownTtn.checked);
     const allowCod = dropperSettings.allow_cod !== false;
+    const allowBalance = Boolean(dropperSettings.allow_balance_payment);
     syncOwnTtnCarrierUi();
 
     // При власній ТТН або без дозволу наложки — COD ховаємо
     const hideCod = ownTtn || !allowCod;
     els.codPaymentCard.classList.toggle("hidden", hideCod);
     els.codPaymentHint.classList.toggle("hidden", hideCod);
-
-    if (ownTtn || !allowCod) {
-      const req = els.checkoutForm.querySelector('input[name="paymentMethod"][value="requisites"]');
-      if (req) req.checked = true;
+    if (els.balancePaymentCard) {
+      els.balancePaymentCard.classList.toggle("hidden", !allowBalance);
     }
 
-    const payment = selectedPaymentMethod();
+    let payment = selectedPaymentMethod();
+    if (hideCod && payment === "cod") {
+      const fallback = allowBalance
+        ? els.checkoutForm.querySelector('input[name="paymentMethod"][value="balance"]')
+        : els.checkoutForm.querySelector('input[name="paymentMethod"][value="requisites"]');
+      if (fallback) fallback.checked = true;
+      payment = selectedPaymentMethod();
+    }
+    if (!allowBalance && payment === "balance") {
+      const req = els.checkoutForm.querySelector('input[name="paymentMethod"][value="requisites"]');
+      if (req) req.checked = true;
+      payment = selectedPaymentMethod();
+    }
+
     const showRequisites = payment === "requisites";
+    const showBalance = payment === "balance";
     const showPrepay = !ownTtn && allowCod && payment === "cod";
     const showReceipt = showRequisites && dropperSettings.require_full_payment;
 
     els.prepayBlock.classList.toggle("hidden", !showPrepay);
     els.requisitesBlock.classList.toggle("hidden", !showRequisites);
     els.receiptField.classList.toggle("hidden", !showReceipt);
+    if (els.balancePayHint) els.balancePayHint.classList.toggle("hidden", !showBalance);
 
     const total = cartMoneyTotal();
     updatePrepayUi(total);
     updateRequisitesIntro(total);
+    if (els.balancePayHint && showBalance) {
+      const room = balanceSpendRoom();
+      els.balancePayHint.textContent =
+        `Суму «Разом» (${formatMoneyAmount(total)} грн) буде списано з балансу. ` +
+        `Доступно з урахуванням ліміту мінусу: ${formatMoneyAmount(room)} грн.`;
+    }
   }
 
   function stockNumber(stock) {
@@ -1257,29 +1287,32 @@
   }
 
   function validateCheckout(data) {
-    if (!data.firstName) return "Вкажіть ім'я отримувача";
-    if (!data.lastName) return "Вкажіть прізвище отримувача";
     if (!data.phone || !isPhoneComplete()) {
       return "Вкажіть повний телефон у форматі +380(XX)XXX-XX-XX";
     }
-    if (!data.cityRef || !npState.city) {
-      return "Оберіть населений пункт зі списку Нової Пошти";
-    }
-    if (data.deliveryMethod === "np_warehouse" && (!data.warehouseRef || !npState.warehouse)) {
-      return "Оберіть відділення/поштомат зі списку Нової Пошти";
-    }
-    if (data.deliveryMethod === "np_courier") {
-      if (!data.patronymic) return "Для курʼєра вкажіть по батькові";
-      if (!data.streetRef || !npState.street) {
-        return "Оберіть вулицю зі списку Нової Пошти";
-      }
-      if (!data.house) return "Вкажіть номер будинку";
-    }
+
     if (data.ownTtn) {
-      const carrier = data.ownTtnCarrier || "nova_poshta";
-      if (data.paymentMethod !== "requisites") {
-        return "При власній ТТН доступна лише оплата на реквізити";
+      data.firstName = "";
+      data.patronymic = "";
+      data.lastName = "";
+      data.deliveryMethod = "own_ttn";
+      data.city = "";
+      data.cityRef = "";
+      data.settlementRef = "";
+      data.warehouse = "";
+      data.warehouseRef = "";
+      data.street = "";
+      data.streetRef = "";
+      data.house = "";
+      data.apartment = "";
+      data.npCity = null;
+      data.npWarehouse = null;
+      data.npStreet = null;
+
+      if (data.paymentMethod !== "requisites" && data.paymentMethod !== "balance") {
+        return "При власній ТТН доступна оплата на реквізити або з балансу";
       }
+      const carrier = data.ownTtnCarrier || "nova_poshta";
       if (carrier === "rozetka") {
         const rmp = normalizeRmpNumber(data.rmpNumber || "");
         if (!/^RMP-\d{6,20}$/i.test(rmp)) {
@@ -1309,7 +1342,24 @@
           return "Файл 100×100 має бути у форматі PDF";
         }
       }
+    } else {
+      if (!data.firstName) return "Вкажіть ім'я отримувача";
+      if (!data.lastName) return "Вкажіть прізвище отримувача";
+      if (!data.cityRef || !npState.city) {
+        return "Оберіть населений пункт зі списку Нової Пошти";
+      }
+      if (data.deliveryMethod === "np_warehouse" && (!data.warehouseRef || !npState.warehouse)) {
+        return "Оберіть відділення/поштомат зі списку Нової Пошти";
+      }
+      if (data.deliveryMethod === "np_courier") {
+        if (!data.patronymic) return "Для курʼєра вкажіть по батькові";
+        if (!data.streetRef || !npState.street) {
+          return "Оберіть вулицю зі списку Нової Пошти";
+        }
+        if (!data.house) return "Вкажіть номер будинку";
+      }
     }
+
     if (
       data.paymentMethod === "requisites" &&
       dropperSettings.require_full_payment &&
@@ -1320,7 +1370,23 @@
     if (!data.rulesAccepted) {
       return "Підтвердіть ознайомлення з правилами";
     }
-    if (!data.ownTtn && data.paymentMethod === "cod") {
+
+    if (data.paymentMethod === "balance") {
+      if (!dropperSettings.allow_balance_payment) {
+        return "Оплата з балансу для вас вимкнена";
+      }
+      const room = balanceSpendRoom();
+      const total = roundMoney(data.total || 0);
+      if (total > room + 0.01) {
+        return (
+          `Недостатньо доступного балансу (потрібно ${formatMoneyAmount(total)} грн, ` +
+          `доступно ${formatMoneyAmount(room)} грн)`
+        );
+      }
+      data.codAmount = 0;
+      data.prepay = "";
+      data.prepayBalanceDebit = total;
+    } else if (!data.ownTtn && data.paymentMethod === "cod") {
       const codRaw = data.codAmount === "" ? null : Number(data.codAmount);
       if (codRaw === null || Number.isNaN(codRaw) || codRaw < 0) {
         return "Вкажіть суму накладного платежу";
@@ -1355,12 +1421,14 @@
   function paymentMethodLabel(value) {
     if (value === "cod") return "Оплата при отриманні";
     if (value === "requisites") return "Оплата на реквізити";
+    if (value === "balance") return "З балансу";
     return value || "—";
   }
 
   function deliveryMethodLabel(value) {
     if (value === "np_warehouse") return "Відділення / поштомат НП";
     if (value === "np_courier") return "Курʼєр НП";
+    if (value === "own_ttn") return "За ТТН дроппера";
     return value || "—";
   }
 
@@ -1413,8 +1481,12 @@
       data.paymentMethod === "cod"
         ? roundMoney(codExact - prepayExact - totalExact)
         : null;
-    els.confirmSummary.innerHTML = `
-      <div class="confirm-block">
+    const recipientBlock = data.ownTtn
+      ? `<div class="confirm-block">
+        <div class="confirm-label">Клієнт</div>
+        <div class="confirm-value">${escapeHtml(data.phone)}</div>
+      </div>`
+      : `<div class="confirm-block">
         <div class="confirm-label">Отримувач</div>
         <div class="confirm-value">${escapeHtml(
           `${data.lastName} ${data.firstName} ${data.patronymic || ""}`.trim()
@@ -1425,7 +1497,9 @@
         <div class="confirm-value">${escapeHtml(deliveryMethodLabel(data.deliveryMethod))}
 ${escapeHtml(data.city || "")}
 ${escapeHtml(deliveryExtra)}</div>
-      </div>
+      </div>`;
+    els.confirmSummary.innerHTML = `
+      ${recipientBlock}
       <div class="confirm-block">
         <div class="confirm-label">Оплата</div>
         <div class="confirm-value">${escapeHtml(paymentMethodLabel(data.paymentMethod))}
@@ -1471,25 +1545,26 @@ ${
   }
 
   function buildOrderApiPayload(data) {
+    const ownTtn = Boolean(data.ownTtn);
     return {
       chat_id: effectiveDropperChatId(),
       user_id: currentTelegramUser().user_id,
-      first_name: data.firstName,
-      patronymic: data.patronymic || "",
-      last_name: data.lastName,
+      first_name: ownTtn ? "" : data.firstName,
+      patronymic: ownTtn ? "" : data.patronymic || "",
+      last_name: ownTtn ? "" : data.lastName,
       phone: data.phone,
-      delivery_method: data.deliveryMethod,
-      city: data.city || "",
-      city_ref: data.cityRef,
-      settlement_ref: data.settlementRef || "",
-      warehouse: data.warehouse || "",
-      warehouse_ref: data.warehouseRef || "",
-      street: data.street || "",
-      street_ref: data.streetRef || "",
-      house: data.house || "",
-      apartment: data.apartment || "",
-      own_ttn: Boolean(data.ownTtn),
-      own_ttn_carrier: data.ownTtn ? data.ownTtnCarrier || "nova_poshta" : "",
+      delivery_method: ownTtn ? "own_ttn" : data.deliveryMethod,
+      city: ownTtn ? "" : data.city || "",
+      city_ref: ownTtn ? "" : data.cityRef || "",
+      settlement_ref: ownTtn ? "" : data.settlementRef || "",
+      warehouse: ownTtn ? "" : data.warehouse || "",
+      warehouse_ref: ownTtn ? "" : data.warehouseRef || "",
+      street: ownTtn ? "" : data.street || "",
+      street_ref: ownTtn ? "" : data.streetRef || "",
+      house: ownTtn ? "" : data.house || "",
+      apartment: ownTtn ? "" : data.apartment || "",
+      own_ttn: ownTtn,
+      own_ttn_carrier: ownTtn ? data.ownTtnCarrier || "nova_poshta" : "",
       ttn_number: data.ttnNumber || "",
       payment_method: data.paymentMethod,
       prepay: data.prepay === "" ? 0 : Number(data.prepay || 0),
@@ -1510,9 +1585,9 @@ ${
         photo_url: item.photo_url || "",
       })),
       total: Number(data.total || 0),
-      np_city: data.npCity || null,
-      np_warehouse: data.npWarehouse || null,
-      np_street: data.npStreet || null,
+      np_city: ownTtn ? null : data.npCity || null,
+      np_warehouse: ownTtn ? null : data.npWarehouse || null,
+      np_street: ownTtn ? null : data.npStreet || null,
     };
   }
 
@@ -1626,9 +1701,12 @@ ${
         ? order.prepay_balance_debit
         : payment.prepay_balance_debit || 0
     );
-    return `
-      <div class="order-details-grid">
-        <div class="confirm-block">
+    const recipientHtml = ownTtn
+      ? `<div class="confirm-block">
+          <div class="confirm-label">Клієнт</div>
+          <div class="confirm-value">${escapeHtml(recipient.phone || "—")}</div>
+        </div>`
+      : `<div class="confirm-block">
           <div class="confirm-label">Отримувач</div>
           <div class="confirm-value">${escapeHtml(name || "—")}\n${escapeHtml(
             recipient.phone || ""
@@ -1641,7 +1719,10 @@ ${
           )}
 ${escapeHtml(delivery.city || "")}
 ${escapeHtml(deliveryExtra)}</div>
-        </div>
+        </div>`;
+    return `
+      <div class="order-details-grid">
+        ${recipientHtml}
         <div class="confirm-block">
           <div class="confirm-label">Оплата</div>
           <div class="confirm-value">${escapeHtml(paymentMethodLabel(method))}

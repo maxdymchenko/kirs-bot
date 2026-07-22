@@ -69,13 +69,13 @@ class DropperSettingsUpdateRequest(BaseModel):
 class OrderCreateRequest(BaseModel):
     chat_id: str = Field(..., min_length=2, max_length=64)
     user_id: str = Field("", max_length=64)
-    first_name: str = Field(..., min_length=1, max_length=80)
+    first_name: str = Field("", max_length=80)
     patronymic: str = Field("", max_length=80)
-    last_name: str = Field(..., min_length=1, max_length=80)
+    last_name: str = Field("", max_length=80)
     phone: str = Field(..., min_length=10, max_length=32)
-    delivery_method: str = Field(..., min_length=3, max_length=32)
+    delivery_method: str = Field("", max_length=32)
     city: str = Field("", max_length=200)
-    city_ref: str = Field(..., min_length=5, max_length=64)
+    city_ref: str = Field("", max_length=64)
     settlement_ref: str = Field("", max_length=64)
     warehouse: str = Field("", max_length=300)
     warehouse_ref: str = Field("", max_length=64)
@@ -686,11 +686,14 @@ def create_web_app(
         prepay = max(0.0, float(payload.prepay or 0))
         cod_amount = max(0.0, float(payload.cod_amount or 0))
         debit = 0.0
+        if not str(payload.phone or "").strip():
+            raise HTTPException(status_code=400, detail="Вкажіть номер телефону клієнта")
+
         if payload.own_ttn:
-            if payload.payment_method != "requisites":
+            if payload.payment_method not in ("requisites", "balance"):
                 raise HTTPException(
                     status_code=400,
-                    detail="При власній ТТН доступна лише оплата на реквізити",
+                    detail="При власній ТТН доступна оплата на реквізити або з балансу",
                 )
             carrier = (payload.own_ttn_carrier or "nova_poshta").strip().lower()
             raw_ttn = str(payload.ttn_number or "").strip()
@@ -705,7 +708,28 @@ def create_web_app(
                 ttn = re.sub(r"\D", "", raw_ttn)
                 if len(ttn) < 10:
                     raise HTTPException(status_code=400, detail="Вкажіть повний номер ТТН")
+
+        if payload.payment_method == "balance":
+            if not dropper.allow_balance_payment:
+                raise HTTPException(
+                    status_code=403,
+                    detail="Оплата з балансу для вас вимкнена",
+                )
+            room = _balance_spend_room(dropper)
+            if total > room + 0.01:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        f"Недостатньо доступного балансу "
+                        f"(потрібно {round(total)} грн, доступно {round(room)} грн)"
+                    ),
+                )
+            debit = round(total, 2)
+            prepay = 0.0
             cod_amount = 0.0
+        elif payload.own_ttn:
+            cod_amount = 0.0
+            prepay = 0.0
         elif payload.payment_method == "cod":
             if not getattr(dropper, "allow_cod", True):
                 raise HTTPException(
@@ -729,13 +753,23 @@ def create_web_app(
             debit = max(0.0, round(prepay - total, 2))
         else:
             cod_amount = 0.0
-        if payload.delivery_method == "np_warehouse" and not payload.warehouse_ref:
-            raise HTTPException(status_code=400, detail="Оберіть відділення/поштомат")
-        if payload.delivery_method == "np_courier":
-            if not payload.patronymic.strip():
-                raise HTTPException(status_code=400, detail="Для курʼєра вкажіть по батькові")
-            if not payload.street_ref or not payload.house.strip():
-                raise HTTPException(status_code=400, detail="Вкажіть адресу для курʼєра")
+
+        if payload.own_ttn:
+            # Доставка й ПІБ вже в етикетці ТТН — перевіряємо лише телефон вище.
+            pass
+        else:
+            if not payload.first_name.strip() or not payload.last_name.strip():
+                raise HTTPException(status_code=400, detail="Вкажіть ім'я та прізвище отримувача")
+            if not payload.city_ref.strip():
+                raise HTTPException(status_code=400, detail="Оберіть населений пункт")
+            if payload.delivery_method == "np_warehouse" and not payload.warehouse_ref:
+                raise HTTPException(status_code=400, detail="Оберіть відділення/поштомат")
+            if payload.delivery_method == "np_courier":
+                if not payload.patronymic.strip():
+                    raise HTTPException(status_code=400, detail="Для курʼєра вкажіть по батькові")
+                if not payload.street_ref or not payload.house.strip():
+                    raise HTTPException(status_code=400, detail="Вкажіть адресу для курʼєра")
+
         if (
             payload.payment_method == "requisites"
             and dropper.require_full_payment
@@ -761,6 +795,13 @@ def create_web_app(
             lines.append(
                 f"Списано з балансу: {round(float(order.get('prepay_balance_debit') or 0))} ₴"
             )
+        method = (order.get("payment_method") or "").strip()
+        if method == "balance":
+            lines.append("Оплата: з балансу")
+        elif method == "requisites":
+            lines.append("Оплата: на реквізити")
+        elif method == "cod":
+            lines.append("Оплата: при отриманні")
         if order.get("own_ttn") and order.get("ttn_number"):
             carrier = ((order.get("payload") or {}).get("own_ttn_carrier") or "").strip()
             if carrier == "rozetka":
@@ -830,7 +871,7 @@ def create_web_app(
                 "phone": payload.phone.strip(),
             },
             "delivery": {
-                "method": payload.delivery_method,
+                "method": "own_ttn" if own_ttn else payload.delivery_method,
                 "city": payload.city,
                 "city_ref": payload.city_ref,
                 "settlement_ref": payload.settlement_ref,
@@ -860,11 +901,16 @@ def create_web_app(
             "created_by_user_id": payload.user_id.strip(),
         }
 
+        if own_ttn:
+            delivery_method = "own_ttn"
+        else:
+            delivery_method = payload.delivery_method
+
         order = storage.create_order(
             dropper_id=dropper.id,
             chat_id=dropper.chat_id,
             payment_method=payload.payment_method,
-            delivery_method=payload.delivery_method,
+            delivery_method=delivery_method,
             own_ttn=own_ttn,
             total=total,
             prepay=prepay,
@@ -876,14 +922,24 @@ def create_web_app(
         )
 
         if debit > 0:
-            storage.add_ledger_entry(
-                dropper_id=dropper.id,
-                amount=-debit,
-                entry_type="prepay_overage_debit",
-                title=f"Передплата понад «Разом» · {order['order_number']}",
-                note="Різниця передплати і суми замовлення",
-                related_order_id=order["order_number"],
-            )
+            if payload.payment_method == "balance":
+                storage.add_ledger_entry(
+                    dropper_id=dropper.id,
+                    amount=-debit,
+                    entry_type="balance_payment",
+                    title=f"Оплата з балансу · {order['order_number']}",
+                    note="Списання суми «Разом» з балансу дроппера",
+                    related_order_id=order["order_number"],
+                )
+            else:
+                storage.add_ledger_entry(
+                    dropper_id=dropper.id,
+                    amount=-debit,
+                    entry_type="prepay_overage_debit",
+                    title=f"Передплата понад «Разом» · {order['order_number']}",
+                    note="Різниця передплати і суми замовлення",
+                    related_order_id=order["order_number"],
+                )
             from bot.credit_holidays import evaluate_credit_holidays
 
             evaluate_credit_holidays(storage, dropper)

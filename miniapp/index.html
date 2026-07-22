@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
   <title>Kirs — Замовлення</title>
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
-  <link rel="stylesheet" href="/static/styles.css?v=20260722rmp" />
+  <link rel="stylesheet" href="/static/styles.css?v=20260722ownttn2" />
 </head>
 <body>
   <div class="app">
@@ -350,21 +350,24 @@
               </div>
             </div>
 
-            <label class="field">
-              <span class="field-label">Ім'я</span>
-              <input id="firstName" name="firstName" type="text" autocomplete="given-name" placeholder="Ім'я замовника" required />
-            </label>
-            <label class="field">
-              <span class="field-label">По батькові</span>
-              <input id="patronymic" name="patronymic" type="text" autocomplete="additional-name" placeholder="По батькові" />
-              <p class="field-hint" id="patronymicHint">Необовʼязково (для курʼєра — обовʼязково)</p>
-            </label>
-            <label class="field">
-              <span class="field-label">Прізвище</span>
-              <input id="lastName" name="lastName" type="text" autocomplete="family-name" placeholder="Прізвище замовника" required />
-            </label>
-            <label class="field">
-              <span class="field-label">Телефон</span>
+            <div id="recipientNameFields">
+              <label class="field">
+                <span class="field-label">Ім'я</span>
+                <input id="firstName" name="firstName" type="text" autocomplete="given-name" placeholder="Ім'я замовника" />
+              </label>
+              <label class="field">
+                <span class="field-label">По батькові</span>
+                <input id="patronymic" name="patronymic" type="text" autocomplete="additional-name" placeholder="По батькові" />
+                <p class="field-hint" id="patronymicHint">Необовʼязково (для курʼєра — обовʼязково)</p>
+              </label>
+              <label class="field">
+                <span class="field-label">Прізвище</span>
+                <input id="lastName" name="lastName" type="text" autocomplete="family-name" placeholder="Прізвище замовника" />
+              </label>
+            </div>
+
+            <label class="field" id="phoneFieldWrap">
+              <span class="field-label" id="phoneFieldLabel">Телефон</span>
               <div class="phone-field">
                 <span class="phone-ghost" id="phoneGhost" aria-hidden="true">+380(99)999-99-99</span>
                 <input
@@ -382,7 +385,7 @@
             </label>
           </div>
 
-          <div class="form-section">
+          <div class="form-section" id="deliverySection">
             <h2 class="section-title">Спосіб доставки</h2>
 
             <div class="choice-list" role="radiogroup" aria-label="Спосіб доставки">
@@ -488,6 +491,17 @@
                   <span class="choice-sub">Оплата на реквізити</span>
                 </span>
               </label>
+              <label class="choice-card hidden" id="balancePaymentCard">
+                <input type="radio" name="paymentMethod" value="balance" />
+                <span class="choice-body">
+                  <span class="choice-title">З балансу</span>
+                  <span class="choice-sub">Списання з балансу / у мінус до ліміту</span>
+                </span>
+              </label>
+            </div>
+
+            <div id="balancePayHint" class="info-box hidden">
+              Суму «Разом» буде списано з балансу дроппера. Якщо коштів не вистачає — підете в мінус у межах дозволеного ліміту.
             </div>
 
             <div id="prepayBlock">
@@ -570,6 +584,6 @@
   </div>
 
   <button type="button" id="photoZoomBackdrop" class="photo-zoom-backdrop hidden" aria-label="Закрити фото"></button>
-  <script src="/static/app.js?v=20260722rmp"></script>
+  <script src="/static/app.js?v=20260722ownttn2"></script>
 </body>
 </html>
