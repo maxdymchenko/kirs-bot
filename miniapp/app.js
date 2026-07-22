@@ -56,6 +56,7 @@
     generalSettingsOk: document.getElementById("generalSettingsOk"),
     npApiKeysList: document.getElementById("npApiKeysList"),
     npApiKeyAdd: document.getElementById("npApiKeyAdd"),
+    npWebhookHint: document.getElementById("npWebhookHint"),
     senderCity: document.getElementById("senderCity"),
     senderCityDropdown: document.getElementById("senderCityDropdown"),
     senderCityRef: document.getElementById("senderCityRef"),
@@ -78,6 +79,9 @@
     balanceStats: document.getElementById("balanceStats"),
     balanceLedger: document.getElementById("balanceLedger"),
     balanceHint: document.getElementById("balanceHint"),
+    dropperSettingsView: document.getElementById("dropperSettingsView"),
+    notifyShippingEvents: document.getElementById("notifyShippingEvents"),
+    dropperSettingsStatus: document.getElementById("dropperSettingsStatus"),
     staffForm: document.getElementById("staffForm"),
     staffError: document.getElementById("staffError"),
     orderMain: document.getElementById("orderMain"),
@@ -184,6 +188,7 @@
     orders_disabled: false,
     referral_code: "",
     referral_percent: 0,
+    notify_shipping_events: false,
   };
 
   const sessionState = {
@@ -405,11 +410,15 @@
     els.cartView.classList.toggle("hidden", name !== "cart");
     if (els.historyView) els.historyView.classList.toggle("hidden", name !== "history");
     if (els.balanceView) els.balanceView.classList.toggle("hidden", name !== "balance");
+    if (els.dropperSettingsView) {
+      els.dropperSettingsView.classList.toggle("hidden", name !== "settings");
+    }
     els.checkoutView.classList.add("hidden");
     if (els.confirmView) els.confirmView.classList.add("hidden");
     if (name === "cart") renderCart();
     if (name === "history") renderOrdersHistory();
     if (name === "balance") renderBalanceView();
+    if (name === "settings") renderDropperSettingsView();
   }
 
   async function openCheckout() {
@@ -419,6 +428,7 @@
     els.cartView.classList.add("hidden");
     if (els.historyView) els.historyView.classList.add("hidden");
     if (els.balanceView) els.balanceView.classList.add("hidden");
+    if (els.dropperSettingsView) els.dropperSettingsView.classList.add("hidden");
     if (els.confirmView) els.confirmView.classList.add("hidden");
     els.checkoutView.classList.remove("hidden");
     els.mainTabs.classList.add("hidden");
@@ -831,6 +841,7 @@
       dropperSettings.orders_disabled = Boolean(data.orders_disabled);
       dropperSettings.referral_code = data.referral_code || "";
       dropperSettings.referral_percent = Number(data.referral_percent || 0);
+      dropperSettings.notify_shipping_events = Boolean(data.notify_shipping_events);
       if (data.chat_id) dropperSettings.chat_id = String(data.chat_id);
     } catch (error) {
       console.warn("dropper settings", error);
@@ -842,6 +853,7 @@
       dropperSettings.balance = 0;
       dropperSettings.extra_discount_percent = 0;
       dropperSettings.orders_disabled = false;
+      dropperSettings.notify_shipping_events = false;
     }
   }
 
@@ -1665,6 +1677,10 @@ ${
 
   function orderDropperProfit(order) {
     if (orderPaymentMethod(order) !== "cod") return null;
+    const payload = order.payload || {};
+    if (order.ttn_status === "returned" || payload.return_delivery_debited) {
+      return null;
+    }
     const cod = orderCodAmount(order);
     const prepay = roundMoney(order.prepay || 0);
     const total = roundMoney(order.total || 0);
@@ -1734,8 +1750,15 @@ ${escapeHtml(deliveryExtra)}</div>
           <div class="confirm-value">${escapeHtml(paymentMethodLabel(method))}
 Разом: ${escapeHtml(formatMoneyAmount(order.total || 0))} ₴
 ${
-  method === "cod"
+  method === "cod" && !(payload.return_delivery_debited || order.ttn_status === "returned")
     ? `Накладений платіж: ${escapeHtml(formatMoneyAmount(orderCodAmount(order)))} ₴\nПередплата: ${escapeHtml(formatMoneyAmount(order.prepay || 0))} ₴\nПрибуток: ${escapeHtml(formatMoneyAmount(profit || 0))} ₴`
+    : ""
+}
+${
+  payload.return_delivery_debited
+    ? `Відмова/повернення · доставка з балансу: −${escapeHtml(
+        formatMoneyAmount(payload.return_delivery_cost || payload.np_delivery_cost || 0)
+      )} ₴`
     : ""
 }
 ${debit > 0 ? `З балансу: ${escapeHtml(formatMoneyAmount(debit))} ₴` : ""}
@@ -1772,7 +1795,7 @@ ${
         in_transit: "в дорозі",
         at_warehouse: "у відділенні",
         received: "отримано",
-        returned: "повернення",
+        returned: "відмова/повернення",
         failed: "помилка",
         provided: "власна ТТН",
       };
@@ -2055,6 +2078,12 @@ ${
   els.cartChip.addEventListener("click", () => switchTab("cart"));
   els.checkoutBtn.addEventListener("click", openCheckout);
   els.checkoutBack.addEventListener("click", () => switchTab("cart"));
+
+  if (els.notifyShippingEvents) {
+    els.notifyShippingEvents.addEventListener("change", () => {
+      saveDropperNotifyShippingSetting(els.notifyShippingEvents.checked);
+    });
+  }
 
   els.phone.addEventListener("keydown", (event) => {
     if (event.key === "Backspace" || event.key === "Delete") {
@@ -2379,6 +2408,8 @@ ${
     if (key === "balance_payment") return "Оплата замовлення з балансу";
     if (key === "prepay_overage_debit") return "Списання (передплата понад «Разом»)";
     if (key === "cod_profit_credit") return "Прибуток з наложки (посилку отримано)";
+    if (key === "cod_profit_reversal") return "Сторно прибутку (повернення)";
+    if (key === "return_delivery_debit") return "Доставка при відмові/поверненні";
     if (key === "manual_credit") return "Ручне нарахування";
     if (key === "manual_debit") return "Ручне списання";
     return key || "Операція";
@@ -2471,6 +2502,64 @@ ${
       els.balanceLedger.innerHTML = `<div class="form-error">${escapeHtml(
         error.message || "Помилка"
       )}</div>`;
+    }
+  }
+
+  async function renderDropperSettingsView() {
+    if (!els.dropperSettingsView) return;
+    if (els.dropperSettingsStatus) {
+      els.dropperSettingsStatus.classList.add("hidden");
+      els.dropperSettingsStatus.textContent = "";
+    }
+    await loadDropperSettings();
+    if (els.notifyShippingEvents) {
+      els.notifyShippingEvents.checked = Boolean(dropperSettings.notify_shipping_events);
+    }
+  }
+
+  async function saveDropperNotifyShippingSetting(enabled) {
+    const chatId = effectiveDropperChatId();
+    if (!chatId) {
+      showToast("Немає chat_id дроппера");
+      return;
+    }
+    if (els.dropperSettingsStatus) {
+      els.dropperSettingsStatus.textContent = "Збереження…";
+      els.dropperSettingsStatus.classList.remove("hidden");
+      els.dropperSettingsStatus.style.color = "";
+    }
+    try {
+      const response = await fetch("/api/dropper/settings", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          chat_id: chatId,
+          user_id: currentTelegramUser().user_id,
+          notify_shipping_events: Boolean(enabled),
+        }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.detail || "Не вдалося зберегти");
+      dropperSettings.notify_shipping_events = Boolean(
+        (data.dropper && data.dropper.notify_shipping_events) ?? enabled
+      );
+      if (els.notifyShippingEvents) {
+        els.notifyShippingEvents.checked = dropperSettings.notify_shipping_events;
+      }
+      if (els.dropperSettingsStatus) {
+        els.dropperSettingsStatus.textContent = "Збережено";
+        els.dropperSettingsStatus.style.color = "var(--ok)";
+      }
+      showToast("Налаштування збережено");
+    } catch (error) {
+      if (els.notifyShippingEvents) {
+        els.notifyShippingEvents.checked = Boolean(dropperSettings.notify_shipping_events);
+      }
+      if (els.dropperSettingsStatus) {
+        els.dropperSettingsStatus.textContent = error.message || "Помилка збереження";
+        els.dropperSettingsStatus.style.color = "var(--danger)";
+      }
+      showToast(error.message || "Помилка збереження");
     }
   }
 
@@ -2601,6 +2690,19 @@ ${
         throw new Error(typeof data.detail === "string" ? data.detail : "Помилка налаштувань");
       }
       fillGeneralSettingsForm(data.settings || {}, data.sheet_columns || []);
+      if (els.npWebhookHint) {
+        const url = String(data.np_webhook_url || "").trim();
+        if (url) {
+          els.npWebhookHint.textContent = data.np_webhook_token_set
+            ? `Webhook URL для кабінету НП: ${url}`
+            : `Webhook URL: ${url} (додайте NP_WEBHOOK_TOKEN у Render для захисту)`;
+          els.npWebhookHint.classList.remove("hidden");
+        } else {
+          els.npWebhookHint.textContent =
+            "Задайте WEBAPP_URL і NP_WEBHOOK_TOKEN у Render — тут зʼявиться URL вебхука статусів ТТН.";
+          els.npWebhookHint.classList.remove("hidden");
+        }
+      }
     } catch (error) {
       if (els.generalSettingsError) {
         els.generalSettingsError.textContent = error.message || "Помилка";
@@ -3056,6 +3158,7 @@ ${
     els.mainTabs.classList.add("hidden");
     els.cartChip.classList.add("hidden");
     if (els.balanceView) els.balanceView.classList.add("hidden");
+    if (els.dropperSettingsView) els.dropperSettingsView.classList.add("hidden");
   }
 
   function resetOrderUiForPreviewDropper(chatId) {
@@ -3354,7 +3457,7 @@ ${
         }
         fillGeneralSettingsForm(data.settings || {}, generalSettingsState.sheet_columns || []);
         if (els.generalSettingsOk) {
-          els.generalSettingsOk.textContent = `Збережено. Увімкнених API-ключів НП: ${
+          els.generalSettingsOk.textContent = `Збережено. Основних кабінетів НП: ${
             data.enabled_np_keys_count || 0
           }`;
           els.generalSettingsOk.classList.remove("hidden");

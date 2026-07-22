@@ -499,21 +499,57 @@ class NovaPoshtaClient:
         return [row for row in (data or []) if isinstance(row, dict)]
 
 
-def map_np_status_code(status_code: str | int | None) -> str:
+def map_np_status_code(status_code: str | int | None, status_text: str = "") -> str:
     """Уніфікований внутрішній статус за StatusCode НП."""
     code = str(status_code or "").strip()
+    text = str(status_text or "").casefold()
     # Отримано / гроші по налогу в дорозі / видані відправнику
     if code in {"9", "10", "11"}:
         return "received"
-    # Повернення / відмова
-    if code in {"102", "103", "108", "111"}:
+    # Повернення / відмова від отримання
+    if code in {"102", "103", "104", "105", "106", "108", "111"}:
         return "returned"
     if code in {"2", "3"}:
         return "failed"
     if code in {"7", "8"}:
         return "at_warehouse"
+    # Код 6 у деяких джерелах — повернення; перевіряємо текст
+    if code == "6" and any(w in text for w in ("поверн", "відмов", "отказ", "возврат")):
+        return "returned"
     if code in {"4", "5", "6", "41", "101"}:
         return "in_transit"
     if code in {"1"}:
         return "created"
+    if any(w in text for w in ("отримано", "получен")):
+        return "received"
+    if any(w in text for w in ("поверн", "відмов", "отказ", "возврат")):
+        return "returned"
     return "in_transit" if code else "unknown"
+
+
+def extract_delivery_cost(row: dict[str, Any] | None, order: dict[str, Any] | None = None) -> float:
+    """Вартість доставки з трекінгу або з payload після створення ТТН."""
+    candidates: list[Any] = []
+    if isinstance(row, dict):
+        for key in (
+            "DocumentCost",
+            "DeliveryCost",
+            "CostOnSite",
+            "SettlementCost",
+            "ShippingCost",
+        ):
+            if row.get(key) not in (None, ""):
+                candidates.append(row.get(key))
+    payload = (order or {}).get("payload") or {}
+    if payload.get("np_cost_on_site") not in (None, ""):
+        candidates.append(payload.get("np_cost_on_site"))
+    if payload.get("np_delivery_cost") not in (None, ""):
+        candidates.append(payload.get("np_delivery_cost"))
+    for raw in candidates:
+        try:
+            value = float(str(raw).replace(",", ".").strip())
+        except (TypeError, ValueError):
+            continue
+        if value > 0:
+            return round(value, 2)
+    return 0.0

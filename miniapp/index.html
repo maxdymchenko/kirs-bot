@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
   <title>Kirs — Замовлення</title>
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
-  <link rel="stylesheet" href="/static/styles.css?v=20260722np1" />
+  <link rel="stylesheet" href="/static/styles.css?v=20260722npkeys2" />
 </head>
 <body>
   <div class="app">
@@ -129,7 +129,8 @@
         <form id="generalSettingsForm" novalidate>
           <div class="form-section">
             <h3 class="section-title">API-ключі Нової Пошти</h3>
-            <p class="hint">Увімкніть чекбокс біля кабінету — з нього створюватимуться ТТН. «+» додає ще один ключ.</p>
+            <p class="hint">Галочка = основний кабінет для ТТН. Інші ключі без галочки — лише резерв, якщо основний впав з помилкою. Статуси ТТН приходять вебхуком (динамічно).</p>
+            <p class="hint" id="npWebhookHint"></p>
             <div id="npApiKeysList" class="np-keys-list"></div>
             <button type="button" class="btn secondary" id="npApiKeyAdd">+ Додати API-ключ</button>
           </div>
@@ -214,6 +215,7 @@
       <button type="button" class="tab" data-tab="cart">Кошик <span class="badge" id="cartBadge">0</span></button>
       <button type="button" class="tab" data-tab="history">Історія</button>
       <button type="button" class="tab" data-tab="balance">Баланс</button>
+      <button type="button" class="tab" data-tab="settings">Налаштування</button>
     </nav>
 
     <main id="orderMain" class="hidden">
@@ -592,10 +594,35 @@
         <h2 class="section-title" style="margin-top:16px">Історія операцій</h2>
         <div id="balanceLedger" class="results"></div>
       </section>
+
+      <section id="dropperSettingsView" class="view hidden">
+        <h1 class="title">Налаштування</h1>
+        <p class="hint">Особисті налаштування сповіщень і роботи з замовленнями.</p>
+
+        <div class="form-section">
+          <h2 class="section-title">Сповіщення в Telegram</h2>
+          <label class="toggle-row">
+            <span class="toggle-text">
+              Повідомлення про ТТН і нарахування прибутку
+              <span class="setting-hint" style="display:block;font-weight:500;margin-top:4px">
+                Якщо увімкнено — бот напише в чат, коли створено ТТН і коли прибуток з наложки зараховано на баланс після отримання посилки.
+              </span>
+            </span>
+            <input
+              type="checkbox"
+              id="notifyShippingEvents"
+              name="notifyShippingEvents"
+              class="toggle-input"
+            />
+            <span class="toggle-ui" aria-hidden="true"></span>
+          </label>
+          <p id="dropperSettingsStatus" class="hint hidden" style="margin-top:10px"></p>
+        </div>
+      </section>
     </main>
   </div>
 
   <button type="button" id="photoZoomBackdrop" class="photo-zoom-backdrop hidden" aria-label="Закрити фото"></button>
-  <script src="/static/app.js?v=20260722np1"></script>
+  <script src="/static/app.js?v=20260722npkeys2"></script>
 </body>
 </html>

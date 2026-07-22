@@ -83,19 +83,38 @@ async def main() -> None:
         except Exception:
             logger.exception("NP notify failed for %s", chat_id)
 
+    async def _np_owner_notify(text: str) -> None:
+        if not text:
+            return
+        targets: list[str] = []
+        for chat in settings.owner_chat_ids:
+            resolved = app_storage.resolve_chat_id(chat) or chat
+            if resolved and resolved not in targets:
+                targets.append(resolved)
+        for user in settings.owner_user_ids:
+            if user and str(user) not in targets:
+                targets.append(str(user))
+        for target in targets:
+            await _np_notify(target, text)
+
     async def np_maintenance_loop() -> None:
         from bot.np_fulfillment import run_np_maintenance_once
 
         await asyncio.sleep(20)
         while not stop_event.is_set():
             try:
-                stats = await run_np_maintenance_once(app_storage, notify=_np_notify)
-                if any(stats.get(k) for k in ("create_ok", "updated", "received", "create_fail")):
-                    logger.info("NP maintenance: %s", stats)
+                stats = await run_np_maintenance_once(
+                    app_storage,
+                    notify=_np_notify,
+                    owner_notify=_np_owner_notify,
+                )
+                # Лише ретрай створення ТТН; статуси — через webhook
+                if any(stats.get(k) for k in ("create_ok", "create_fail", "backup_used")):
+                    logger.info("NP TTN create retry: %s", stats)
             except Exception:
                 logger.exception("NP maintenance loop error")
             try:
-                await asyncio.wait_for(stop_event.wait(), timeout=300)
+                await asyncio.wait_for(stop_event.wait(), timeout=1800)
             except asyncio.TimeoutError:
                 pass
 

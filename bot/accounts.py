@@ -43,6 +43,7 @@ class Dropper:
     credit_debt_started_at: str | None
     credit_holidays_blocked: bool
     credit_last_notified_at: str | None
+    notify_shipping_events: bool
     referral_code: str
     referred_by_dropper_id: int | None
     referral_percent: float
@@ -71,6 +72,7 @@ class Dropper:
             "credit_debt_started_at": self.credit_debt_started_at,
             "credit_holidays_blocked": self.credit_holidays_blocked,
             "credit_last_notified_at": self.credit_last_notified_at,
+            "notify_shipping_events": self.notify_shipping_events,
             "referral_code": self.referral_code,
             "referred_by_dropper_id": self.referred_by_dropper_id,
             "referral_percent": self.referral_percent,
@@ -164,6 +166,7 @@ class AppStorage:
                 ("credit_debt_started_at", "credit_debt_started_at TEXT"),
                 ("credit_holidays_blocked", "credit_holidays_blocked INTEGER NOT NULL DEFAULT 0"),
                 ("credit_last_notified_at", "credit_last_notified_at TEXT"),
+                ("notify_shipping_events", "notify_shipping_events INTEGER NOT NULL DEFAULT 0"),
             ):
                 self._ensure_column(conn, "droppers", column, ddl)
 
@@ -328,6 +331,7 @@ class AppStorage:
             credit_last_notified_at=(
                 str(self._row_get(row, "credit_last_notified_at") or "").strip() or None
             ),
+            notify_shipping_events=bool(self._row_get(row, "notify_shipping_events", 0)),
             referral_code=str(self._row_get(row, "referral_code", "") or ""),
             referred_by_dropper_id=int(ref_by) if ref_by not in (None, "") else None,
             referral_percent=float(self._row_get(row, "referral_percent", 0) or 0),
@@ -558,6 +562,7 @@ class AppStorage:
         referral_percent: float | None = None,
         owner_comment: str | None = None,
         credit_holidays_days: int | None = None,
+        notify_shipping_events: bool | None = None,
     ) -> Dropper | None:
         raw = str(chat_id).strip()
         key = self.resolve_chat_id(raw) or raw
@@ -588,6 +593,8 @@ class AppStorage:
             fields["owner_comment"] = str(owner_comment).strip()[:2000]
         if credit_holidays_days is not None:
             fields["credit_holidays_days"] = max(0, int(credit_holidays_days))
+        if notify_shipping_events is not None:
+            fields["notify_shipping_events"] = 1 if notify_shipping_events else 0
 
         if not fields:
             return current
@@ -1099,6 +1106,19 @@ class AppStorage:
             ).fetchone()
         return self._row_order(row) if row else None
 
+    def get_order_by_ttn(self, ttn_number: str) -> dict[str, Any] | None:
+        import re
+
+        key = re.sub(r"\s+", "", str(ttn_number or "").strip())
+        if not key:
+            return None
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM orders WHERE ttn_number = ? ORDER BY id DESC LIMIT 1",
+                (key,),
+            ).fetchone()
+        return self._row_order(row) if row else None
+
     def get_order_by_number(self, order_number: str) -> dict[str, Any] | None:
         key = str(order_number or "").strip()
         if not key:
@@ -1293,3 +1313,18 @@ class AppStorage:
             for k in keys
             if isinstance(k, dict) and k.get("enabled") and str(k.get("api_key") or "").strip()
         ]
+
+    def get_np_api_keys_for_rotation(self) -> list[dict[str, Any]]:
+        """
+        Порядок спроб: спочатку ключі з галочкою (основні), потім без галочки (резерв).
+        """
+        settings = self.get_general_settings()
+        keys = settings.get("np_api_keys") or []
+        with_key: list[dict[str, Any]] = [
+            k
+            for k in keys
+            if isinstance(k, dict) and str(k.get("api_key") or "").strip()
+        ]
+        primary = [k for k in with_key if k.get("enabled")]
+        backup = [k for k in with_key if not k.get("enabled")]
+        return primary + backup

@@ -8,7 +8,7 @@ import os
 import re
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -64,6 +64,12 @@ class DropperSettingsUpdateRequest(BaseModel):
     referral_percent: float | None = None
     owner_comment: str | None = None
     credit_holidays_days: int | None = None
+
+
+class DropperSelfSettingsUpdateRequest(BaseModel):
+    chat_id: str = Field(..., min_length=2, max_length=64)
+    user_id: str = Field("", max_length=64)
+    notify_shipping_events: bool | None = None
 
 
 class OrderCreateRequest(BaseModel):
@@ -137,6 +143,16 @@ def create_web_app(
     np_client = NovaPoshtaClient()
     app_settings = settings
     storage = app_storage or AppStorage()
+
+    def _np_any_configured() -> bool:
+        from bot.np_fulfillment import list_np_clients
+
+        return bool(list_np_clients(storage)) or np_client.configured()
+
+    def _np_call(operation: str, fn):
+        from bot.np_fulfillment import call_with_np_key_rotation
+
+        return call_with_np_key_rotation(storage, operation, fn)
 
     def _require_settings() -> Settings:
         if not app_settings:
@@ -229,7 +245,7 @@ def create_web_app(
 
         return {
             "ok": True,
-            "nova_poshta": np_client.configured(),
+            "nova_poshta": _np_any_configured(),
             "app_data_dir_env": (os.getenv("APP_DATA_DIR") or "").strip() or None,
             "data_dir": str(data_path),
             "notifications_db": str(notif_path),
@@ -293,8 +309,27 @@ def create_web_app(
             "extra_discount_percent": 0,
             "orders_disabled": False,
             "referral_percent": 0,
+            "notify_shipping_events": False,
             "source": "default",
         }
+
+    @app.post("/api/dropper/settings")
+    async def dropper_update_own_settings(
+        payload: DropperSelfSettingsUpdateRequest,
+    ) -> dict:
+        dropper = storage.get_dropper_by_chat(payload.chat_id)
+        if not dropper:
+            raise HTTPException(status_code=404, detail="Дроппера не знайдено")
+        updated = storage.update_dropper_settings(
+            dropper.chat_id,
+            notify_shipping_events=payload.notify_shipping_events,
+        )
+        if not updated:
+            raise HTTPException(status_code=404, detail="Дроппера не знайдено")
+        data = updated.to_public_dict()
+        data["name"] = updated.company_name
+        data["balance"] = storage.get_balance(updated.id)
+        return {"ok": True, "dropper": data}
 
     @app.post("/api/droppers/register")
     async def register_dropper(payload: DropperRegisterRequest) -> dict:
@@ -623,10 +658,12 @@ def create_web_app(
         q: str = Query(..., min_length=2, max_length=100),
         limit: int = Query(20, ge=1, le=50),
     ) -> dict:
-        if not np_client.configured():
-            raise HTTPException(status_code=503, detail="NOVA_POSHTA_API_KEY не налаштовано")
+        if not _np_any_configured():
+            raise HTTPException(status_code=503, detail="Немає API-ключа Нової Пошти")
         try:
-            items = await asyncio.to_thread(np_client.search_settlements, q, limit)
+            items = await asyncio.to_thread(
+                _np_call, "settlements", lambda c: c.search_settlements(q, limit)
+            )
         except NovaPoshtaError as exc:
             raise HTTPException(status_code=502, detail=str(exc)) from exc
         except Exception:
@@ -640,10 +677,14 @@ def create_web_app(
         q: str = Query("", max_length=100),
         limit: int = Query(30, ge=1, le=500),
     ) -> dict:
-        if not np_client.configured():
-            raise HTTPException(status_code=503, detail="NOVA_POSHTA_API_KEY не налаштовано")
+        if not _np_any_configured():
+            raise HTTPException(status_code=503, detail="Немає API-ключа Нової Пошти")
         try:
-            items = await asyncio.to_thread(np_client.search_warehouses, city_ref, q, limit)
+            items = await asyncio.to_thread(
+                _np_call,
+                "warehouses",
+                lambda c: c.search_warehouses(city_ref, q, limit),
+            )
         except NovaPoshtaError as exc:
             raise HTTPException(status_code=502, detail=str(exc)) from exc
         except Exception:
@@ -663,13 +704,15 @@ def create_web_app(
         city_ref: str = Query("", max_length=64),
         limit: int = Query(20, ge=1, le=50),
     ) -> dict:
-        if not np_client.configured():
-            raise HTTPException(status_code=503, detail="NOVA_POSHTA_API_KEY не налаштовано")
+        if not _np_any_configured():
+            raise HTTPException(status_code=503, detail="Немає API-ключа Нової Пошти")
         if not settlement_ref.strip() and not city_ref.strip():
             raise HTTPException(status_code=400, detail="Потрібен settlement_ref або city_ref")
         try:
             items = await asyncio.to_thread(
-                np_client.search_streets, settlement_ref, q, city_ref, limit
+                _np_call,
+                "streets",
+                lambda c: c.search_streets(settlement_ref, q, city_ref, limit),
             )
         except NovaPoshtaError as exc:
             raise HTTPException(status_code=502, detail=str(exc)) from exc
@@ -683,6 +726,29 @@ def create_web_app(
             "count": len(items),
             "items": [i.to_dict() for i in items],
         }
+
+    @app.post("/api/np/webhook")
+    async def np_tracking_webhook(
+        request: Request,
+        token: str = Query("", max_length=128),
+    ) -> dict:
+        """
+        Основний канал статусів ТТН: НП/Integration Platform шле push сюди.
+        Захист: якщо задано NP_WEBHOOK_TOKEN — обовʼязковий ?token=...
+        Опитування статусів раз на 30 хв вимкнено.
+        """
+        expected = os.getenv("NP_WEBHOOK_TOKEN", "").strip()
+        if expected and token.strip() != expected:
+            raise HTTPException(status_code=403, detail="Невірний webhook token")
+        try:
+            body = await request.json()
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail="Очікується JSON") from exc
+        from bot.np_fulfillment import apply_webhook_payload
+
+        stats = await apply_webhook_payload(storage, body, notify=_notify)
+        logger.info("NP webhook: %s", stats)
+        return {"ok": True, **stats}
 
     def _balance_spend_room(dropper) -> float:
         if not dropper.allow_balance_payment:
@@ -1013,7 +1079,9 @@ def create_web_app(
             from bot.np_fulfillment import fulfill_new_order
 
             try:
-                order = await fulfill_new_order(storage, order, notify=_notify)
+                order = await fulfill_new_order(
+                    storage, order, notify=_notify, owner_notify=_notify_owners
+                )
             except Exception:
                 logger.exception(
                     "NP fulfill after order %s failed", order.get("order_number")
@@ -1058,9 +1126,18 @@ def create_web_app(
         _require_owner(owner_chat_id, owner_user_id)
         settings = storage.get_general_settings()
         enabled = storage.get_enabled_np_api_keys()
+        base = (os.getenv("WEBAPP_URL") or "").rstrip("/")
+        webhook_token = (os.getenv("NP_WEBHOOK_TOKEN") or "").strip()
+        webhook_url = ""
+        if base:
+            webhook_url = f"{base}/api/np/webhook"
+            if webhook_token:
+                webhook_url = f"{webhook_url}?token={webhook_token}"
         return {
             "settings": settings,
             "enabled_np_keys_count": len(enabled),
+            "np_webhook_url": webhook_url,
+            "np_webhook_token_set": bool(webhook_token),
             "sheet_columns": [
                 "Дата",
                 "№ Заказа",
@@ -1082,8 +1159,8 @@ def create_web_app(
                 "Расположение товара на складе",
             ],
             "note": (
-                "Увімкнені API-ключі НП будуть використовуватися для створення ТТН. "
-                "Поки береться перший увімкнений ключ."
+                "Галочка = основний кабінет НП. Ключі без галочки — резерв при помилці основного. "
+                "Статуси ТТН оновлюються через webhook."
             ),
         }
 

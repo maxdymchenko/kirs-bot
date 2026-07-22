@@ -3,16 +3,24 @@
 from __future__ import annotations
 
 import logging
+import os
 import re
 from datetime import datetime
-from typing import Any, Callable
+from typing import Any, Callable, TypeVar
 
 from bot.accounts import AppStorage
-from bot.novaposhta import NovaPoshtaClient, NovaPoshtaError, map_np_status_code
+from bot.novaposhta import (
+    NovaPoshtaClient,
+    NovaPoshtaError,
+    extract_delivery_cost,
+    map_np_status_code,
+)
 
 logger = logging.getLogger(__name__)
 
 NotifyFn = Callable[[str, str], Any]
+OwnerNotifyFn = Callable[[str], Any]
+T = TypeVar("T")
 
 TERMINAL_TTN_STATUSES = frozenset(
     {"received", "returned", "failed", "provided", "cancelled"}
@@ -28,12 +36,61 @@ def _digits_phone(raw: str) -> str:
     return digits
 
 
+def list_np_clients(
+    storage: AppStorage,
+) -> list[tuple[str, NovaPoshtaClient, bool]]:
+    """
+    Порядок: ключі з галочкою (основні) → без галочки (резерв) → NOVA_POSHTA_API_KEY.
+    Третій елемент: True = основний (галочка), False = резерв.
+    """
+    out: list[tuple[str, NovaPoshtaClient, bool]] = []
+    seen: set[str] = set()
+    for row in storage.get_np_api_keys_for_rotation():
+        key = str(row.get("api_key") or "").strip()
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        is_primary = bool(row.get("enabled"))
+        base = str(row.get("label") or "НП").strip() or "НП"
+        label = base if is_primary else f"{base} (резерв)"
+        out.append((label, NovaPoshtaClient(key), is_primary))
+    env_key = (os.getenv("NOVA_POSHTA_API_KEY") or "").strip()
+    if env_key and env_key not in seen:
+        client = NovaPoshtaClient(env_key)
+        if client.configured():
+            out.append(("env (резерв)", client, False))
+    elif not out:
+        client = NovaPoshtaClient()
+        if client.configured():
+            out.append(("env (резерв)", client, False))
+    return out
+
+
 def resolve_np_client(storage: AppStorage) -> NovaPoshtaClient | None:
-    keys = storage.get_enabled_np_api_keys()
-    if keys:
-        return NovaPoshtaClient(str(keys[0].get("api_key") or "").strip())
-    client = NovaPoshtaClient()
-    return client if client.configured() else None
+    clients = list_np_clients(storage)
+    return clients[0][1] if clients else None
+
+
+def call_with_np_key_rotation(
+    storage: AppStorage,
+    operation: str,
+    fn: Callable[[NovaPoshtaClient], T],
+) -> T:
+    """Викликати fn(client); при помилці — наступний ключ (основні, потім резерв)."""
+    clients = list_np_clients(storage)
+    if not clients:
+        raise NovaPoshtaError("Немає API-ключа Нової Пошти")
+    errors: list[str] = []
+    for label, client, _is_primary in clients:
+        try:
+            result = fn(client)
+            if len(clients) > 1:
+                logger.info("NP %s ok via key «%s»", operation, label)
+            return result
+        except NovaPoshtaError as exc:
+            logger.warning("NP %s failed via «%s»: %s", operation, label, exc)
+            errors.append(f"{label}: {exc}")
+    raise NovaPoshtaError("; ".join(errors) or f"NP {operation} failed")
 
 
 def _pick_sender_bundle(client: NovaPoshtaClient, settings: dict[str, Any]) -> dict[str, str]:
@@ -234,40 +291,75 @@ def create_ttn_for_order(
     if order.get("ttn_number"):
         return order
 
-    client = resolve_np_client(storage)
-    if not client:
+    clients = list_np_clients(storage)
+    if not clients:
         storage.update_order_flags(order["id"], ttn_status="create_error")
         storage.merge_order_payload(
             order["id"],
-            {"np_error": "Немає увімкненого API-ключа Нової Пошти"},
+            {"np_error": "Немає API-ключа Нової Пошти"},
         )
-        raise NovaPoshtaError("Немає увімкненого API-ключа Нової Пошти")
+        raise NovaPoshtaError("Немає API-ключа Нової Пошти")
 
     settings = storage.get_general_settings()
-    sender = _pick_sender_bundle(client, settings)
-    recipient_ref, contact_ref = _ensure_recipient_refs(client, order)
-    props = _build_save_props(order, settings, sender, recipient_ref, contact_ref)
-    result = client.create_internet_document(props)
+    errors: list[str] = []
+    last_exc: Exception | None = None
+    for label, client, is_primary in clients:
+        try:
+            sender = _pick_sender_bundle(client, settings)
+            recipient_ref, contact_ref = _ensure_recipient_refs(client, order)
+            props = _build_save_props(
+                order, settings, sender, recipient_ref, contact_ref
+            )
+            result = client.create_internet_document(props)
+            storage.update_order_flags(
+                order["id"],
+                ttn_number=result["ttn_number"],
+                ttn_status="created",
+            )
+            storage.merge_order_payload(
+                order["id"],
+                {
+                    "ttn_number": result["ttn_number"],
+                    "np_document_ref": result.get("ref") or "",
+                    "np_recipient_ref": recipient_ref,
+                    "np_contact_recipient_ref": contact_ref,
+                    "np_cost_on_site": result.get("cost_on_site"),
+                    "np_estimated_delivery_date": result.get("estimated_delivery_date"),
+                    "np_api_key_label": label,
+                    "np_used_backup_key": not is_primary,
+                    "np_error": "",
+                },
+            )
+            if not is_primary or len(clients) > 1:
+                logger.info(
+                    "TTN %s created via key «%s» (primary=%s)",
+                    result["ttn_number"],
+                    label,
+                    is_primary,
+                )
+            return storage.get_order(order["id"]) or order
+        except NovaPoshtaError as exc:
+            last_exc = exc
+            logger.warning(
+                "TTN create failed via «%s» for %s: %s",
+                label,
+                order.get("order_number"),
+                exc,
+            )
+            errors.append(f"{label}: {exc}")
+        except Exception as exc:
+            last_exc = exc
+            logger.exception(
+                "TTN create unexpected error via «%s» for %s",
+                label,
+                order.get("order_number"),
+            )
+            errors.append(f"{label}: {exc}")
 
-    storage.update_order_flags(
-        order["id"],
-        ttn_number=result["ttn_number"],
-        ttn_status="created",
-    )
-    storage.merge_order_payload(
-        order["id"],
-        {
-            "ttn_number": result["ttn_number"],
-            "np_document_ref": result.get("ref") or "",
-            "np_recipient_ref": recipient_ref,
-            "np_contact_recipient_ref": contact_ref,
-            "np_cost_on_site": result.get("cost_on_site"),
-            "np_estimated_delivery_date": result.get("estimated_delivery_date"),
-            "np_error": "",
-        },
-    )
-    return storage.get_order(order["id"]) or order
-
+    msg = "; ".join(errors) or str(last_exc or "Не вдалося створити ТТН")
+    storage.update_order_flags(order["id"], ttn_status="create_error")
+    storage.merge_order_payload(order["id"], {"np_error": msg[:500]})
+    raise NovaPoshtaError(msg) from last_exc
 
 def order_cod_profit(order: dict[str, Any]) -> float:
     if str(order.get("payment_method") or "") != "cod":
@@ -283,6 +375,9 @@ def credit_cod_profit_if_needed(
 ) -> dict[str, Any] | None:
     payload = order.get("payload") or {}
     if payload.get("profit_credited"):
+        return None
+    if payload.get("return_delivery_debited"):
+        # Відмова/повернення — прибутку немає
         return None
     profit = order_cod_profit(order)
     if profit <= 0:
@@ -310,13 +405,244 @@ def credit_cod_profit_if_needed(
     return entry
 
 
+def debit_return_delivery_if_needed(
+    storage: AppStorage,
+    order: dict[str, Any],
+    delivery_cost: float,
+) -> dict[str, Any] | None:
+    """
+    Відмова/повернення: списати вартість доставки з балансу дроппера (збиток).
+    Прибуток не нараховуємо.
+    """
+    payload = order.get("payload") or {}
+    if payload.get("return_delivery_debited"):
+        return None
+    dropper_id = int(order.get("dropper_id") or 0)
+    if not dropper_id:
+        return None
+    cost = round(max(0.0, float(delivery_cost or 0)), 2)
+    # Навіть якщо вартість 0 — ставимо прапорець, щоб не крутити повторно
+    if cost <= 0:
+        storage.merge_order_payload(
+            order["id"],
+            {
+                "return_delivery_debited": True,
+                "return_delivery_cost": 0,
+                "profit_credited": False,
+            },
+        )
+        return None
+    entry = storage.add_ledger_entry(
+        dropper_id=dropper_id,
+        amount=-cost,
+        entry_type="return_delivery_debit",
+        title=f"Доставка при відмові/поверненні · {order.get('order_number')}",
+        note=(
+            f"Посилку не отримано. Вартість доставки {cost} ₴ списано з балансу дроппера."
+        ),
+        related_order_id=str(order.get("order_number") or ""),
+    )
+    storage.merge_order_payload(
+        order["id"],
+        {
+            "return_delivery_debited": True,
+            "return_delivery_cost": cost,
+            "np_delivery_cost": cost,
+            "profit_credited": False,
+        },
+    )
+    return entry
+
+
+def _dropper_allows_shipping_notify(storage: AppStorage, order: dict[str, Any]) -> bool:
+    dropper_id = int(order.get("dropper_id") or 0)
+    if not dropper_id:
+        return False
+    dropper = storage.get_dropper_by_id(dropper_id)
+    return bool(dropper and getattr(dropper, "notify_shipping_events", False))
+
+
+async def _maybe_shipping_notify(
+    storage: AppStorage,
+    order: dict[str, Any],
+    notify: NotifyFn | None,
+    chat_id: str,
+    text: str,
+) -> None:
+    if not notify or not text or not chat_id:
+        return
+    if not _dropper_allows_shipping_notify(storage, order):
+        return
+    result = notify(chat_id, text)
+    if hasattr(result, "__await__"):
+        await result
+
+
+async def _notify_owner_backup_ttn(
+    storage: AppStorage,
+    order: dict[str, Any],
+    owner_notify: OwnerNotifyFn | None,
+) -> None:
+    """Повідомити власника, якщо ТТН створено з резервного кабінету (без галочки)."""
+    if not owner_notify:
+        return
+    payload = order.get("payload") or {}
+    if not payload.get("np_used_backup_key"):
+        return
+    if payload.get("np_backup_owner_notified"):
+        return
+    label = str(payload.get("np_api_key_label") or "резерв").strip()
+    text = (
+        f"⚠️ ТТН створено з резервного кабінету НП\n"
+        f"Замовлення: {order.get('order_number')}\n"
+        f"ТТН: {order.get('ttn_number')}\n"
+        f"Кабінет: {label}\n"
+        f"Основний ключ (з галочкою) не спрацював — перевірте кабінет НП."
+    )
+    try:
+        result = owner_notify(text)
+        if hasattr(result, "__await__"):
+            await result
+        storage.merge_order_payload(
+            order["id"], {"np_backup_owner_notified": True}
+        )
+    except Exception:
+        logger.exception(
+            "Не вдалося повідомити власника про резервну ТТН %s",
+            order.get("order_number"),
+        )
+
+
+async def apply_tracking_event(
+    storage: AppStorage,
+    order: dict[str, Any],
+    *,
+    status_code: str | int | None = None,
+    status_text: str = "",
+    tracking_row: dict[str, Any] | None = None,
+    notify: NotifyFn | None = None,
+) -> dict[str, Any]:
+    """
+    Застосувати статус ТТН до замовлення:
+    - received → прибуток з наложки
+    - returned → списання вартості доставки (без прибутку)
+    """
+    result = {
+        "updated": False,
+        "received": False,
+        "returned": False,
+        "mapped": "",
+        "order": order,
+    }
+    if not order or order.get("own_ttn"):
+        return result
+
+    mapped = map_np_status_code(status_code, status_text)
+    prev = str(order.get("ttn_status") or "")
+    result["mapped"] = mapped
+
+    patch = {
+        "np_status_code": str(status_code or ""),
+        "np_status_text": str(status_text or "").strip(),
+        "np_tracked_at": datetime.now().isoformat(timespec="seconds"),
+    }
+    delivery_cost = extract_delivery_cost(tracking_row, order)
+    if delivery_cost > 0:
+        patch["np_delivery_cost"] = delivery_cost
+
+    if mapped != prev or status_text or delivery_cost > 0:
+        storage.update_order_flags(order["id"], ttn_status=mapped)
+        storage.merge_order_payload(order["id"], patch)
+        result["updated"] = True
+        order = storage.get_order(order["id"]) or order
+        result["order"] = order
+
+    if mapped == "received" and prev != "received":
+        entry = credit_cod_profit_if_needed(storage, order)
+        if entry:
+            result["received"] = True
+            amount = round(float(entry.get("amount") or 0), 2)
+            try:
+                await _maybe_shipping_notify(
+                    storage,
+                    order,
+                    notify,
+                    str(order.get("chat_id") or ""),
+                    (
+                        f"💰 Посилку отримано · {order.get('order_number')}\n"
+                        f"ТТН: {order.get('ttn_number')}\n"
+                        f"Прибуток нараховано на баланс: +{amount} ₴"
+                    ),
+                )
+            except Exception:
+                logger.exception("notify profit credit failed")
+            order = storage.get_order(order["id"]) or order
+            result["order"] = order
+
+    if mapped == "returned" and prev != "returned":
+        # Якщо прибуток уже встигли нарахувати — сторнуємо
+        payload = order.get("payload") or {}
+        if payload.get("profit_credited") and not payload.get("profit_reversed"):
+            prev_profit = round(float(payload.get("profit_amount") or 0), 2)
+            if prev_profit > 0:
+                storage.add_ledger_entry(
+                    dropper_id=int(order["dropper_id"]),
+                    amount=-prev_profit,
+                    entry_type="cod_profit_reversal",
+                    title=f"Сторно прибутку (повернення) · {order.get('order_number')}",
+                    note="Посилку повернуто/відмовлено після нарахування прибутку",
+                    related_order_id=str(order.get("order_number") or ""),
+                )
+                storage.merge_order_payload(
+                    order["id"],
+                    {"profit_reversed": True, "profit_credited": False},
+                )
+                order = storage.get_order(order["id"]) or order
+
+        cost = extract_delivery_cost(tracking_row, order)
+        entry = debit_return_delivery_if_needed(storage, order, cost)
+        result["returned"] = True
+        amount = round(abs(float((entry or {}).get("amount") or cost or 0)), 2)
+        try:
+            await _maybe_shipping_notify(
+                storage,
+                order,
+                notify,
+                str(order.get("chat_id") or ""),
+                (
+                    f"↩️ Відмова/повернення · {order.get('order_number')}\n"
+                    f"ТТН: {order.get('ttn_number')}\n"
+                    + (
+                        f"Вартість доставки списано з балансу: −{amount} ₴"
+                        if amount > 0
+                        else "Прибуток не нараховано (посилку не отримано)."
+                    )
+                ),
+            )
+        except Exception:
+            logger.exception("notify return debit failed")
+        order = storage.get_order(order["id"]) or order
+        result["order"] = order
+
+    return result
+
+
 async def track_order_statuses_async(
     storage: AppStorage, notify: NotifyFn | None = None
 ) -> dict[str, int]:
-    """Асинхронна обгортка: notify може бути async."""
-    client = resolve_np_client(storage)
-    stats = {"checked": 0, "updated": 0, "received": 0, "errors": 0}
-    if not client:
+    """
+    Опитування статусів ТТН (ручний/діагностичний резерв).
+    У проді статуси йдуть через webhook POST /api/np/webhook — цей poll у циклі не викликається.
+    """
+    clients = list_np_clients(storage)
+    stats = {
+        "checked": 0,
+        "updated": 0,
+        "received": 0,
+        "returned": 0,
+        "errors": 0,
+    }
+    if not clients:
         return stats
 
     orders = storage.list_orders_for_tracking(limit=80)
@@ -335,10 +661,17 @@ async def track_order_statuses_async(
         docs.append({"DocumentNumber": number, "Phone": phone})
         by_number[number] = order
 
-    try:
-        rows = client.get_status_documents(docs)
-    except Exception:
-        logger.exception("NP tracking batch failed")
+    rows: list[dict[str, Any]] = []
+    last_err: Exception | None = None
+    for label, client, _is_primary in clients:
+        try:
+            rows = client.get_status_documents(docs)
+            break
+        except Exception as exc:
+            last_err = exc
+            logger.warning("NP tracking batch failed via «%s»: %s", label, exc)
+    else:
+        logger.error("NP tracking batch failed on all keys: %s", last_err)
         stats["errors"] += 1
         return stats
 
@@ -348,41 +681,118 @@ async def track_order_statuses_async(
         if not order:
             continue
         stats["checked"] += 1
-        status_code = row.get("StatusCode")
-        mapped = map_np_status_code(status_code)
-        status_text = str(row.get("Status") or "").strip()
-        prev = str(order.get("ttn_status") or "")
-        if mapped != prev or status_text:
-            storage.update_order_flags(order["id"], ttn_status=mapped)
-            storage.merge_order_payload(
-                order["id"],
-                {
-                    "np_status_code": str(status_code or ""),
-                    "np_status_text": status_text,
-                    "np_tracked_at": datetime.now().isoformat(timespec="seconds"),
-                },
-            )
+        applied = await apply_tracking_event(
+            storage,
+            order,
+            status_code=row.get("StatusCode"),
+            status_text=str(row.get("Status") or ""),
+            tracking_row=row,
+            notify=notify,
+        )
+        if applied["updated"]:
             stats["updated"] += 1
-            order = storage.get_order(order["id"]) or order
+        if applied["received"]:
+            stats["received"] += 1
+        if applied["returned"]:
+            stats["returned"] += 1
+    return stats
 
-        if mapped == "received" and prev != "received":
-            entry = credit_cod_profit_if_needed(storage, order)
-            if entry:
-                stats["received"] += 1
-                dropper = storage.get_dropper_by_id(int(order["dropper_id"]))
-                if notify and dropper:
-                    amount = round(float(entry.get("amount") or 0), 2)
-                    try:
-                        msg = (
-                            f"💰 Посилку отримано · {order.get('order_number')}\n"
-                            f"ТТН: {order.get('ttn_number')}\n"
-                            f"Прибуток нараховано на баланс: +{amount} ₴"
-                        )
-                        result = notify(dropper.chat_id, msg)
-                        if hasattr(result, "__await__"):
-                            await result
-                    except Exception:
-                        logger.exception("notify profit credit failed")
+
+def _webhook_items(payload: Any) -> list[Any]:
+    """Розпарсити різні формати push від НП / Integration Platform / посередників."""
+    if isinstance(payload, list):
+        return payload
+    if not isinstance(payload, dict):
+        return []
+    for key in ("data", "Documents", "documents", "items", "TrackingDocuments"):
+        val = payload.get(key)
+        if isinstance(val, list):
+            return val
+    nested = payload.get("message") or payload.get("payload") or payload.get("body")
+    if isinstance(nested, list):
+        return nested
+    if isinstance(nested, dict):
+        for key in ("data", "Documents", "documents"):
+            val = nested.get(key)
+            if isinstance(val, list):
+                return val
+        return [nested]
+    return [payload]
+
+
+def _webhook_ttn_number(item: dict[str, Any]) -> str:
+    return str(
+        item.get("DocumentNumber")
+        or item.get("Number")
+        or item.get("IntDocNumber")
+        or item.get("docNumber")
+        or item.get("documentNumber")
+        or item.get("ttn")
+        or item.get("TTN")
+        or ""
+    ).strip()
+
+
+def _webhook_status_code(item: dict[str, Any]) -> Any:
+    return (
+        item.get("StatusCode")
+        or item.get("status_code")
+        or item.get("StatusCodeNew")
+        or item.get("StateId")
+        or item.get("stateId")
+        or item.get("statusCode")
+    )
+
+
+def _webhook_status_text(item: dict[str, Any]) -> str:
+    return str(
+        item.get("Status")
+        or item.get("status")
+        or item.get("StatusName")
+        or item.get("stateName")
+        or item.get("status_text")
+        or ""
+    ).strip()
+
+
+async def apply_webhook_payload(
+    storage: AppStorage,
+    payload: Any,
+    notify: NotifyFn | None = None,
+) -> dict[str, Any]:
+    """
+    Webhook від НП / зовнішнього трекінгу — основний канал оновлення статусів ТТН.
+    Приймає один об'єкт або список з полями DocumentNumber/Number + StatusCode/Status.
+    """
+    items = _webhook_items(payload)
+    stats = {"processed": 0, "updated": 0, "received": 0, "returned": 0, "skipped": 0}
+    for item in items:
+        if not isinstance(item, dict):
+            stats["skipped"] += 1
+            continue
+        number = _webhook_ttn_number(item)
+        if not number:
+            stats["skipped"] += 1
+            continue
+        order = storage.get_order_by_ttn(number)
+        if not order:
+            stats["skipped"] += 1
+            continue
+        stats["processed"] += 1
+        applied = await apply_tracking_event(
+            storage,
+            order,
+            status_code=_webhook_status_code(item),
+            status_text=_webhook_status_text(item),
+            tracking_row=item,
+            notify=notify,
+        )
+        if applied["updated"]:
+            stats["updated"] += 1
+        if applied["received"]:
+            stats["received"] += 1
+        if applied["returned"]:
+            stats["returned"] += 1
     return stats
 
 
@@ -390,6 +800,7 @@ async def fulfill_new_order(
     storage: AppStorage,
     order: dict[str, Any],
     notify: NotifyFn | None = None,
+    owner_notify: OwnerNotifyFn | None = None,
 ) -> dict[str, Any]:
     """Створити ТТН після accept (якщо потрібно) і повідомити дроппера."""
     if order.get("own_ttn"):
@@ -398,57 +809,67 @@ async def fulfill_new_order(
         return order
     try:
         order = create_ttn_for_order(storage, order)
-        if notify and order.get("ttn_number"):
-            await notify(
+        if order.get("ttn_number"):
+            await _notify_owner_backup_ttn(storage, order, owner_notify)
+            await _maybe_shipping_notify(
+                storage,
+                order,
+                notify,
                 str(order.get("chat_id") or ""),
                 (
                     f"✅ ТТН створено для {order.get('order_number')}\n"
                     f"Номер: {order.get('ttn_number')}\n"
-                    f"Статус відстежуватиметься автоматично."
+                    f"Статус оновлюватиметься через webhook НП."
                 ),
             )
     except Exception as exc:
         logger.exception("Не вдалося створити ТТН для %s", order.get("order_number"))
         storage.update_order_flags(order["id"], ttn_status="create_error")
         storage.merge_order_payload(order["id"], {"np_error": str(exc)[:500]})
-        if notify:
-            try:
-                await notify(
-                    str(order.get("chat_id") or ""),
-                    (
-                        f"⚠️ Замовлення {order.get('order_number')} прийнято, "
-                        f"але ТТН поки не створено: {exc}"
-                    ),
-                )
-            except Exception:
-                logger.exception("notify after TTN error failed")
+        try:
+            await _maybe_shipping_notify(
+                storage,
+                order,
+                notify,
+                str(order.get("chat_id") or ""),
+                (
+                    f"⚠️ Замовлення {order.get('order_number')} прийнято, "
+                    f"але ТТН поки не створено: {exc}"
+                ),
+            )
+        except Exception:
+            logger.exception("notify after TTN error failed")
         order = storage.get_order(order["id"]) or order
     return order
 
 
 async def run_np_maintenance_once(
-    storage: AppStorage, notify: NotifyFn | None = None
+    storage: AppStorage,
+    notify: NotifyFn | None = None,
+    owner_notify: OwnerNotifyFn | None = None,
 ) -> dict[str, int]:
-    """Ретрай створення ТТН + трекінг статусів."""
-    stats = {"create_ok": 0, "create_fail": 0}
+    """Ретрай створення ТТН. Статуси — лише через webhook (без опитування)."""
+    stats = {"create_ok": 0, "create_fail": 0, "backup_used": 0}
     pending = storage.list_orders_pending_ttn_create(limit=30)
     for order in pending:
         try:
             updated = create_ttn_for_order(storage, order)
             if updated.get("ttn_number"):
                 stats["create_ok"] += 1
-                if notify:
-                    await notify(
-                        str(updated.get("chat_id") or ""),
-                        (
-                            f"✅ ТТН створено для {updated.get('order_number')}\n"
-                            f"Номер: {updated.get('ttn_number')}"
-                        ),
-                    )
+                if (updated.get("payload") or {}).get("np_used_backup_key"):
+                    stats["backup_used"] += 1
+                await _notify_owner_backup_ttn(storage, updated, owner_notify)
+                await _maybe_shipping_notify(
+                    storage,
+                    updated,
+                    notify,
+                    str(updated.get("chat_id") or ""),
+                    (
+                        f"✅ ТТН створено для {updated.get('order_number')}\n"
+                        f"Номер: {updated.get('ttn_number')}"
+                    ),
+                )
         except Exception:
             stats["create_fail"] += 1
             logger.exception("Retry TTN create failed for %s", order.get("order_number"))
-
-    track = await track_order_statuses_async(storage, notify=notify)
-    stats.update(track)
     return stats
