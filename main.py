@@ -71,21 +71,52 @@ async def main() -> None:
         except NotImplementedError:
             signal.signal(sig, request_stop)
 
+    async def _np_notify(chat_id: str, text: str) -> None:
+        if not chat_id or not text:
+            return
+        try:
+            await telegram_app.bot.send_message(
+                chat_id=chat_id,
+                text=text,
+                disable_web_page_preview=True,
+            )
+        except Exception:
+            logger.exception("NP notify failed for %s", chat_id)
+
+    async def np_maintenance_loop() -> None:
+        from bot.np_fulfillment import run_np_maintenance_once
+
+        await asyncio.sleep(20)
+        while not stop_event.is_set():
+            try:
+                stats = await run_np_maintenance_once(app_storage, notify=_np_notify)
+                if any(stats.get(k) for k in ("create_ok", "updated", "received", "create_fail")):
+                    logger.info("NP maintenance: %s", stats)
+            except Exception:
+                logger.exception("NP maintenance loop error")
+            try:
+                await asyncio.wait_for(stop_event.wait(), timeout=300)
+            except asyncio.TimeoutError:
+                pass
+
     run_task = asyncio.create_task(run_modules(modules, ctx), name="modules")
+    np_task = asyncio.create_task(np_maintenance_loop(), name="np-maintenance")
     stop_task = asyncio.create_task(stop_event.wait(), name="stop")
 
     done, _ = await asyncio.wait(
-        {run_task, stop_task, web_task},
+        {run_task, stop_task, web_task, np_task},
         return_when=asyncio.FIRST_COMPLETED,
     )
 
     server.should_exit = True
-    if stop_task in done or web_task in done:
-        run_task.cancel()
-        try:
-            await run_task
-        except asyncio.CancelledError:
-            pass
+    stop_event.set()
+    for task in (run_task, np_task):
+        if not task.done():
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
 
     for module in modules:
         await module.stop()

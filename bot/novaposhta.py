@@ -419,3 +419,101 @@ class NovaPoshtaClient:
                 )
 
         return results[:limit]
+
+    # --- Відправник / ТТН / трекінг ---
+
+    def get_counterparties(self, property_kind: str = "Sender") -> list[dict[str, Any]]:
+        data = self._request(
+            "Counterparty",
+            "getCounterparties",
+            {"CounterpartyProperty": property_kind, "Page": "1"},
+        )
+        return [row for row in (data or []) if isinstance(row, dict)]
+
+    def get_counterparty_contact_persons(self, counterparty_ref: str) -> list[dict[str, Any]]:
+        ref = (counterparty_ref or "").strip()
+        if not ref:
+            return []
+        data = self._request(
+            "Counterparty",
+            "getCounterpartyContactPersons",
+            {"Ref": ref, "Page": "1"},
+        )
+        return [row for row in (data or []) if isinstance(row, dict)]
+
+    def get_counterparty_addresses(
+        self, counterparty_ref: str, property_kind: str = "Sender"
+    ) -> list[dict[str, Any]]:
+        ref = (counterparty_ref or "").strip()
+        if not ref:
+            return []
+        data = self._request(
+            "Counterparty",
+            "getCounterpartyAddresses",
+            {
+                "Ref": ref,
+                "CounterpartyProperty": property_kind,
+            },
+        )
+        return [row for row in (data or []) if isinstance(row, dict)]
+
+    def create_internet_document(self, props: dict[str, Any]) -> dict[str, Any]:
+        data = self._request("InternetDocument", "save", props) or []
+        if not data or not isinstance(data[0], dict):
+            raise NovaPoshtaError("Порожня відповідь при створенні ТТН")
+        row = data[0]
+        number = str(row.get("IntDocNumber") or "").strip()
+        if not number:
+            raise NovaPoshtaError("НП не повернула номер ТТН")
+        return {
+            "ttn_number": number,
+            "ref": str(row.get("Ref") or "").strip(),
+            "cost_on_site": row.get("CostOnSite"),
+            "estimated_delivery_date": row.get("EstimatedDeliveryDate"),
+            "raw": row,
+        }
+
+    def get_status_documents(
+        self, documents: list[dict[str, str]]
+    ) -> list[dict[str, Any]]:
+        """
+        documents: [{DocumentNumber, Phone?}, ...]
+        """
+        docs = []
+        for item in documents:
+            number = str((item or {}).get("DocumentNumber") or "").strip()
+            if not number:
+                continue
+            entry: dict[str, str] = {"DocumentNumber": number}
+            phone = str((item or {}).get("Phone") or "").strip()
+            if phone:
+                entry["Phone"] = phone
+            docs.append(entry)
+        if not docs:
+            return []
+        data = self._request(
+            "TrackingDocument",
+            "getStatusDocuments",
+            {"Documents": docs},
+        )
+        return [row for row in (data or []) if isinstance(row, dict)]
+
+
+def map_np_status_code(status_code: str | int | None) -> str:
+    """Уніфікований внутрішній статус за StatusCode НП."""
+    code = str(status_code or "").strip()
+    # Отримано / гроші по налогу в дорозі / видані відправнику
+    if code in {"9", "10", "11"}:
+        return "received"
+    # Повернення / відмова
+    if code in {"102", "103", "108", "111"}:
+        return "returned"
+    if code in {"2", "3"}:
+        return "failed"
+    if code in {"7", "8"}:
+        return "at_warehouse"
+    if code in {"4", "5", "6", "41", "101"}:
+        return "in_transit"
+    if code in {"1"}:
+        return "created"
+    return "in_transit" if code else "unknown"

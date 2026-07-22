@@ -1744,9 +1744,7 @@ ${
     ? ownCarrier === "rozetka"
       ? `Власний RMP: ${escapeHtml(order.ttn_number || payload.ttn_number || "")}`
       : `Власна ТТН НП: ${escapeHtml(order.ttn_number || payload.ttn_number || "")}`
-    : order.ttn_number
-      ? `ТТН: ${escapeHtml(order.ttn_number)}`
-      : "ТТН: створиться пізніше / очікує"
+    : escapeHtml(ttnStatusLabel(order))
 }</div>
         </div>
         <div class="confirm-block">
@@ -1764,6 +1762,28 @@ ${
     `;
   }
 
+  function ttnStatusLabel(order) {
+    const status = String(order?.ttn_status || "");
+    const number = order?.ttn_number || (order?.payload && order.payload.ttn_number) || "";
+    const text = (order?.payload && order.payload.np_status_text) || "";
+    if (number) {
+      const map = {
+        created: "створено",
+        in_transit: "в дорозі",
+        at_warehouse: "у відділенні",
+        received: "отримано",
+        returned: "повернення",
+        failed: "помилка",
+        provided: "власна ТТН",
+      };
+      const st = map[status] || status || "трекінг";
+      return `ТТН: ${number}${st ? ` · ${st}` : ""}${text && !map[status] ? ` (${text})` : ""}`;
+    }
+    if (status === "create_error") return "ТТН: помилка створення (повтор спроби…)";
+    if (status === "pending_create" || status === "none") return "ТТН: створюється…";
+    return "ТТН: —";
+  }
+
   function renderOrderCard(order, { compact = false } = {}) {
     const payload = order.payload || {};
     const recipient = payload.recipient || {};
@@ -1777,12 +1797,7 @@ ${
       .map((i) => `${i.code || ""} × ${i.qty || 1}`)
       .join(", ");
     const more = cart.length > (compact ? 3 : 8) ? ` +${cart.length - (compact ? 3 : 8)}` : "";
-    const ttnLine =
-      order.ttn_number
-        ? `ТТН: ${order.ttn_number}`
-        : order.ttn_status === "pending_create"
-          ? "ТТН: очікує створення"
-          : "ТТН: —";
+    const ttnLine = ttnStatusLabel(order);
     const profit = orderDropperProfit(order);
     const profitHtml =
       profit == null
@@ -2363,6 +2378,7 @@ ${
     if (key === "referral_credit") return "Реферальне нарахування";
     if (key === "balance_payment") return "Оплата замовлення з балансу";
     if (key === "prepay_overage_debit") return "Списання (передплата понад «Разом»)";
+    if (key === "cod_profit_credit") return "Прибуток з наложки (посилку отримано)";
     if (key === "manual_credit") return "Ручне нарахування";
     if (key === "manual_debit") return "Ручне списання";
     return key || "Операція";

@@ -1038,6 +1038,60 @@ class AppStorage:
             conn.commit()
         return self.get_order(order_id)
 
+    def merge_order_payload(
+        self, order_id: int, patch: dict[str, Any]
+    ) -> dict[str, Any] | None:
+        import json
+
+        order = self.get_order(order_id)
+        if not order:
+            return None
+        payload = dict(order.get("payload") or {})
+        for key, value in (patch or {}).items():
+            payload[key] = value
+        with self._connect() as conn:
+            conn.execute(
+                "UPDATE orders SET payload_json = ?, updated_at = ? WHERE id = ?",
+                (json.dumps(payload, ensure_ascii=False), _now(), int(order_id)),
+            )
+            conn.commit()
+        return self.get_order(order_id)
+
+    def list_orders_pending_ttn_create(self, limit: int = 50) -> list[dict[str, Any]]:
+        limit = max(1, min(int(limit or 50), 200))
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT * FROM orders
+                WHERE own_ttn = 0
+                  AND (ttn_number IS NULL OR ttn_number = '')
+                  AND ttn_status IN ('pending_create', 'create_error', 'none')
+                  AND status != 'cancelled'
+                ORDER BY id ASC
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+        return [self._row_order(r) for r in rows]
+
+    def list_orders_for_tracking(self, limit: int = 100) -> list[dict[str, Any]]:
+        limit = max(1, min(int(limit or 100), 300))
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT * FROM orders
+                WHERE ttn_number IS NOT NULL AND ttn_number != ''
+                  AND ttn_status NOT IN (
+                    'received', 'returned', 'failed', 'cancelled', 'provided'
+                  )
+                  AND status != 'cancelled'
+                ORDER BY id DESC
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+        return [self._row_order(r) for r in rows]
+
     def get_order(self, order_id: int) -> dict[str, Any] | None:
         with self._connect() as conn:
             row = conn.execute(

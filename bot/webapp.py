@@ -451,8 +451,9 @@ def create_web_app(
                 x for x in enriched if x["entry_type"] == "referral_credit"
             ],
             "note": (
-                "Тут усі операції по балансу: списання за замовлення, "
-                "передплата понад «Разом», реферальні нарахування тощо."
+                "Тут усі операції по балансу: прибуток з наложки після отримання посилки, "
+                "списання за замовлення, передплата понад «Разом», реферали тощо. "
+                "Самі замовлення — у вкладці «Історія»."
             ),
         }
 
@@ -853,8 +854,10 @@ def create_web_app(
                 lines.append(f"Ваш RMP: {order.get('ttn_number')}")
             else:
                 lines.append(f"Ваша ТТН: {order.get('ttn_number')}")
+        elif order.get("ttn_number"):
+            lines.append(f"ТТН: {order.get('ttn_number')}")
         else:
-            lines.append("ТТН: буде створено пізніше (наступний етап)")
+            lines.append("ТТН: створюється через API Нової Пошти…")
         lines.append("")
         lines.append("Товари:")
         for item in cart[:20]:
@@ -1005,6 +1008,16 @@ def create_web_app(
         except Exception:
             logger.exception("Не вдалося повідомити дроппера про заказ %s", order["order_number"])
             storage.update_order_flags(order["id"], notify_dropper_status="error")
+
+        if not own_ttn:
+            from bot.np_fulfillment import fulfill_new_order
+
+            try:
+                order = await fulfill_new_order(storage, order, notify=_notify)
+            except Exception:
+                logger.exception(
+                    "NP fulfill after order %s failed", order.get("order_number")
+                )
 
         return {"ok": True, "order": order}
 
