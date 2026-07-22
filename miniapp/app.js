@@ -187,6 +187,7 @@
     mode: "owner",
     dropperChatId: "",
     droppersLoaded: false,
+    cartForChatId: "",
   };
 
   const PHONE_EXAMPLE = "+380(99)999-99-99";
@@ -1609,7 +1610,7 @@ ${data.ownTtn ? `Власна ТТН: ${escapeHtml(data.ttnNumber || "")}` : "Т
       const params = new URLSearchParams();
       if (query) params.set("q", query);
       if (color) params.set("color", color);
-      const chatId = currentTelegramChatId();
+      const chatId = effectiveDropperChatId();
       if (chatId) params.set("chat_id", chatId);
       const response = await fetch(`/api/products/search?${params.toString()}`);
       const data = await response.json();
@@ -2627,6 +2628,22 @@ ${data.ownTtn ? `Власна ТТН: ${escapeHtml(data.ttnNumber || "")}` : "Т
     if (els.balanceView) els.balanceView.classList.add("hidden");
   }
 
+  function resetOrderUiForPreviewDropper(chatId) {
+    const key = String(chatId || "");
+    if (previewState.cartForChatId === key) return;
+    saveCart([]);
+    updateCartIndicators();
+    previewState.cartForChatId = key;
+    checkoutDraft = null;
+    if (els.results) els.results.innerHTML = "";
+    if (els.status) els.status.textContent = "";
+    if (els.confirmView) els.confirmView.classList.add("hidden");
+    if (els.checkoutView) els.checkoutView.classList.add("hidden");
+    if (els.catalogView) els.catalogView.classList.remove("hidden");
+    if (els.cartView) els.cartView.classList.add("hidden");
+    if (els.historyView) els.historyView.classList.add("hidden");
+  }
+
   async function applyPreviewMode() {
     if (sessionState.role !== "owner") {
       syncPreviewBarControls();
@@ -2635,6 +2652,7 @@ ${data.ownTtn ? `Власна ТТН: ${escapeHtml(data.ttnNumber || "")}` : "Т
     syncPreviewBarControls();
 
     if (previewState.mode === "owner") {
+      resetOrderUiForPreviewDropper("");
       showMode("owner");
       return;
     }
@@ -2645,11 +2663,13 @@ ${data.ownTtn ? `Власна ТТН: ${escapeHtml(data.ttnNumber || "")}` : "Т
       await ensurePreviewDroppersLoaded();
       syncPreviewBarControls();
       if (!previewState.dropperChatId) {
+        resetOrderUiForPreviewDropper("");
         els.bootStatus.classList.remove("hidden");
         els.bootStatus.innerHTML =
           `<div class="blocked-box">Оберіть дроппера у списку вище, щоб побачити його форму.</div>`;
         return;
       }
+      resetOrderUiForPreviewDropper(previewState.dropperChatId);
       els.orderMain.classList.remove("hidden");
       els.mainTabs.classList.remove("hidden");
       els.cartChip.classList.remove("hidden");
@@ -2661,6 +2681,7 @@ ${data.ownTtn ? `Власна ТТН: ${escapeHtml(data.ttnNumber || "")}` : "Т
       return;
     }
 
+    resetOrderUiForPreviewDropper("");
     // staff stubs
     els.bootStatus.classList.remove("hidden");
     els.bootStatus.innerHTML = `<div class="blocked-box">Роль «${escapeHtml(
