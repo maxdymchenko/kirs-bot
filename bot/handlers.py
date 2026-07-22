@@ -230,16 +230,6 @@ async def order_menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
                         user_id=user_id,
                     )
                 ],
-                [
-                    _webapp_button(
-                        "Баланси / реферали",
-                        webapp_url,
-                        chat_type,
-                        chat_id=chat_id,
-                        user_id=user_id,
-                        view="balances",
-                    )
-                ],
             ]
         )
         await update.message.reply_text(

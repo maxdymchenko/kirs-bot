@@ -135,6 +135,7 @@
     prepayBlock: document.getElementById("prepayBlock"),
     prepayHint: document.getElementById("prepayHint"),
     prepay: document.getElementById("prepay"),
+    codAmount: document.getElementById("codAmount"),
     requisitesBlock: document.getElementById("requisitesBlock"),
     requisitesDetails: document.getElementById("requisitesDetails"),
     payAmountLabel: document.getElementById("payAmountLabel"),
@@ -906,22 +907,9 @@
     if (!els.prepay || !els.prepayHint) return;
     const total = Math.max(0, Math.round(Number(orderTotal) || 0));
     const maxPrepay = maxPrepayAmount(total);
-    const room = balanceSpendRoom();
     els.prepay.max = String(maxPrepay);
-    if (dropperSettings.allow_balance_payment && room > 0) {
-      els.prepayHint.innerHTML =
-        `Якщо отримувач вніс передплату, вкажіть суму для вирахування з накладеного платежу. ` +
-        `До «Разом» (${escapeHtml(String(total))} грн) можна вказати більше — до ` +
-        `<b>${escapeHtml(String(maxPrepay))} грн</b>. Різниця спишеться з балансу дроппера` +
-        (dropperSettings.allow_negative_balance
-          ? ` (доступно ще ${escapeHtml(String(room))} грн з урахуванням ліміту мінусу).`
-          : ` (доступно на балансі: ${escapeHtml(String(room))} грн).`);
-    } else {
-      els.prepayHint.innerHTML =
-        `Якщо отримувач вніс передплату, вкажіть суму яку необхідно вирахувати із накладеного ` +
-        `платежу замовлення. Сума не може перевищувати суму «Разом» ` +
-        `(<b>${escapeHtml(String(total))}</b> грн).`;
-    }
+    els.prepayHint.textContent =
+      "Якщо отримувач вніс передплату, вкажіть суму для вирахування з накладеного платежу";
   }
 
   function syncPaymentAndTtn() {
@@ -1188,6 +1176,7 @@
       ownTtn: Boolean(form.ownTtn.checked),
       ttnNumber: (form.ttnNumber?.value || "").replace(/\D/g, ""),
       paymentMethod,
+      codAmount: form.codAmount?.value?.trim() || "",
       prepay: form.prepay.value.trim(),
       comment: form.comment.value.trim(),
       rulesAccepted: Boolean(form.rulesAccepted.checked),
@@ -1253,9 +1242,18 @@
       return "Підтвердіть ознайомлення з правилами";
     }
     if (!data.ownTtn && data.paymentMethod === "cod") {
+      const codRaw = data.codAmount === "" ? null : Number(data.codAmount);
+      if (codRaw === null || Number.isNaN(codRaw) || codRaw < 0) {
+        return "Вкажіть суму накладного платежу";
+      }
+      data.codAmount = Math.round(codRaw);
+
       const prepay = data.prepay === "" ? 0 : Number(data.prepay);
       if (Number.isNaN(prepay) || prepay < 0) {
         return "Некоректна сума передплати";
+      }
+      if (prepay > data.codAmount) {
+        return "Передплата не може перевищувати суму накладного платежу";
       }
       const maxPrepay = maxPrepayAmount(data.total);
       if (prepay > maxPrepay) {
@@ -1266,6 +1264,7 @@
       }
       data.prepayBalanceDebit = Math.max(0, Math.round(prepay - Number(data.total || 0)));
     } else {
+      data.codAmount = 0;
       data.prepayBalanceDebit = 0;
     }
     return "";
@@ -1334,7 +1333,7 @@ ${escapeHtml(deliveryExtra)}</div>
 Разом: ${escapeHtml(String(Math.round(data.total || 0)))} ₴
 ${
   data.paymentMethod === "cod"
-    ? `Передплата: ${escapeHtml(String(data.prepay === "" ? 0 : data.prepay))} ₴`
+    ? `Накладений платіж: ${escapeHtml(String(data.codAmount || 0))} ₴\nПередплата: ${escapeHtml(String(data.prepay === "" ? 0 : data.prepay))} ₴`
     : ""
 }
 ${debit > 0 ? `З балансу спишеться: ${escapeHtml(String(debit))} ₴` : ""}
@@ -1388,6 +1387,7 @@ ${data.ownTtn ? `Власна ТТН: ${escapeHtml(data.ttnNumber || "")}` : "Т
       ttn_number: data.ttnNumber || "",
       payment_method: data.paymentMethod,
       prepay: data.prepay === "" ? 0 : Number(data.prepay || 0),
+      cod_amount: Number(data.codAmount || 0),
       comment: data.comment || "",
       receipt_name: data.receiptName || "",
       ttn_pdf_name: data.ttnPdfName || "",

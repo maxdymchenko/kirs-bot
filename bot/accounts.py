@@ -956,6 +956,7 @@ class AppStorage:
         ttn_number: str,
         ttn_status: str,
         payload: dict[str, Any],
+        cod_amount: float | None = None,
     ) -> dict[str, Any]:
         import json
 
@@ -964,7 +965,10 @@ class AppStorage:
         total = max(0.0, float(total or 0))
         prepay = max(0.0, float(prepay or 0))
         debit = max(0.0, float(prepay_balance_debit or 0))
-        cod_amount = max(0.0, total - prepay)
+        if cod_amount is None:
+            cod_amount = max(0.0, total - prepay)
+        else:
+            cod_amount = max(0.0, float(cod_amount or 0))
         payload_json = json.dumps(payload, ensure_ascii=False)
         with self._connect() as conn:
             cur = conn.execute(

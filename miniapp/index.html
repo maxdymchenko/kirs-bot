@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
   <title>Kirs — Замовлення</title>
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
-  <link rel="stylesheet" href="/static/styles.css?v=20260721pv" />
+  <link rel="stylesheet" href="/static/styles.css?v=20260722cod" />
 </head>
 <body>
   <div class="app">
@@ -289,6 +289,28 @@
             <div class="info-box">
               Вкажіть дані отримувача, якому буде відправлено замовлення.
             </div>
+
+            <label class="toggle-row">
+              <span class="toggle-text">Відправити замовлення за моєю ТТН</span>
+              <input type="checkbox" id="ownTtn" name="ownTtn" class="toggle-input" />
+              <span class="toggle-ui" aria-hidden="true"></span>
+            </label>
+
+            <div id="ttnFields" class="hidden">
+              <label class="field">
+                <span class="field-label">Номер ТТН Нової Пошти</span>
+                <input
+                  id="ttnNumber"
+                  name="ttnNumber"
+                  type="text"
+                  inputmode="numeric"
+                  autocomplete="off"
+                  placeholder="Вкажіть ТТН"
+                />
+                <p class="field-hint">Обовʼязково · лише цифри</p>
+              </label>
+            </div>
+
             <label class="field">
               <span class="field-label">Ім'я</span>
               <input id="firstName" name="firstName" type="text" autocomplete="given-name" placeholder="Ім'я замовника" required />
@@ -403,27 +425,6 @@
                 </div>
               </div>
             </div>
-
-            <label class="toggle-row">
-              <span class="toggle-text">Відправити замовлення за моєю ТТН</span>
-              <input type="checkbox" id="ownTtn" name="ownTtn" class="toggle-input" />
-              <span class="toggle-ui" aria-hidden="true"></span>
-            </label>
-
-            <div id="ttnFields" class="hidden">
-              <label class="field">
-                <span class="field-label">Номер ТТН Нової Пошти</span>
-                <input
-                  id="ttnNumber"
-                  name="ttnNumber"
-                  type="text"
-                  inputmode="numeric"
-                  autocomplete="off"
-                  placeholder="Вкажіть ТТН"
-                />
-                <p class="field-hint">Обовʼязково · лише цифри</p>
-              </label>
-            </div>
           </div>
 
           <div class="form-section">
@@ -451,7 +452,24 @@
             </div>
 
             <div id="prepayBlock">
-              <div class="info-box" id="prepayHint"></div>
+              <div class="info-box" id="prepayHint">
+                Якщо отримувач вніс передплату, вкажіть суму для вирахування з накладеного платежу
+              </div>
+              <label class="field">
+                <span class="field-label">Сума накладного платежу</span>
+                <div class="input-with-prefix">
+                  <span class="input-prefix">₴</span>
+                  <input
+                    id="codAmount"
+                    name="codAmount"
+                    type="number"
+                    min="0"
+                    step="1"
+                    inputmode="numeric"
+                    placeholder="Сума накладного платежу"
+                  />
+                </div>
+              </label>
               <label class="field">
                 <span class="field-label">Сума передплати</span>
                 <div class="input-with-prefix">
@@ -518,6 +536,6 @@
   </div>
 
   <button type="button" id="photoZoomBackdrop" class="photo-zoom-backdrop hidden" aria-label="Закрити фото"></button>
-  <script src="/static/app.js?v=20260721pv"></script>
+  <script src="/static/app.js?v=20260722cod"></script>
 </body>
 </html>

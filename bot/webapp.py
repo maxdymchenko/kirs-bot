@@ -86,6 +86,7 @@ class OrderCreateRequest(BaseModel):
     ttn_number: str = Field("", max_length=64)
     payment_method: str = Field(..., min_length=2, max_length=32)
     prepay: float = Field(0, ge=0)
+    cod_amount: float = Field(0, ge=0)
     comment: str = Field("", max_length=1000)
     receipt_name: str = Field("", max_length=260)
     ttn_pdf_name: str = Field("", max_length=260)
@@ -655,7 +656,9 @@ def create_web_app(
         )
         return max(0.0, balance - floor)
 
-    def _validate_order_payload(payload: OrderCreateRequest, dropper) -> tuple[float, float, float]:
+    def _validate_order_payload(
+        payload: OrderCreateRequest, dropper
+    ) -> tuple[float, float, float, float]:
         if dropper.orders_disabled:
             raise HTTPException(status_code=403, detail="Передачу замовлень заблоковано")
         if dropper.credit_holidays_blocked:
@@ -677,6 +680,7 @@ def create_web_app(
         if abs(cart_sum - total) > 1.0 and total <= 0:
             total = round(cart_sum, 2)
         prepay = max(0.0, float(payload.prepay or 0))
+        cod_amount = max(0.0, float(payload.cod_amount or 0))
         debit = 0.0
         if payload.own_ttn:
             if payload.payment_method != "requisites":
@@ -687,7 +691,15 @@ def create_web_app(
             ttn = re.sub(r"\D", "", payload.ttn_number or "")
             if len(ttn) < 10:
                 raise HTTPException(status_code=400, detail="Вкажіть повний номер ТТН")
+            cod_amount = 0.0
         elif payload.payment_method == "cod":
+            if cod_amount < 0:
+                raise HTTPException(status_code=400, detail="Вкажіть суму накладного платежу")
+            if prepay > cod_amount + 0.01:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Передплата не може перевищувати суму накладного платежу",
+                )
             room = _balance_spend_room(dropper)
             max_prepay = total + room
             if prepay > max_prepay + 0.01:
@@ -696,6 +708,8 @@ def create_web_app(
                     detail=f"Передплата не може перевищувати {round(max_prepay)} грн",
                 )
             debit = max(0.0, round(prepay - total, 2))
+        else:
+            cod_amount = 0.0
         if payload.delivery_method == "np_warehouse" and not payload.warehouse_ref:
             raise HTTPException(status_code=400, detail="Оберіть відділення/поштомат")
         if payload.delivery_method == "np_courier":
@@ -709,7 +723,7 @@ def create_web_app(
             and not payload.receipt_name.strip()
         ):
             raise HTTPException(status_code=400, detail="Потрібна квитанція про оплату")
-        return total, prepay, debit
+        return total, prepay, debit, cod_amount
 
     def _format_dropper_accept_message(order: dict, dropper) -> str:
         payload = order.get("payload") or {}
@@ -720,6 +734,8 @@ def create_web_app(
             f"Номер: {order.get('order_number')}",
             f"Сума: {round(float(order.get('total') or 0))} ₴",
         ]
+        if order.get("cod_amount"):
+            lines.append(f"Накладений платіж: {round(float(order.get('cod_amount') or 0))} ₴")
         if order.get("prepay"):
             lines.append(f"Передплата: {round(float(order.get('prepay') or 0))} ₴")
         if order.get("prepay_balance_debit"):
@@ -748,7 +764,7 @@ def create_web_app(
         dropper = storage.get_dropper_by_chat(payload.chat_id)
         if not dropper:
             raise HTTPException(status_code=404, detail="Дроппера не знайдено")
-        total, prepay, debit = _validate_order_payload(payload, dropper)
+        total, prepay, debit, cod_amount = _validate_order_payload(payload, dropper)
 
         own_ttn = bool(payload.own_ttn)
         ttn_number = re.sub(r"\D", "", payload.ttn_number or "") if own_ttn else ""
@@ -800,6 +816,7 @@ def create_web_app(
             "payment": {
                 "method": payload.payment_method,
                 "prepay": prepay,
+                "cod_amount": cod_amount,
                 "prepay_balance_debit": debit,
                 "receipt_name": payload.receipt_name,
             },
@@ -820,6 +837,7 @@ def create_web_app(
             total=total,
             prepay=prepay,
             prepay_balance_debit=debit,
+            cod_amount=cod_amount,
             ttn_number=ttn_number,
             ttn_status=ttn_status,
             payload=order_payload,
