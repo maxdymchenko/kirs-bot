@@ -733,9 +733,9 @@ def create_web_app(
         token: str = Query("", max_length=128),
     ) -> dict:
         """
-        Основний канал статусів ТТН: НП/Integration Platform шле push сюди.
+        Основний канал статусів — опитування раз на ~30 хв.
+        Webhook (якщо НП підключений) — додатковий push на цей URL.
         Захист: якщо задано NP_WEBHOOK_TOKEN — обовʼязковий ?token=...
-        Опитування статусів раз на 30 хв вимкнено.
         """
         expected = os.getenv("NP_WEBHOOK_TOKEN", "").strip()
         if expected and token.strip() != expected:
@@ -1160,7 +1160,7 @@ def create_web_app(
             ],
             "note": (
                 "Галочка = основний кабінет НП. Ключі без галочки — резерв при помилці основного. "
-                "Статуси ТТН оновлюються через webhook."
+                "Статуси ТТН перевіряються автоматично раз на ~30 хв."
             ),
         }
 

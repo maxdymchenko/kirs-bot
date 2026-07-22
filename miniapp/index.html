@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
   <title>Kirs — Замовлення</title>
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
-  <link rel="stylesheet" href="/static/styles.css?v=20260722npkeys2" />
+  <link rel="stylesheet" href="/static/styles.css?v=20260722poll30" />
 </head>
 <body>
   <div class="app">
@@ -129,7 +129,7 @@
         <form id="generalSettingsForm" novalidate>
           <div class="form-section">
             <h3 class="section-title">API-ключі Нової Пошти</h3>
-            <p class="hint">Галочка = основний кабінет для ТТН. Інші ключі без галочки — лише резерв, якщо основний впав з помилкою. Статуси ТТН приходять вебхуком (динамічно).</p>
+            <p class="hint">Галочка = основний кабінет для ТТН. Інші ключі без галочки — лише резерв, якщо основний впав з помилкою. Статуси ТТН бот перевіряє автоматично раз на ~30 хв.</p>
             <p class="hint" id="npWebhookHint"></p>
             <div id="npApiKeysList" class="np-keys-list"></div>
             <button type="button" class="btn secondary" id="npApiKeyAdd">+ Додати API-ключ</button>
@@ -623,6 +623,6 @@
   </div>
 
   <button type="button" id="photoZoomBackdrop" class="photo-zoom-backdrop hidden" aria-label="Закрити фото"></button>
-  <script src="/static/app.js?v=20260722npkeys2"></script>
+  <script src="/static/app.js?v=20260722poll30"></script>
 </body>
 </html>

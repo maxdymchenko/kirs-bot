@@ -108,9 +108,21 @@ async def main() -> None:
                     notify=_np_notify,
                     owner_notify=_np_owner_notify,
                 )
-                # Лише ретрай створення ТТН; статуси — через webhook
-                if any(stats.get(k) for k in ("create_ok", "create_fail", "backup_used")):
-                    logger.info("NP TTN create retry: %s", stats)
+                # Ретрай створення ТТН + опитування статусів раз на 30 хв
+                if any(
+                    stats.get(k)
+                    for k in (
+                        "create_ok",
+                        "create_fail",
+                        "backup_used",
+                        "updated",
+                        "received",
+                        "returned",
+                        "checked",
+                        "errors",
+                    )
+                ):
+                    logger.info("NP maintenance: %s", stats)
             except Exception:
                 logger.exception("NP maintenance loop error")
             try:

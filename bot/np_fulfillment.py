@@ -630,10 +630,7 @@ async def apply_tracking_event(
 async def track_order_statuses_async(
     storage: AppStorage, notify: NotifyFn | None = None
 ) -> dict[str, int]:
-    """
-    Опитування статусів ТТН (ручний/діагностичний резерв).
-    У проді статуси йдуть через webhook POST /api/np/webhook — цей poll у циклі не викликається.
-    """
+    """Опитування статусів ТТН (основний канал; webhook — додатковий, якщо підключений)."""
     clients = list_np_clients(storage)
     stats = {
         "checked": 0,
@@ -819,7 +816,7 @@ async def fulfill_new_order(
                 (
                     f"✅ ТТН створено для {order.get('order_number')}\n"
                     f"Номер: {order.get('ttn_number')}\n"
-                    f"Статус оновлюватиметься через webhook НП."
+                    f"Статус перевірятиметься автоматично (до ~30 хв)."
                 ),
             )
     except Exception as exc:
@@ -848,7 +845,7 @@ async def run_np_maintenance_once(
     notify: NotifyFn | None = None,
     owner_notify: OwnerNotifyFn | None = None,
 ) -> dict[str, int]:
-    """Ретрай створення ТТН. Статуси — лише через webhook (без опитування)."""
+    """Ретрай створення ТТН + опитування статусів (раз на ~30 хв з main)."""
     stats = {"create_ok": 0, "create_fail": 0, "backup_used": 0}
     pending = storage.list_orders_pending_ttn_create(limit=30)
     for order in pending:
@@ -872,4 +869,7 @@ async def run_np_maintenance_once(
         except Exception:
             stats["create_fail"] += 1
             logger.exception("Retry TTN create failed for %s", order.get("order_number"))
+
+    track = await track_order_statuses_async(storage, notify=notify)
+    stats.update(track)
     return stats
