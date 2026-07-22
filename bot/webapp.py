@@ -55,6 +55,7 @@ class DropperSettingsUpdateRequest(BaseModel):
     owner_chat_id: str = Field("", max_length=64)
     owner_user_id: str = Field("", max_length=64)
     require_full_payment: bool | None = None
+    allow_cod: bool | None = None
     allow_balance_payment: bool | None = None
     allow_negative_balance: bool | None = None
     negative_balance_limit: float | None = None
@@ -284,6 +285,7 @@ def create_web_app(
             "chat_id": str(chat_id or "").strip(),
             "name": "",
             "require_full_payment": False,
+            "allow_cod": True,
             "allow_balance_payment": False,
             "allow_negative_balance": False,
             "negative_balance_limit": 0,
@@ -496,6 +498,7 @@ def create_web_app(
         dropper = storage.update_dropper_settings(
             chat_id,
             require_full_payment=payload.require_full_payment,
+            allow_cod=payload.allow_cod,
             allow_balance_payment=payload.allow_balance_payment,
             allow_negative_balance=payload.allow_negative_balance,
             negative_balance_limit=payload.negative_balance_limit,
@@ -693,6 +696,11 @@ def create_web_app(
                 raise HTTPException(status_code=400, detail="Вкажіть повний номер ТТН")
             cod_amount = 0.0
         elif payload.payment_method == "cod":
+            if not getattr(dropper, "allow_cod", True):
+                raise HTTPException(
+                    status_code=403,
+                    detail="Передачу замовлень наложкою для вас вимкнено",
+                )
             if cod_amount < 0:
                 raise HTTPException(status_code=400, detail="Вкажіть суму накладного платежу")
             if prepay > cod_amount + 0.01:

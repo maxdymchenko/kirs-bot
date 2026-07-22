@@ -1198,10 +1198,64 @@ input[type="file"] {
   background: var(--card);
   border: 1px solid var(--line);
   border-radius: 14px;
-  padding: 12px 14px;
+  padding: 0;
   box-shadow: var(--shadow);
+  overflow: hidden;
+}
+
+.order-card-toggle {
+  width: 100%;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  gap: 10px;
+  align-items: center;
+  padding: 12px 14px;
+  border: 0;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+  color: inherit;
+  font: inherit;
+}
+
+.order-card-main {
   display: grid;
   gap: 6px;
+  min-width: 0;
+}
+
+.order-card-profit {
+  font-weight: 800;
+  font-size: 16px;
+  color: var(--ok, #1a7f37);
+  white-space: nowrap;
+  justify-self: end;
+}
+
+.order-card-chevron {
+  width: 10px;
+  height: 10px;
+  border-right: 2px solid var(--muted);
+  border-bottom: 2px solid var(--muted);
+  transform: rotate(45deg);
+  transition: transform 0.15s ease;
+  justify-self: end;
+}
+
+.order-card.is-open .order-card-chevron {
+  transform: rotate(-135deg);
+  margin-top: 4px;
+}
+
+.order-card-details {
+  padding: 0 14px 14px;
+  border-top: 1px solid var(--line);
+}
+
+.order-details-grid {
+  display: grid;
+  gap: 10px;
+  padding-top: 12px;
 }
 
 .order-card-head {

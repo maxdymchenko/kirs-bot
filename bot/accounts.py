@@ -32,6 +32,7 @@ class Dropper:
     phone: str
     comment: str
     require_full_payment: bool
+    allow_cod: bool
     allow_balance_payment: bool
     allow_negative_balance: bool
     negative_balance_limit: float
@@ -59,6 +60,7 @@ class Dropper:
             "phone": self.phone,
             "comment": self.comment,
             "require_full_payment": self.require_full_payment,
+            "allow_cod": self.allow_cod,
             "allow_balance_payment": self.allow_balance_payment,
             "allow_negative_balance": self.allow_negative_balance,
             "negative_balance_limit": self.negative_balance_limit,
@@ -153,6 +155,7 @@ class AppStorage:
                 ("negative_balance_limit", "negative_balance_limit REAL NOT NULL DEFAULT 0"),
                 ("extra_discount_percent", "extra_discount_percent REAL NOT NULL DEFAULT 0"),
                 ("orders_disabled", "orders_disabled INTEGER NOT NULL DEFAULT 0"),
+                ("allow_cod", "allow_cod INTEGER NOT NULL DEFAULT 1"),
                 ("referral_code", "referral_code TEXT NOT NULL DEFAULT ''"),
                 ("referred_by_dropper_id", "referred_by_dropper_id INTEGER"),
                 ("referral_percent", "referral_percent REAL NOT NULL DEFAULT 0"),
@@ -310,6 +313,7 @@ class AppStorage:
             phone=row["phone"],
             comment=row["comment"] or "",
             require_full_payment=bool(row["require_full_payment"]),
+            allow_cod=bool(self._row_get(row, "allow_cod", 1)),
             allow_balance_payment=bool(self._row_get(row, "allow_balance_payment", 0)),
             allow_negative_balance=bool(self._row_get(row, "allow_negative_balance", 0)),
             negative_balance_limit=float(self._row_get(row, "negative_balance_limit", 0) or 0),
@@ -545,6 +549,7 @@ class AppStorage:
         chat_id: str,
         *,
         require_full_payment: bool | None = None,
+        allow_cod: bool | None = None,
         allow_balance_payment: bool | None = None,
         allow_negative_balance: bool | None = None,
         negative_balance_limit: float | None = None,
@@ -563,6 +568,8 @@ class AppStorage:
         fields: dict[str, Any] = {}
         if require_full_payment is not None:
             fields["require_full_payment"] = 1 if require_full_payment else 0
+        if allow_cod is not None:
+            fields["allow_cod"] = 1 if allow_cod else 0
         if allow_balance_payment is not None:
             fields["allow_balance_payment"] = 1 if allow_balance_payment else 0
         if allow_negative_balance is not None:

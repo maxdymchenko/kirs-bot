@@ -164,6 +164,7 @@
   const dropperSettings = {
     chat_id: "",
     require_full_payment: false,
+    allow_cod: true,
     allow_balance_payment: false,
     allow_negative_balance: false,
     negative_balance_limit: 0,
@@ -807,6 +808,7 @@
         throw new Error(data.detail || "settings error");
       }
       dropperSettings.require_full_payment = Boolean(data.require_full_payment);
+      dropperSettings.allow_cod = data.allow_cod !== false;
       dropperSettings.allow_balance_payment = Boolean(data.allow_balance_payment);
       dropperSettings.allow_negative_balance = Boolean(data.allow_negative_balance);
       dropperSettings.negative_balance_limit = Number(data.negative_balance_limit || 0);
@@ -819,6 +821,7 @@
     } catch (error) {
       console.warn("dropper settings", error);
       dropperSettings.require_full_payment = false;
+      dropperSettings.allow_cod = true;
       dropperSettings.allow_balance_payment = false;
       dropperSettings.allow_negative_balance = false;
       dropperSettings.negative_balance_limit = 0;
@@ -946,20 +949,22 @@
 
   function syncPaymentAndTtn() {
     const ownTtn = Boolean(els.ownTtn.checked);
+    const allowCod = dropperSettings.allow_cod !== false;
     els.ttnFields.classList.toggle("hidden", !ownTtn);
 
-    // При власній ТТН — лише оплата на реквізити
-    els.codPaymentCard.classList.toggle("hidden", ownTtn);
-    els.codPaymentHint.classList.toggle("hidden", ownTtn);
+    // При власній ТТН або без дозволу наложки — COD ховаємо
+    const hideCod = ownTtn || !allowCod;
+    els.codPaymentCard.classList.toggle("hidden", hideCod);
+    els.codPaymentHint.classList.toggle("hidden", hideCod);
 
-    if (ownTtn) {
+    if (ownTtn || !allowCod) {
       const req = els.checkoutForm.querySelector('input[name="paymentMethod"][value="requisites"]');
       if (req) req.checked = true;
     }
 
     const payment = selectedPaymentMethod();
     const showRequisites = payment === "requisites";
-    const showPrepay = !ownTtn && payment === "cod";
+    const showPrepay = !ownTtn && allowCod && payment === "cod";
     const showReceipt = showRequisites && dropperSettings.require_full_payment;
 
     els.prepayBlock.classList.toggle("hidden", !showPrepay);
@@ -1502,6 +1507,114 @@ ${data.ownTtn ? `Власна ТТН: ${escapeHtml(data.ttnNumber || "")}` : "Т
     }
   }
 
+  function orderPaymentMethod(order) {
+    return (
+      order.payment_method ||
+      (order.payload && order.payload.payment && order.payload.payment.method) ||
+      ""
+    );
+  }
+
+  function orderCodAmount(order) {
+    if (order.cod_amount != null && order.cod_amount !== "") {
+      return roundMoney(order.cod_amount);
+    }
+    const pay = (order.payload && order.payload.payment) || {};
+    return roundMoney(pay.cod_amount || 0);
+  }
+
+  function orderDropperProfit(order) {
+    if (orderPaymentMethod(order) !== "cod") return null;
+    const cod = orderCodAmount(order);
+    const prepay = roundMoney(order.prepay || 0);
+    const total = roundMoney(order.total || 0);
+    return roundMoney(cod - prepay - total);
+  }
+
+  function renderOrderDetailsHtml(order) {
+    const payload = order.payload || {};
+    const recipient = payload.recipient || {};
+    const delivery = payload.delivery || {};
+    const payment = payload.payment || {};
+    const cart = payload.cart || [];
+    const name = [recipient.last_name, recipient.first_name, recipient.patronymic]
+      .filter(Boolean)
+      .join(" ");
+    const method = orderPaymentMethod(order);
+    const ownTtn = Boolean(order.own_ttn || payload.own_ttn);
+    const deliveryExtra =
+      (order.delivery_method || delivery.method) === "np_courier"
+        ? `${delivery.street || ""}, буд. ${delivery.house || ""}${
+            delivery.apartment ? `, кв. ${delivery.apartment}` : ""
+          }`
+        : delivery.warehouse || "";
+    const cartLines = cart
+      .map((item) => {
+        const qty = item.qty || 1;
+        const head = `${item.code || ""} — ${item.name || ""} × ${qty}`;
+        if (hasDiscountPrice(item)) {
+          return `${head} · <span class="price-old-inline">${escapeHtml(
+            String(item.drop_price_original)
+          )} ₴</span> <b>${escapeHtml(String(item.drop_price))} ₴</b>`;
+        }
+        return `${head} · ${escapeHtml(String(item.drop_price || "—"))} ₴`;
+      })
+      .join("<br/>");
+    const profit = orderDropperProfit(order);
+    const debit = roundMoney(
+      order.prepay_balance_debit != null
+        ? order.prepay_balance_debit
+        : payment.prepay_balance_debit || 0
+    );
+    return `
+      <div class="order-details-grid">
+        <div class="confirm-block">
+          <div class="confirm-label">Отримувач</div>
+          <div class="confirm-value">${escapeHtml(name || "—")}\n${escapeHtml(
+            recipient.phone || ""
+          )}</div>
+        </div>
+        <div class="confirm-block">
+          <div class="confirm-label">Доставка</div>
+          <div class="confirm-value">${escapeHtml(
+            deliveryMethodLabel(order.delivery_method || delivery.method || "")
+          )}
+${escapeHtml(delivery.city || "")}
+${escapeHtml(deliveryExtra)}</div>
+        </div>
+        <div class="confirm-block">
+          <div class="confirm-label">Оплата</div>
+          <div class="confirm-value">${escapeHtml(paymentMethodLabel(method))}
+Разом: ${escapeHtml(formatMoneyAmount(order.total || 0))} ₴
+${
+  method === "cod"
+    ? `Накладений платіж: ${escapeHtml(formatMoneyAmount(orderCodAmount(order)))} ₴\nПередплата: ${escapeHtml(formatMoneyAmount(order.prepay || 0))} ₴\nПрибуток: ${escapeHtml(formatMoneyAmount(profit || 0))} ₴`
+    : ""
+}
+${debit > 0 ? `З балансу: ${escapeHtml(formatMoneyAmount(debit))} ₴` : ""}
+${
+  ownTtn
+    ? `Власна ТТН: ${escapeHtml(order.ttn_number || payload.ttn_number || "")}`
+    : order.ttn_number
+      ? `ТТН: ${escapeHtml(order.ttn_number)}`
+      : "ТТН: створиться пізніше / очікує"
+}</div>
+        </div>
+        <div class="confirm-block">
+          <div class="confirm-label">Товари</div>
+          <div class="confirm-value confirm-value-html">${cartLines || "—"}</div>
+        </div>
+        ${
+          payload.comment
+            ? `<div class="confirm-block"><div class="confirm-label">Коментар</div><div class="confirm-value">${escapeHtml(
+                payload.comment
+              )}</div></div>`
+            : ""
+        }
+      </div>
+    `;
+  }
+
   function renderOrderCard(order, { compact = false } = {}) {
     const payload = order.payload || {};
     const recipient = payload.recipient || {};
@@ -1521,22 +1634,53 @@ ${data.ownTtn ? `Власна ТТН: ${escapeHtml(data.ttnNumber || "")}` : "Т
         : order.ttn_status === "pending_create"
           ? "ТТН: очікує створення"
           : "ТТН: —";
+    const profit = orderDropperProfit(order);
+    const profitHtml =
+      profit == null
+        ? ""
+        : `<div class="order-card-profit">${escapeHtml(formatMoney(profit))}</div>`;
+    const orderId = escapeHtml(String(order.id || order.order_number || ""));
     return `
-      <article class="order-card">
-        <div class="order-card-head">
-          <div class="order-card-num">${escapeHtml(order.order_number || "")}</div>
-          <div class="order-card-status">${escapeHtml(order.status || "")}</div>
+      <article class="order-card" data-order-id="${orderId}">
+        <button type="button" class="order-card-toggle" aria-expanded="false">
+          <div class="order-card-main">
+            <div class="order-card-head">
+              <div class="order-card-num">${escapeHtml(order.order_number || "")}</div>
+              <div class="order-card-status">${escapeHtml(order.status || "")}</div>
+            </div>
+            <div class="meta">${escapeHtml(formatOrderDate(order.created_at))}</div>
+            <div class="meta">${escapeHtml(name || "—")} · ${escapeHtml(recipient.phone || "")}</div>
+            <div class="meta">${escapeHtml(delivery.city || "")}</div>
+            <div class="meta">Разом: <b>${escapeHtml(formatMoney(order.total || 0))}</b>
+              ${order.prepay ? ` · передплата ${escapeHtml(formatMoney(order.prepay))}` : ""}
+            </div>
+            <div class="meta">${escapeHtml(ttnLine)}</div>
+            <div class="meta">${escapeHtml(itemsPreview + more)}</div>
+          </div>
+          ${profitHtml}
+          <span class="order-card-chevron" aria-hidden="true"></span>
+        </button>
+        <div class="order-card-details hidden">
+          ${renderOrderDetailsHtml(order)}
         </div>
-        <div class="meta">${escapeHtml(formatOrderDate(order.created_at))}</div>
-        <div class="meta">${escapeHtml(name || "—")} · ${escapeHtml(recipient.phone || "")}</div>
-        <div class="meta">${escapeHtml(delivery.city || "")}</div>
-        <div class="meta">Разом: <b>${escapeHtml(formatMoney(order.total || 0))}</b>
-          ${order.prepay ? ` · передплата ${escapeHtml(formatMoney(order.prepay))}` : ""}
-        </div>
-        <div class="meta">${escapeHtml(ttnLine)}</div>
-        <div class="meta">${escapeHtml(itemsPreview + more)}</div>
       </article>
     `;
+  }
+
+  function bindOrderCardClicks(root) {
+    if (!root || root.dataset.orderClicksBound === "1") return;
+    root.dataset.orderClicksBound = "1";
+    root.addEventListener("click", (event) => {
+      const toggle = event.target.closest(".order-card-toggle");
+      if (!toggle || !root.contains(toggle)) return;
+      const card = toggle.closest(".order-card");
+      if (!card) return;
+      const details = card.querySelector(".order-card-details");
+      if (!details) return;
+      const open = details.classList.toggle("hidden") === false;
+      card.classList.toggle("is-open", open);
+      toggle.setAttribute("aria-expanded", open ? "true" : "false");
+    });
   }
 
   async function renderOrdersHistory() {
@@ -1555,6 +1699,7 @@ ${data.ownTtn ? `Власна ТТН: ${escapeHtml(data.ttnNumber || "")}` : "Т
       els.ordersHistory.innerHTML = items.length
         ? items.map((o) => renderOrderCard(o)).join("")
         : `<div class="empty">Поки немає переданих замовлень</div>`;
+      bindOrderCardClicks(els.ordersHistory);
     } catch (error) {
       els.ordersHistory.innerHTML = `<div class="form-error">${escapeHtml(
         error.message || "Помилка"
@@ -1589,6 +1734,7 @@ ${data.ownTtn ? `Власна ТТН: ${escapeHtml(data.ttnNumber || "")}` : "Т
             : `<div class="empty">Замовлень ще немає</div>`
         }
       `;
+      bindOrderCardClicks(box);
     } catch (error) {
       box.innerHTML = `<div class="form-error">${escapeHtml(error.message || "Помилка")}</div>`;
     }
@@ -2395,6 +2541,20 @@ ${data.ownTtn ? `Власна ТТН: ${escapeHtml(data.ttnNumber || "")}` : "Т
               <span class="owner-card-chevron" aria-hidden="true"></span>
             </button>
             <div class="owner-settings">
+              <label class="setting-row">
+                <span class="setting-copy">
+                  <span class="setting-label">Можливість передавати замовлення наложкою</span>
+                  <span class="setting-hint">Оплата при отриманні в формі дроппера</span>
+                </span>
+                <span class="setting-control">
+                  <span class="toggle">
+                    <input type="checkbox" data-rule="allow_cod" ${
+                      d.allow_cod !== false ? "checked" : ""
+                    } />
+                    <span class="toggle-ui"></span>
+                  </span>
+                </span>
+              </label>
               <label class="setting-row">
                 <span class="setting-copy">
                   <span class="setting-label">Лише після повної оплати</span>
