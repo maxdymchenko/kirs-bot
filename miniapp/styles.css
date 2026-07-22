@@ -711,6 +711,37 @@ textarea {
   font-size: 15px;
 }
 
+.price-block {
+  display: grid;
+  gap: 2px;
+}
+
+.price-old {
+  text-decoration: line-through;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.2;
+}
+
+.price-new {
+  font-weight: 800;
+  font-size: 15px;
+  color: var(--text);
+  line-height: 1.2;
+}
+
+.price-old-inline {
+  text-decoration: line-through;
+  color: var(--muted);
+  font-weight: 600;
+}
+
+.confirm-summary .confirm-value.confirm-value-html {
+  white-space: normal;
+  line-height: 1.45;
+}
+
 .stock-ok { color: var(--ok); font-weight: 700; font-size: 12px; }
 .stock-out { color: var(--danger); font-weight: 700; font-size: 12px; }
 

@@ -786,6 +786,8 @@ def create_web_app(
                     "color": item.get("color") or "",
                     "qty": max(1, int(item.get("qty") or 1)),
                     "drop_price": item.get("drop_price") or "",
+                    "drop_price_original": item.get("drop_price_original") or "",
+                    "extra_discount_percent": item.get("extra_discount_percent") or 0,
                     "stock": item.get("stock"),
                     "photo_url": item.get("photo_url") or "",
                 }

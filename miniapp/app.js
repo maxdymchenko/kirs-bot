@@ -229,19 +229,50 @@
     return Number.isFinite(n) ? n : 0;
   }
 
+  function roundMoney(amount) {
+    return Math.round((Number(amount) || 0) * 100) / 100;
+  }
+
+  function formatMoneyAmount(amount) {
+    const n = roundMoney(amount);
+    if (Math.abs(n - Math.round(n)) < 1e-9) return String(Math.round(n));
+    return n.toFixed(2).replace(/\.?0+$/, "");
+  }
+
+  function formatMoney(amount) {
+    return `${formatMoneyAmount(amount)} ₴`;
+  }
+
+  function hasDiscountPrice(item) {
+    if (!item) return false;
+    const original = item.drop_price_original;
+    if (original == null || original === "") return false;
+    return String(original) !== String(item.drop_price || "");
+  }
+
+  function renderPriceHtml(item, { withCurrency = true } = {}) {
+    const cur = withCurrency ? " ₴" : "";
+    const discounted = item?.drop_price != null && item.drop_price !== "" ? String(item.drop_price) : "";
+    if (!discounted) return `<div class="price">—</div>`;
+    if (hasDiscountPrice(item)) {
+      return `<div class="price-block">
+        <div class="price-old">${escapeHtml(String(item.drop_price_original))}${cur}</div>
+        <div class="price price-new">${escapeHtml(discounted)}${cur}</div>
+      </div>`;
+    }
+    return `<div class="price">${escapeHtml(discounted)}${cur}</div>`;
+  }
+
   function cartQtyTotal(cart = loadCart()) {
     return cart.reduce((sum, item) => sum + (item.qty || 1), 0);
   }
 
   function cartMoneyTotal(cart = loadCart()) {
-    return cart.reduce(
-      (sum, item) => sum + parsePrice(item.drop_price) * (item.qty || 1),
+    const sum = cart.reduce(
+      (acc, item) => acc + parsePrice(item.drop_price) * (item.qty || 1),
       0
     );
-  }
-
-  function formatMoney(amount) {
-    return `${Math.round(amount)} ₴`;
+    return roundMoney(sum);
   }
 
   function updateCartIndicators() {
@@ -876,7 +907,7 @@
 
   function updateRequisitesIntro(total) {
     if (!els.requisitesIntro) return;
-    const amount = `${Math.round(total)} грн`;
+    const amount = `${formatMoneyAmount(total)} грн`;
     if (dropperSettings.require_full_payment) {
       els.requisitesIntro.innerHTML =
         `Виконайте оплату в розмірі <strong id="payAmountLabel">${amount}</strong> за реквізитами ` +
@@ -899,13 +930,13 @@
   }
 
   function maxPrepayAmount(orderTotal) {
-    const total = Math.max(0, Math.round(Number(orderTotal) || 0));
-    return total + balanceSpendRoom();
+    const total = Math.max(0, roundMoney(orderTotal));
+    return roundMoney(total + balanceSpendRoom());
   }
 
   function updatePrepayUi(orderTotal) {
     if (!els.prepay || !els.prepayHint) return;
-    const total = Math.max(0, Math.round(Number(orderTotal) || 0));
+    const total = Math.max(0, roundMoney(orderTotal));
     const maxPrepay = maxPrepayAmount(total);
     els.prepay.max = String(maxPrepay);
     els.prepayHint.textContent =
@@ -934,7 +965,7 @@
     els.requisitesBlock.classList.toggle("hidden", !showRequisites);
     els.receiptField.classList.toggle("hidden", !showReceipt);
 
-    const total = Math.round(cartMoneyTotal());
+    const total = cartMoneyTotal();
     updatePrepayUi(total);
     updateRequisitesIntro(total);
   }
@@ -1016,13 +1047,6 @@
     els.results.innerHTML = items
       .map((item) => {
         const photo = item.photo_url || "";
-        const price = item.drop_price ? `${item.drop_price} ₴` : "—";
-        const priceExtra =
-          item.drop_price_original != null
-            ? `<div class="meta-soft">було ${escapeHtml(String(item.drop_price_original))} ₴ (−${escapeHtml(
-                String(item.extra_discount_percent || 0)
-              )}%)</div>`
-            : "";
         const inCart = cart.find((row) => cartKey(row) === cartKey(item));
         const currentQty = inCart?.qty || 0;
         const outOfStock = stockNumber(item.stock) === 0;
@@ -1036,8 +1060,7 @@
               <div class="meta">Код: <b>${escapeHtml(item.code || "")}</b> · ${escapeHtml(item.color || "без кольору")}</div>
               <div class="row-actions">
                 <div>
-                  <div class="price">${escapeHtml(price)}</div>
-                  ${priceExtra}
+                  ${renderPriceHtml(item)}
                   ${stockLabel(item.stock)}
                 </div>
                 <button class="icon-btn" data-add="${encodeURIComponent(JSON.stringify(item))}" ${disabled} title="В кошик">🛒</button>
@@ -1080,7 +1103,6 @@
     els.cartList.innerHTML = cart
       .map((item, index) => {
         const photo = item.photo_url || "";
-        const price = item.drop_price ? `${item.drop_price} ₴` : "—";
         const qty = item.qty || 1;
         const plusDisabled = canAddMore(item, qty) ? "" : "disabled";
         return `
@@ -1091,7 +1113,7 @@
               <div class="meta">Код: <b>${escapeHtml(item.code || "")}</b> · ${escapeHtml(item.color || "без кольору")}</div>
               <div class="row-actions">
                 <div>
-                  <div class="price">${escapeHtml(price)}</div>
+                  ${renderPriceHtml(item)}
                   ${availableQtyLabel(item.stock)}
                 </div>
                 <div class="qty">
@@ -1261,7 +1283,10 @@
         }
         return `Передплата не може перевищувати ${Math.round(data.total)} грн`;
       }
-      data.prepayBalanceDebit = Math.max(0, Math.round(prepay - Number(data.total || 0)));
+      data.prepayBalanceDebit = Math.max(
+        0,
+        roundMoney(prepay - Number(data.total || 0))
+      );
     } else {
       data.codAmount = 0;
       data.prepayBalanceDebit = 0;
@@ -1301,27 +1326,35 @@
   function renderConfirmSummary(data) {
     if (!els.confirmSummary) return;
     const cartLines = (data.cart || [])
-      .map(
-        (item) =>
-          `${item.code || ""} — ${item.name || ""} × ${item.qty || 1} · ${item.drop_price || "—"} ₴`
-      )
-      .join("\n");
+      .map((item) => {
+        const qty = item.qty || 1;
+        const head = `${item.code || ""} — ${item.name || ""} × ${qty}`;
+        if (hasDiscountPrice(item)) {
+          return `${head} · <span class="price-old-inline">${escapeHtml(
+            String(item.drop_price_original)
+          )} ₴</span> <b>${escapeHtml(String(item.drop_price))} ₴</b>`;
+        }
+        return `${head} · ${escapeHtml(String(item.drop_price || "—"))} ₴`;
+      })
+      .join("<br/>");
     const deliveryExtra =
       data.deliveryMethod === "np_courier"
         ? `${data.street || ""}, буд. ${data.house || ""}${
             data.apartment ? `, кв. ${data.apartment}` : ""
           }`
         : data.warehouse || "";
-    const debit = Number(data.prepayBalanceDebit || 0);
-    const totalRounded = Math.round(Number(data.total || 0));
-    const codRounded =
-      data.paymentMethod === "cod" ? Math.round(Number(data.codAmount || 0)) : 0;
-    const prepayRounded =
+    const debit = roundMoney(data.prepayBalanceDebit || 0);
+    const totalExact = roundMoney(data.total || 0);
+    const codExact =
+      data.paymentMethod === "cod" ? roundMoney(data.codAmount || 0) : 0;
+    const prepayExact =
       data.paymentMethod === "cod"
-        ? Math.round(Number(data.prepay === "" ? 0 : data.prepay || 0))
+        ? roundMoney(data.prepay === "" ? 0 : data.prepay || 0)
         : 0;
     const dropperProfit =
-      data.paymentMethod === "cod" ? codRounded - prepayRounded - totalRounded : null;
+      data.paymentMethod === "cod"
+        ? roundMoney(codExact - prepayExact - totalExact)
+        : null;
     els.confirmSummary.innerHTML = `
       <div class="confirm-block">
         <div class="confirm-label">Отримувач</div>
@@ -1338,18 +1371,18 @@ ${escapeHtml(deliveryExtra)}</div>
       <div class="confirm-block">
         <div class="confirm-label">Оплата</div>
         <div class="confirm-value">${escapeHtml(paymentMethodLabel(data.paymentMethod))}
-Разом: ${escapeHtml(String(totalRounded))} ₴
+Разом: ${escapeHtml(formatMoneyAmount(totalExact))} ₴
 ${
   data.paymentMethod === "cod"
-    ? `Накладений платіж: ${escapeHtml(String(codRounded))} ₴\nПередплата: ${escapeHtml(String(prepayRounded))} ₴\nПрибуток дроппера: ${escapeHtml(String(dropperProfit))} ₴`
+    ? `Накладений платіж: ${escapeHtml(formatMoneyAmount(codExact))} ₴\nПередплата: ${escapeHtml(formatMoneyAmount(prepayExact))} ₴\nПрибуток дроппера: ${escapeHtml(formatMoneyAmount(dropperProfit))} ₴`
     : ""
 }
-${debit > 0 ? `З балансу спишеться: ${escapeHtml(String(debit))} ₴` : ""}
+${debit > 0 ? `З балансу спишеться: ${escapeHtml(formatMoneyAmount(debit))} ₴` : ""}
 ${data.ownTtn ? `Власна ТТН: ${escapeHtml(data.ttnNumber || "")}` : "ТТН: створиться пізніше (НП)"}</div>
       </div>
       <div class="confirm-block">
         <div class="confirm-label">Товари</div>
-        <div class="confirm-value">${escapeHtml(cartLines)}</div>
+        <div class="confirm-value confirm-value-html">${cartLines}</div>
       </div>
       ${
         data.comment
@@ -1406,6 +1439,8 @@ ${data.ownTtn ? `Власна ТТН: ${escapeHtml(data.ttnNumber || "")}` : "Т
         color: item.color || "",
         qty: item.qty || 1,
         drop_price: item.drop_price || "",
+        drop_price_original: item.drop_price_original || "",
+        extra_discount_percent: item.extra_discount_percent || 0,
         stock: item.stock,
         photo_url: item.photo_url || "",
       })),
@@ -1494,8 +1529,8 @@ ${data.ownTtn ? `Власна ТТН: ${escapeHtml(data.ttnNumber || "")}` : "Т
         <div class="meta">${escapeHtml(formatOrderDate(order.created_at))}</div>
         <div class="meta">${escapeHtml(name || "—")} · ${escapeHtml(recipient.phone || "")}</div>
         <div class="meta">${escapeHtml(delivery.city || "")}</div>
-        <div class="meta">Разом: <b>${escapeHtml(String(Math.round(order.total || 0)))} ₴</b>
-          ${order.prepay ? ` · передплата ${escapeHtml(String(Math.round(order.prepay)))} ₴` : ""}
+        <div class="meta">Разом: <b>${escapeHtml(formatMoney(order.total || 0))}</b>
+          ${order.prepay ? ` · передплата ${escapeHtml(formatMoney(order.prepay))}` : ""}
         </div>
         <div class="meta">${escapeHtml(ttnLine)}</div>
         <div class="meta">${escapeHtml(itemsPreview + more)}</div>
