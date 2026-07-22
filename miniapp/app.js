@@ -120,7 +120,10 @@
     lastName: document.getElementById("lastName"),
     ownTtn: document.getElementById("ownTtn"),
     ttnFields: document.getElementById("ttnFields"),
+    ttnNpBlock: document.getElementById("ttnNpBlock"),
+    ttnRmpBlock: document.getElementById("ttnRmpBlock"),
     ttnNumber: document.getElementById("ttnNumber"),
+    rmpNumber: document.getElementById("rmpNumber"),
     warehouseField: document.getElementById("warehouseField"),
     courierAddressFields: document.getElementById("courierAddressFields"),
     warehouseLabel: document.getElementById("warehouseLabel"),
@@ -947,10 +950,35 @@
       "Якщо отримувач вніс передплату, вкажіть суму для вирахування з накладеного платежу";
   }
 
+  function selectedOwnTtnCarrier() {
+    return (
+      els.checkoutForm?.querySelector('input[name="ownTtnCarrier"]:checked')?.value ||
+      "nova_poshta"
+    );
+  }
+
+  function normalizeRmpNumber(raw) {
+    let text = String(raw || "").trim().toUpperCase().replace(/\s+/g, "");
+    if (!text) return "";
+    text = text.replace(/^RMP-?/i, "");
+    text = text.replace(/\D/g, "");
+    return text ? `RMP-${text}` : "RMP-";
+  }
+
+  function syncOwnTtnCarrierUi() {
+    const ownTtn = Boolean(els.ownTtn?.checked);
+    if (els.ttnFields) els.ttnFields.classList.toggle("hidden", !ownTtn);
+    if (!ownTtn) return;
+    const carrier = selectedOwnTtnCarrier();
+    const isNp = carrier === "nova_poshta";
+    if (els.ttnNpBlock) els.ttnNpBlock.classList.toggle("hidden", !isNp);
+    if (els.ttnRmpBlock) els.ttnRmpBlock.classList.toggle("hidden", isNp);
+  }
+
   function syncPaymentAndTtn() {
     const ownTtn = Boolean(els.ownTtn.checked);
     const allowCod = dropperSettings.allow_cod !== false;
-    els.ttnFields.classList.toggle("hidden", !ownTtn);
+    syncOwnTtnCarrierUi();
 
     // При власній ТТН або без дозволу наложки — COD ховаємо
     const hideCod = ownTtn || !allowCod;
@@ -1208,7 +1236,12 @@
       npWarehouse: npState.warehouse,
       npStreet: npState.street,
       ownTtn: Boolean(form.ownTtn.checked),
-      ttnNumber: (form.ttnNumber?.value || "").replace(/\D/g, ""),
+      ownTtnCarrier: selectedOwnTtnCarrier(),
+      ttnNumber:
+        selectedOwnTtnCarrier() === "rozetka"
+          ? normalizeRmpNumber(form.rmpNumber?.value || "")
+          : (form.ttnNumber?.value || "").replace(/\D/g, ""),
+      rmpNumber: normalizeRmpNumber(form.rmpNumber?.value || ""),
       paymentMethod,
       codAmount: form.codAmount?.value?.trim() || "",
       prepay: form.prepay.value.trim(),
@@ -1243,26 +1276,38 @@
       if (!data.house) return "Вкажіть номер будинку";
     }
     if (data.ownTtn) {
-      if (!data.ttnNumber) return "Вкажіть номер ТТН";
-      if (!/^\d+$/.test(data.ttnNumber)) {
-        return "Номер ТТН має містити лише цифри";
-      }
-      if (data.ttnNumber.length < 10) {
-        return "Вкажіть повний номер ТТН";
-      }
+      const carrier = data.ownTtnCarrier || "nova_poshta";
       if (data.paymentMethod !== "requisites") {
         return "При власній ТТН доступна лише оплата на реквізити";
       }
-      if (!data.ttnPdfFile) {
-        return "Прикріпіть файл PDF 100×100";
-      }
-      const pdfName = (data.ttnPdfFile.name || "").toLowerCase();
-      const pdfType = data.ttnPdfFile.type || "";
-      if (pdfType && pdfType !== "application/pdf" && !pdfName.endsWith(".pdf")) {
-        return "Файл 100×100 має бути у форматі PDF";
-      }
-      if (!pdfName.endsWith(".pdf")) {
-        return "Файл 100×100 має бути у форматі PDF";
+      if (carrier === "rozetka") {
+        const rmp = normalizeRmpNumber(data.rmpNumber || "");
+        if (!/^RMP-\d{6,20}$/i.test(rmp)) {
+          return "Вкажіть номер RMP у форматі RMP-XXXXXXXXX";
+        }
+        data.rmpNumber = rmp.toUpperCase();
+        data.ttnNumber = data.rmpNumber;
+        data.ownTtnCarrier = "rozetka";
+      } else {
+        if (!data.ttnNumber) return "Вкажіть номер ТТН";
+        if (!/^\d+$/.test(data.ttnNumber)) {
+          return "Номер ТТН має містити лише цифри";
+        }
+        if (data.ttnNumber.length < 10) {
+          return "Вкажіть повний номер ТТН";
+        }
+        data.ownTtnCarrier = "nova_poshta";
+        if (!data.ttnPdfFile) {
+          return "Прикріпіть файл PDF 100×100";
+        }
+        const pdfName = (data.ttnPdfFile.name || "").toLowerCase();
+        const pdfType = data.ttnPdfFile.type || "";
+        if (pdfType && pdfType !== "application/pdf" && !pdfName.endsWith(".pdf")) {
+          return "Файл 100×100 має бути у форматі PDF";
+        }
+        if (!pdfName.endsWith(".pdf")) {
+          return "Файл 100×100 має бути у форматі PDF";
+        }
       }
     }
     if (
@@ -1391,7 +1436,13 @@ ${
     : ""
 }
 ${debit > 0 ? `З балансу спишеться: ${escapeHtml(formatMoneyAmount(debit))} ₴` : ""}
-${data.ownTtn ? `Власна ТТН: ${escapeHtml(data.ttnNumber || "")}` : "ТТН: створиться пізніше (НП)"}</div>
+${
+  data.ownTtn
+    ? data.ownTtnCarrier === "rozetka"
+      ? `Власний RMP: ${escapeHtml(data.ttnNumber || data.rmpNumber || "")}`
+      : `Власна ТТН НП: ${escapeHtml(data.ttnNumber || "")}`
+    : "ТТН: створиться пізніше (НП)"
+}</div>
       </div>
       <div class="confirm-block">
         <div class="confirm-label">Товари</div>
@@ -1438,6 +1489,7 @@ ${data.ownTtn ? `Власна ТТН: ${escapeHtml(data.ttnNumber || "")}` : "Т
       house: data.house || "",
       apartment: data.apartment || "",
       own_ttn: Boolean(data.ownTtn),
+      own_ttn_carrier: data.ownTtn ? data.ownTtnCarrier || "nova_poshta" : "",
       ttn_number: data.ttnNumber || "",
       payment_method: data.paymentMethod,
       prepay: data.prepay === "" ? 0 : Number(data.prepay || 0),
@@ -1549,6 +1601,7 @@ ${data.ownTtn ? `Власна ТТН: ${escapeHtml(data.ttnNumber || "")}` : "Т
       .join(" ");
     const method = orderPaymentMethod(order);
     const ownTtn = Boolean(order.own_ttn || payload.own_ttn);
+    const ownCarrier = payload.own_ttn_carrier || "";
     const deliveryExtra =
       (order.delivery_method || delivery.method) === "np_courier"
         ? `${delivery.street || ""}, буд. ${delivery.house || ""}${
@@ -1601,7 +1654,9 @@ ${
 ${debit > 0 ? `З балансу: ${escapeHtml(formatMoneyAmount(debit))} ₴` : ""}
 ${
   ownTtn
-    ? `Власна ТТН: ${escapeHtml(order.ttn_number || payload.ttn_number || "")}`
+    ? ownCarrier === "rozetka"
+      ? `Власний RMP: ${escapeHtml(order.ttn_number || payload.ttn_number || "")}`
+      : `Власна ТТН НП: ${escapeHtml(order.ttn_number || payload.ttn_number || "")}`
     : order.ttn_number
       ? `ТТН: ${escapeHtml(order.ttn_number)}`
       : "ТТН: створиться пізніше / очікує"
@@ -1978,6 +2033,25 @@ ${
     }
   });
 
+  if (els.rmpNumber) {
+    els.rmpNumber.addEventListener("input", () => {
+      const next = normalizeRmpNumber(els.rmpNumber.value);
+      if (els.rmpNumber.value !== next) {
+        const pos = els.rmpNumber.selectionStart;
+        els.rmpNumber.value = next;
+        try {
+          els.rmpNumber.setSelectionRange(pos, pos);
+        } catch (_e) {
+          /* ignore */
+        }
+      }
+    });
+    els.rmpNumber.addEventListener("blur", () => {
+      const next = normalizeRmpNumber(els.rmpNumber.value);
+      els.rmpNumber.value = next === "RMP-" ? "" : next;
+    });
+  }
+
   els.city.addEventListener("input", () => {
     clearCitySelection({ keepText: true });
     scheduleCitySearch(els.city.value);
@@ -2064,7 +2138,11 @@ ${
 
   els.checkoutForm.addEventListener("change", (event) => {
     if (event.target.name === "deliveryMethod") syncDeliveryFields();
-    if (event.target.id === "ownTtn" || event.target.name === "paymentMethod") {
+    if (
+      event.target.id === "ownTtn" ||
+      event.target.name === "paymentMethod" ||
+      event.target.name === "ownTtnCarrier"
+    ) {
       syncPaymentAndTtn();
     }
   });

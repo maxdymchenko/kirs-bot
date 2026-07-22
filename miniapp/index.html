@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
   <title>Kirs — Замовлення</title>
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
-  <link rel="stylesheet" href="/static/styles.css?v=20260722live" />
+  <link rel="stylesheet" href="/static/styles.css?v=20260722rmp" />
 </head>
 <body>
   <div class="app">
@@ -297,23 +297,57 @@
             </label>
 
             <div id="ttnFields" class="hidden">
-              <label class="field">
-                <span class="field-label">Номер ТТН Нової Пошти</span>
-                <input
-                  id="ttnNumber"
-                  name="ttnNumber"
-                  type="text"
-                  inputmode="numeric"
-                  autocomplete="off"
-                  placeholder="Вкажіть ТТН"
-                />
-                <p class="field-hint">Обовʼязково · лише цифри</p>
-              </label>
-              <label class="field" id="ttnPdfField">
-                <span class="field-label">Файл PDF 100×100</span>
-                <input id="ttnPdf" name="ttnPdf" type="file" accept="application/pdf,.pdf" />
-                <span class="field-hint">Обовʼязково · етикетка ТТН у форматі PDF 100×100</span>
-              </label>
+              <h2 class="section-title" style="margin-top:4px">Спосіб відправлення</h2>
+              <div class="choice-list" role="radiogroup" aria-label="Спосіб відправлення за ТТН">
+                <label class="choice-card">
+                  <input type="radio" name="ownTtnCarrier" value="nova_poshta" checked />
+                  <span class="choice-body">
+                    <span class="choice-title">Нова Пошта</span>
+                    <span class="choice-sub">Власна ТТН Нової Пошти</span>
+                  </span>
+                </label>
+                <label class="choice-card">
+                  <input type="radio" name="ownTtnCarrier" value="rozetka" />
+                  <span class="choice-body">
+                    <span class="choice-title">Розетка</span>
+                    <span class="choice-sub">Власний номер RMP</span>
+                  </span>
+                </label>
+              </div>
+
+              <div id="ttnNpBlock">
+                <label class="field">
+                  <span class="field-label">Номер ТТН Нової Пошти</span>
+                  <input
+                    id="ttnNumber"
+                    name="ttnNumber"
+                    type="text"
+                    inputmode="numeric"
+                    autocomplete="off"
+                    placeholder="Вкажіть номер ТТН"
+                  />
+                  <p class="field-hint">Обовʼязково · лише цифри</p>
+                </label>
+                <label class="field" id="ttnPdfField">
+                  <span class="field-label">Файл PDF 100×100</span>
+                  <input id="ttnPdf" name="ttnPdf" type="file" accept="application/pdf,.pdf" />
+                  <span class="field-hint">Обовʼязково · етикетка ТТН у форматі PDF 100×100</span>
+                </label>
+              </div>
+
+              <div id="ttnRmpBlock" class="hidden">
+                <label class="field">
+                  <span class="field-label">Номер RMP Розетки</span>
+                  <input
+                    id="rmpNumber"
+                    name="rmpNumber"
+                    type="text"
+                    autocomplete="off"
+                    placeholder="Вкажіть номер RMP"
+                  />
+                  <p class="field-hint">Обовʼязково · формат RMP-XXXXXXXXX</p>
+                </label>
+              </div>
             </div>
 
             <label class="field">
@@ -536,6 +570,6 @@
   </div>
 
   <button type="button" id="photoZoomBackdrop" class="photo-zoom-backdrop hidden" aria-label="Закрити фото"></button>
-  <script src="/static/app.js?v=20260722live"></script>
+  <script src="/static/app.js?v=20260722rmp"></script>
 </body>
 </html>

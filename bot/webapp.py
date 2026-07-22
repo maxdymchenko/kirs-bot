@@ -84,6 +84,7 @@ class OrderCreateRequest(BaseModel):
     house: str = Field("", max_length=32)
     apartment: str = Field("", max_length=32)
     own_ttn: bool = False
+    own_ttn_carrier: str = Field("", max_length=32)
     ttn_number: str = Field("", max_length=64)
     payment_method: str = Field(..., min_length=2, max_length=32)
     prepay: float = Field(0, ge=0)
@@ -691,9 +692,19 @@ def create_web_app(
                     status_code=400,
                     detail="При власній ТТН доступна лише оплата на реквізити",
                 )
-            ttn = re.sub(r"\D", "", payload.ttn_number or "")
-            if len(ttn) < 10:
-                raise HTTPException(status_code=400, detail="Вкажіть повний номер ТТН")
+            carrier = (payload.own_ttn_carrier or "nova_poshta").strip().lower()
+            raw_ttn = str(payload.ttn_number or "").strip()
+            if carrier == "rozetka":
+                rmp = re.sub(r"\s+", "", raw_ttn).upper()
+                if not re.fullmatch(r"RMP-\d{6,20}", rmp):
+                    raise HTTPException(
+                        status_code=400,
+                        detail="Вкажіть номер RMP у форматі RMP-XXXXXXXXX",
+                    )
+            else:
+                ttn = re.sub(r"\D", "", raw_ttn)
+                if len(ttn) < 10:
+                    raise HTTPException(status_code=400, detail="Вкажіть повний номер ТТН")
             cod_amount = 0.0
         elif payload.payment_method == "cod":
             if not getattr(dropper, "allow_cod", True):
@@ -751,7 +762,11 @@ def create_web_app(
                 f"Списано з балансу: {round(float(order.get('prepay_balance_debit') or 0))} ₴"
             )
         if order.get("own_ttn") and order.get("ttn_number"):
-            lines.append(f"Ваша ТТН: {order.get('ttn_number')}")
+            carrier = ((order.get("payload") or {}).get("own_ttn_carrier") or "").strip()
+            if carrier == "rozetka":
+                lines.append(f"Ваш RMP: {order.get('ttn_number')}")
+            else:
+                lines.append(f"Ваша ТТН: {order.get('ttn_number')}")
         else:
             lines.append("ТТН: буде створено пізніше (наступний етап)")
         lines.append("")
@@ -775,7 +790,13 @@ def create_web_app(
         total, prepay, debit, cod_amount = _validate_order_payload(payload, dropper)
 
         own_ttn = bool(payload.own_ttn)
-        ttn_number = re.sub(r"\D", "", payload.ttn_number or "") if own_ttn else ""
+        carrier = (payload.own_ttn_carrier or "nova_poshta").strip().lower() if own_ttn else ""
+        if own_ttn and carrier == "rozetka":
+            ttn_number = re.sub(r"\s+", "", payload.ttn_number or "").upper()
+        elif own_ttn:
+            ttn_number = re.sub(r"\D", "", payload.ttn_number or "")
+        else:
+            ttn_number = ""
         if own_ttn:
             ttn_status = "provided"
         elif payload.payment_method == "cod":
@@ -831,6 +852,7 @@ def create_web_app(
                 "receipt_name": payload.receipt_name,
             },
             "own_ttn": own_ttn,
+            "own_ttn_carrier": carrier,
             "ttn_number": ttn_number,
             "ttn_pdf_name": payload.ttn_pdf_name,
             "comment": payload.comment.strip(),
