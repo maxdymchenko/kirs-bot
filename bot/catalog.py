@@ -70,6 +70,82 @@ def _extract_url(raw: str) -> str:
     return ""
 
 
+def _extract_url_from_cell_meta(cell: dict | None) -> str:
+    """
+    URL з метаданих комірки Sheets API:
+    - класичний hyperlink
+    - smart chip / rich link (chipRuns)
+    - формула HYPERLINK / прямий URL у тексті
+    """
+    if not cell:
+        return ""
+    hyperlink = str(cell.get("hyperlink") or "").strip()
+    if hyperlink.startswith(("http://", "https://")):
+        return hyperlink
+    for run in cell.get("chipRuns") or []:
+        chip = (run or {}).get("chip") or {}
+        props = chip.get("richLinkProperties") or {}
+        uri = str(props.get("uri") or "").strip()
+        if uri.startswith(("http://", "https://")):
+            return uri
+    entered = cell.get("userEnteredValue") or {}
+    if "formulaValue" in entered:
+        found = _extract_url(str(entered.get("formulaValue") or ""))
+        if found:
+            return found
+    for key in ("formattedValue", "stringValue"):
+        raw = cell.get(key)
+        if raw is None and key == "stringValue":
+            raw = entered.get("stringValue")
+        found = _extract_url(str(raw or ""))
+        if found:
+            return found
+    return ""
+
+
+def _fetch_live_photo_urls(
+    client: gspread.Client, spreadsheet_id: str, sheet_title: str, rows_count: int
+) -> list[str]:
+    """Список URL колонки N, вирівняний по рядках даних (індекс 0 = рядок 2)."""
+    if rows_count <= 0:
+        return []
+    end_row = rows_count + 1  # N2:N{end_row}
+    # Екрануємо назву аркуша для A1-нотації
+    safe_title = str(sheet_title or "Sheet1").replace("'", "''")
+    range_a1 = f"'{safe_title}'!N2:N{end_row}"
+    try:
+        resp = client.http_client.request(
+            "get",
+            f"https://sheets.googleapis.com/v4/spreadsheets/{spreadsheet_id}",
+            params={
+                "ranges": range_a1,
+                "includeGridData": "true",
+                "fields": (
+                    "sheets.data.rowData.values("
+                    "userEnteredValue,formattedValue,hyperlink,chipRuns"
+                    ")"
+                ),
+            },
+        )
+        payload = resp.json() if hasattr(resp, "json") else resp
+        row_data = (
+            (((payload.get("sheets") or [{}])[0].get("data") or [{}])[0].get("rowData"))
+            or []
+        )
+    except Exception:
+        logger.exception("Не вдалося прочитати rich-link колонки N (живі фото)")
+        return [""] * rows_count
+
+    urls: list[str] = []
+    for idx in range(rows_count):
+        cell = None
+        if idx < len(row_data):
+            values = (row_data[idx] or {}).get("values") or []
+            cell = values[0] if values else None
+        urls.append(_extract_url_from_cell_meta(cell))
+    return urls
+
+
 def _code_raw(code: str) -> str:
     return str(code or "").strip().lstrip("'").casefold()
 
@@ -229,17 +305,15 @@ class CatalogService:
             client = self._build_client()
             ws = client.open_by_key(self.spreadsheet_id).sheet1
             rows = ws.get_all_values()
-            # N: «Ссылка гугл фото» — часто HYPERLINK, беремо формулу щоб витягнути URL
-            live_formulas: list[list[str]] = []
-            try:
-                live_formulas = ws.get("N2:N", value_render_option="FORMULA") or []
-            except Exception:
-                logger.exception("Не вдалося прочитати формули колонки N (живі фото)")
-                live_formulas = []
+            data_rows = rows[1:] if rows else []
+            # N: «Ссылка гугл фото» — часто smart chip / rich link, не звичайний HYPERLINK
+            live_urls = _fetch_live_photo_urls(
+                client, self.spreadsheet_id, ws.title, len(data_rows)
+            )
             variants: list[ProductVariant] = []
 
             # A ID, B код, C назва, E колір, F наявність, G дроп-ціна, M фото, N живі фото
-            for idx, row in enumerate(rows[1:]):
+            for idx, row in enumerate(data_rows):
                 while len(row) < 14:
                     row.append("")
                 product_id = str(row[0]).strip()
@@ -248,11 +322,9 @@ class CatalogService:
                 color = str(row[4]).strip()
                 if not code or not name:
                     continue
-                live_raw = ""
-                if idx < len(live_formulas) and live_formulas[idx]:
-                    live_raw = str(live_formulas[idx][0] if live_formulas[idx] else "")
-                if not live_raw:
-                    live_raw = str(row[13]).strip()
+                live_photo_url = live_urls[idx] if idx < len(live_urls) else ""
+                if not live_photo_url:
+                    live_photo_url = _extract_url(str(row[13]).strip())
                 variants.append(
                     ProductVariant(
                         product_id=product_id,
@@ -262,7 +334,7 @@ class CatalogService:
                         stock=_parse_stock(row[5]),
                         drop_price=str(row[6]).strip(),
                         photo_url=str(row[12]).strip(),
-                        live_photo_url=_extract_url(live_raw),
+                        live_photo_url=live_photo_url,
                     )
                 )
 
