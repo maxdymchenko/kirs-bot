@@ -34,6 +34,7 @@ class ProductVariant:
     stock: int | None
     drop_price: str
     photo_url: str
+    live_photo_url: str = ""
 
     def to_dict(self) -> dict:
         return {
@@ -44,12 +45,29 @@ class ProductVariant:
             "stock": self.stock,
             "drop_price": self.drop_price,
             "photo_url": self.photo_url,
+            "live_photo_url": self.live_photo_url,
         }
 
 
 def _normalize_code(code: str) -> str:
     code = str(code).strip().lstrip("'")
     return code.lstrip("0") or "0"
+
+
+def _extract_url(raw: str) -> str:
+    """URL з тексту або з формули =HYPERLINK("url"; "label")."""
+    text = str(raw or "").strip()
+    if not text:
+        return ""
+    if text.startswith(("http://", "https://")):
+        return text
+    match = re.search(r'HYPERLINK\s*\(\s*"([^"]+)"', text, flags=re.IGNORECASE)
+    if match:
+        return match.group(1).strip()
+    match = re.search(r"HYPERLINK\s*\(\s*'([^']+)'", text, flags=re.IGNORECASE)
+    if match:
+        return match.group(1).strip()
+    return ""
 
 
 def _code_raw(code: str) -> str:
@@ -211,11 +229,18 @@ class CatalogService:
             client = self._build_client()
             ws = client.open_by_key(self.spreadsheet_id).sheet1
             rows = ws.get_all_values()
+            # N: «Ссылка гугл фото» — часто HYPERLINK, беремо формулу щоб витягнути URL
+            live_formulas: list[list[str]] = []
+            try:
+                live_formulas = ws.get("N2:N", value_render_option="FORMULA") or []
+            except Exception:
+                logger.exception("Не вдалося прочитати формули колонки N (живі фото)")
+                live_formulas = []
             variants: list[ProductVariant] = []
 
-            # A ID, B код, C название, E цвет, F наличиеличие, G дроп-цена, M фото
-            for row in rows[1:]:
-                while len(row) < 13:
+            # A ID, B код, C назва, E колір, F наявність, G дроп-ціна, M фото, N живі фото
+            for idx, row in enumerate(rows[1:]):
+                while len(row) < 14:
                     row.append("")
                 product_id = str(row[0]).strip()
                 code = str(row[1]).strip().lstrip("'")
@@ -223,6 +248,11 @@ class CatalogService:
                 color = str(row[4]).strip()
                 if not code or not name:
                     continue
+                live_raw = ""
+                if idx < len(live_formulas) and live_formulas[idx]:
+                    live_raw = str(live_formulas[idx][0] if live_formulas[idx] else "")
+                if not live_raw:
+                    live_raw = str(row[13]).strip()
                 variants.append(
                     ProductVariant(
                         product_id=product_id,
@@ -232,6 +262,7 @@ class CatalogService:
                         stock=_parse_stock(row[5]),
                         drop_price=str(row[6]).strip(),
                         photo_url=str(row[12]).strip(),
+                        live_photo_url=_extract_url(live_raw),
                     )
                 )
 

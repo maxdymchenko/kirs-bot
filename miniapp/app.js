@@ -1063,7 +1063,14 @@
             <img class="card-photo" src="${photo || ""}" alt="" draggable="false" onerror="this.style.opacity=0.2" />
             <div class="card-body">
               <div class="card-title">${escapeHtml(item.name || "")}</div>
-              <div class="meta">Код: <b>${escapeHtml(item.code || "")}</b> · ${escapeHtml(item.color || "без кольору")}</div>
+              <div class="meta card-meta-line">
+                <span>Код: <b>${escapeHtml(item.code || "")}</b> · ${escapeHtml(item.color || "без кольору")}</span>
+                ${
+                  item.live_photo_url
+                    ? `<a class="live-photo-btn" href="${escapeHtml(item.live_photo_url)}" target="_blank" rel="noopener noreferrer">Живі фото</a>`
+                    : ""
+                }
+              </div>
               <div class="row-actions">
                 <div>
                   ${renderPriceHtml(item)}
