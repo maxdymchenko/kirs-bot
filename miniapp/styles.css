@@ -1008,8 +1008,11 @@ textarea {
 }
 
 .toggle-text {
-  font-weight: 600;
-  font-size: 14px;
+  font-weight: 700;
+  font-size: 15px;
+  letter-spacing: 0.02em;
+  line-height: 1.25;
+  text-transform: uppercase;
 }
 
 .toggle-input {

@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
   <title>Kirs — Замовлення</title>
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
-  <link rel="stylesheet" href="/static/styles.css?v=20260722cod" />
+  <link rel="stylesheet" href="/static/styles.css?v=20260722prf" />
 </head>
 <body>
   <div class="app">
@@ -291,7 +291,7 @@
             </div>
 
             <label class="toggle-row">
-              <span class="toggle-text">Відправити замовлення за моєю ТТН</span>
+              <span class="toggle-text">ВІДПРАВЛЕННЯ ЗАМОВЛЕННЯ ЗА МОЄЮ ТТН</span>
               <input type="checkbox" id="ownTtn" name="ownTtn" class="toggle-input" />
               <span class="toggle-ui" aria-hidden="true"></span>
             </label>
@@ -308,6 +308,11 @@
                   placeholder="Вкажіть ТТН"
                 />
                 <p class="field-hint">Обовʼязково · лише цифри</p>
+              </label>
+              <label class="field" id="ttnPdfField">
+                <span class="field-label">Файл PDF 100×100</span>
+                <input id="ttnPdf" name="ttnPdf" type="file" accept="application/pdf,.pdf" />
+                <span class="field-hint">Обовʼязково · етикетка ТТН у форматі PDF 100×100</span>
               </label>
             </div>
 
@@ -492,11 +497,6 @@
                 <input id="paymentReceipt" name="paymentReceipt" type="file" accept="image/*,.pdf" />
                 <span class="field-hint">Обовʼязково при режимі повної передоплати</span>
               </label>
-              <label class="field hidden" id="ttnPdfField">
-                <span class="field-label">Файл PDF 100×100</span>
-                <input id="ttnPdf" name="ttnPdf" type="file" accept="application/pdf,.pdf" />
-                <span class="field-hint">Обовʼязково · етикетка ТТН у форматі PDF 100×100</span>
-              </label>
             </div>
           </div>
 
@@ -536,6 +536,6 @@
   </div>
 
   <button type="button" id="photoZoomBackdrop" class="photo-zoom-backdrop hidden" aria-label="Закрити фото"></button>
-  <script src="/static/app.js?v=20260722cod"></script>
+  <script src="/static/app.js?v=20260722prf"></script>
 </body>
 </html>

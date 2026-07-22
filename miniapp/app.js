@@ -933,7 +933,6 @@
     els.prepayBlock.classList.toggle("hidden", !showPrepay);
     els.requisitesBlock.classList.toggle("hidden", !showRequisites);
     els.receiptField.classList.toggle("hidden", !showReceipt);
-    els.ttnPdfField.classList.toggle("hidden", !ownTtn);
 
     const total = Math.round(cartMoneyTotal());
     updatePrepayUi(total);
@@ -1314,6 +1313,15 @@
           }`
         : data.warehouse || "";
     const debit = Number(data.prepayBalanceDebit || 0);
+    const totalRounded = Math.round(Number(data.total || 0));
+    const codRounded =
+      data.paymentMethod === "cod" ? Math.round(Number(data.codAmount || 0)) : 0;
+    const prepayRounded =
+      data.paymentMethod === "cod"
+        ? Math.round(Number(data.prepay === "" ? 0 : data.prepay || 0))
+        : 0;
+    const dropperProfit =
+      data.paymentMethod === "cod" ? codRounded - prepayRounded - totalRounded : null;
     els.confirmSummary.innerHTML = `
       <div class="confirm-block">
         <div class="confirm-label">Отримувач</div>
@@ -1330,10 +1338,10 @@ ${escapeHtml(deliveryExtra)}</div>
       <div class="confirm-block">
         <div class="confirm-label">Оплата</div>
         <div class="confirm-value">${escapeHtml(paymentMethodLabel(data.paymentMethod))}
-Разом: ${escapeHtml(String(Math.round(data.total || 0)))} ₴
+Разом: ${escapeHtml(String(totalRounded))} ₴
 ${
   data.paymentMethod === "cod"
-    ? `Накладений платіж: ${escapeHtml(String(data.codAmount || 0))} ₴\nПередплата: ${escapeHtml(String(data.prepay === "" ? 0 : data.prepay))} ₴`
+    ? `Накладений платіж: ${escapeHtml(String(codRounded))} ₴\nПередплата: ${escapeHtml(String(prepayRounded))} ₴\nПрибуток дроппера: ${escapeHtml(String(dropperProfit))} ₴`
     : ""
 }
 ${debit > 0 ? `З балансу спишеться: ${escapeHtml(String(debit))} ₴` : ""}
