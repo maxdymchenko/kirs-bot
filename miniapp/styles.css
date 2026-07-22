@@ -1164,6 +1164,61 @@ input[type="file"] {
   background: #fff;
 }
 
+.file-picker {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-top: 2px;
+  cursor: pointer;
+}
+
+.file-picker-input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.file-picker-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 10px 14px;
+  border-radius: 12px;
+  border: 1px solid #c9daf8;
+  background: #eef4ff;
+  color: #1d4f91;
+  font-size: 14px;
+  font-weight: 700;
+  line-height: 1.2;
+}
+
+.file-picker:hover .file-picker-btn {
+  background: #e0ebff;
+}
+
+.file-picker-input:focus-visible + .file-picker-btn {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.file-picker-name {
+  font-size: 13px;
+  color: var(--muted);
+  word-break: break-all;
+}
+
+.file-picker-name.is-selected {
+  color: var(--text);
+  font-weight: 600;
+}
+
 .form-error {
   color: var(--danger);
   font-size: 14px;

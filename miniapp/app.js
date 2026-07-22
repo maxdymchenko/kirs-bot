@@ -152,6 +152,8 @@
     requisitesIntro: document.getElementById("requisitesIntro"),
     ttnPdfField: document.getElementById("ttnPdfField"),
     ttnPdf: document.getElementById("ttnPdf"),
+    ttnPdfName: document.getElementById("ttnPdfName"),
+    paymentReceiptName: document.getElementById("paymentReceiptName"),
     phone: document.getElementById("phone"),
     phoneGhost: document.getElementById("phoneGhost"),
     city: document.getElementById("city"),
@@ -2216,6 +2218,26 @@ ${
       hideDropdown(els.streetDropdown);
     }
   });
+
+  function bindFilePicker(inputEl, nameEl) {
+    if (!inputEl || !nameEl) return;
+    const emptyText = nameEl.dataset.empty || "Файл не обрано";
+    const sync = () => {
+      const file = inputEl.files && inputEl.files[0];
+      if (file) {
+        nameEl.textContent = file.name;
+        nameEl.classList.add("is-selected");
+      } else {
+        nameEl.textContent = emptyText;
+        nameEl.classList.remove("is-selected");
+      }
+    };
+    inputEl.addEventListener("change", sync);
+    sync();
+  }
+
+  bindFilePicker(els.ttnPdf, els.ttnPdfName);
+  bindFilePicker(els.paymentReceipt, els.paymentReceiptName);
 
   els.checkoutForm.addEventListener("change", (event) => {
     if (event.target.name === "deliveryMethod") syncDeliveryFields();

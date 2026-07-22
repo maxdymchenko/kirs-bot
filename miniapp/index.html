@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
   <title>Kirs — Замовлення</title>
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
-  <link rel="stylesheet" href="/static/styles.css?v=20260722rmppdf" />
+  <link rel="stylesheet" href="/static/styles.css?v=20260722ukfile" />
 </head>
 <body>
   <div class="app">
@@ -344,11 +344,15 @@
                 </label>
               </div>
 
-              <label class="field" id="ttnPdfField">
+              <div class="field" id="ttnPdfField">
                 <span class="field-label">Файл PDF 100×100</span>
-                <input id="ttnPdf" name="ttnPdf" type="file" accept="application/pdf,.pdf" />
+                <label class="file-picker">
+                  <input id="ttnPdf" name="ttnPdf" class="file-picker-input" type="file" accept="application/pdf,.pdf" />
+                  <span class="file-picker-btn">Обрати файл</span>
+                  <span class="file-picker-name" id="ttnPdfName" data-empty="Файл не обрано">Файл не обрано</span>
+                </label>
                 <span class="field-hint">Обовʼязково · етикетка ТТН у форматі PDF 100×100</span>
-              </label>
+              </div>
             </div>
 
             <div id="recipientNameFields">
@@ -541,11 +545,15 @@
                 <p class="requisites-warn">Зверніть увагу! Реквізити було оновлено.</p>
                 <div class="requisites-details" id="requisitesDetails"></div>
               </div>
-              <label class="field hidden" id="receiptField">
+              <div class="field hidden" id="receiptField">
                 <span class="field-label">Квитанція про оплату</span>
-                <input id="paymentReceipt" name="paymentReceipt" type="file" accept="image/*,.pdf" />
+                <label class="file-picker">
+                  <input id="paymentReceipt" name="paymentReceipt" class="file-picker-input" type="file" accept="image/*,.pdf" />
+                  <span class="file-picker-btn">Обрати файл</span>
+                  <span class="file-picker-name" id="paymentReceiptName" data-empty="Файл не обрано">Файл не обрано</span>
+                </label>
                 <span class="field-hint">Обовʼязково при режимі повної передоплати</span>
-              </label>
+              </div>
             </div>
           </div>
 
@@ -570,7 +578,7 @@
       <section id="confirmView" class="view hidden">
         <button type="button" class="back-link" id="confirmBack">← Назад до форми</button>
         <h1 class="title">Підтвердження замовлення</h1>
-        <p class="hint">Перевірте дані перед відправкою. Після підтвердження заказ буде прийнято.</p>
+        <p class="hint">Перевірте дані перед відправкою. Після підтвердження замовлення буде прийнято.</p>
         <div id="confirmSummary" class="confirm-summary"></div>
         <p id="confirmError" class="form-error hidden"></p>
         <button type="button" class="btn primary block" id="confirmSubmit">Підтвердити замовлення</button>
@@ -585,6 +593,6 @@
   </div>
 
   <button type="button" id="photoZoomBackdrop" class="photo-zoom-backdrop hidden" aria-label="Закрити фото"></button>
-  <script src="/static/app.js?v=20260722rmppdf"></script>
+  <script src="/static/app.js?v=20260722ukfile"></script>
 </body>
 </html>
