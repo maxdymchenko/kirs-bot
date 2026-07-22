@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
   <title>Kirs — Замовлення</title>
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
-  <link rel="stylesheet" href="/static/styles.css?v=20260722ownttn2" />
+  <link rel="stylesheet" href="/static/styles.css?v=20260722rmppdf" />
 </head>
 <body>
   <div class="app">
@@ -310,7 +310,7 @@
                   <input type="radio" name="ownTtnCarrier" value="rozetka" />
                   <span class="choice-body">
                     <span class="choice-title">Розетка</span>
-                    <span class="choice-sub">Власний номер RMP</span>
+                    <span class="choice-sub">Власний номер RMP + PDF</span>
                   </span>
                 </label>
               </div>
@@ -328,11 +328,6 @@
                   />
                   <p class="field-hint">Обовʼязково · лише цифри</p>
                 </label>
-                <label class="field" id="ttnPdfField">
-                  <span class="field-label">Файл PDF 100×100</span>
-                  <input id="ttnPdf" name="ttnPdf" type="file" accept="application/pdf,.pdf" />
-                  <span class="field-hint">Обовʼязково · етикетка ТТН у форматі PDF 100×100</span>
-                </label>
               </div>
 
               <div id="ttnRmpBlock" class="hidden">
@@ -348,6 +343,12 @@
                   <p class="field-hint">Обовʼязково · формат RMP-XXXXXXXXX</p>
                 </label>
               </div>
+
+              <label class="field" id="ttnPdfField">
+                <span class="field-label">Файл PDF 100×100</span>
+                <input id="ttnPdf" name="ttnPdf" type="file" accept="application/pdf,.pdf" />
+                <span class="field-hint">Обовʼязково · етикетка ТТН у форматі PDF 100×100</span>
+              </label>
             </div>
 
             <div id="recipientNameFields">
@@ -584,6 +585,6 @@
   </div>
 
   <button type="button" id="photoZoomBackdrop" class="photo-zoom-backdrop hidden" aria-label="Закрити фото"></button>
-  <script src="/static/app.js?v=20260722ownttn2"></script>
+  <script src="/static/app.js?v=20260722rmppdf"></script>
 </body>
 </html>

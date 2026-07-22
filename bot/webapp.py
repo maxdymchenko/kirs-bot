@@ -708,6 +708,17 @@ def create_web_app(
                 ttn = re.sub(r"\D", "", raw_ttn)
                 if len(ttn) < 10:
                     raise HTTPException(status_code=400, detail="Вкажіть повний номер ТТН")
+            if not str(payload.ttn_pdf_name or "").strip():
+                raise HTTPException(
+                    status_code=400,
+                    detail="Прикріпіть файл PDF 100×100",
+                )
+            pdf_name = str(payload.ttn_pdf_name or "").strip().lower()
+            if not pdf_name.endswith(".pdf"):
+                raise HTTPException(
+                    status_code=400,
+                    detail="Файл 100×100 має бути у форматі PDF",
+                )
 
         if payload.payment_method == "balance":
             if not dropper.allow_balance_payment:

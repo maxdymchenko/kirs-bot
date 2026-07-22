@@ -1330,17 +1330,17 @@
           return "Вкажіть повний номер ТТН";
         }
         data.ownTtnCarrier = "nova_poshta";
-        if (!data.ttnPdfFile) {
-          return "Прикріпіть файл PDF 100×100";
-        }
-        const pdfName = (data.ttnPdfFile.name || "").toLowerCase();
-        const pdfType = data.ttnPdfFile.type || "";
-        if (pdfType && pdfType !== "application/pdf" && !pdfName.endsWith(".pdf")) {
-          return "Файл 100×100 має бути у форматі PDF";
-        }
-        if (!pdfName.endsWith(".pdf")) {
-          return "Файл 100×100 має бути у форматі PDF";
-        }
+      }
+      if (!data.ttnPdfFile) {
+        return "Прикріпіть файл PDF 100×100";
+      }
+      const pdfName = (data.ttnPdfFile.name || "").toLowerCase();
+      const pdfType = data.ttnPdfFile.type || "";
+      if (pdfType && pdfType !== "application/pdf" && !pdfName.endsWith(".pdf")) {
+        return "Файл 100×100 має бути у форматі PDF";
+      }
+      if (!pdfName.endsWith(".pdf")) {
+        return "Файл 100×100 має бути у форматі PDF";
       }
     } else {
       if (!data.firstName) return "Вкажіть ім'я отримувача";
