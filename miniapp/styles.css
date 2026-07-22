@@ -555,6 +555,46 @@ select {
   font-weight: 800;
 }
 
+.balance-stats {
+  display: grid;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.balance-stat {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: #fff;
+  border: 1px solid var(--line);
+}
+
+.balance-stat-label {
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.balance-stat-value {
+  font-size: 14px;
+  font-weight: 800;
+  text-align: right;
+}
+
+.ledger-card-top {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.ledger-amount {
+  flex-shrink: 0;
+  font-size: 15px;
+}
+
 .ledger-amount-plus { color: var(--ok); font-weight: 800; }
 .ledger-amount-minus { color: var(--danger); font-weight: 800; }
 

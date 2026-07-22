@@ -408,17 +408,51 @@ def create_web_app(
         dropper = storage.get_dropper_by_chat(chat_id)
         if not dropper:
             raise HTTPException(status_code=404, detail="Дроппера не знайдено")
-        ledger = storage.list_ledger(dropper.id, limit=100)
-        referrals = [x for x in ledger if x["entry_type"] == "referral_credit"]
+        ledger_all = storage.list_ledger(dropper.id, limit=5000)
+        ledger = ledger_all[:200]
+        referral_rows = [x for x in ledger_all if x["entry_type"] == "referral_credit"]
+        credited_total = round(sum(x["amount"] for x in ledger_all if x["amount"] > 0), 2)
+        debited_total = round(
+            abs(sum(x["amount"] for x in ledger_all if x["amount"] < 0)), 2
+        )
+        referral_earned_total = round(sum(x["amount"] for x in referral_rows), 2)
+
+        enriched = []
+        for row in ledger:
+            item = dict(row)
+            related_id = row.get("related_dropper_id")
+            if related_id:
+                source = storage.get_dropper_by_id(related_id)
+                item["related_dropper_name"] = (
+                    source.company_name if source else ""
+                )
+            else:
+                item["related_dropper_name"] = ""
+            enriched.append(item)
+
+        balance = storage.get_balance(dropper.id)
+        floor = (
+            -max(0.0, float(dropper.negative_balance_limit or 0))
+            if dropper.allow_negative_balance
+            else 0.0
+        )
+        spend_room = (
+            max(0.0, balance - floor) if dropper.allow_balance_payment else 0.0
+        )
         return {
             "dropper": dropper.to_public_dict(),
-            "balance": storage.get_balance(dropper.id),
-            "referral_earned_total": round(sum(x["amount"] for x in referrals), 2),
-            "ledger": ledger,
-            "referrals": referrals,
+            "balance": balance,
+            "spend_room": round(spend_room, 2),
+            "referral_earned_total": referral_earned_total,
+            "credited_total": credited_total,
+            "debited_total": debited_total,
+            "ledger": enriched,
+            "referrals": [
+                x for x in enriched if x["entry_type"] == "referral_credit"
+            ],
             "note": (
-                "Реферальні нарахування = % від дроп-ціни замовлень "
-                "приведених дропперів (після підтвердження замовлення)."
+                "Тут усі операції по балансу: списання за замовлення, "
+                "передплата понад «Разом», реферальні нарахування тощо."
             ),
         }
 

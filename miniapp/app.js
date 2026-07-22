@@ -75,6 +75,7 @@
     balanceView: document.getElementById("balanceView"),
     balanceHero: document.getElementById("balanceHero"),
     balanceReferralTotal: document.getElementById("balanceReferralTotal"),
+    balanceStats: document.getElementById("balanceStats"),
     balanceLedger: document.getElementById("balanceLedger"),
     balanceHint: document.getElementById("balanceHint"),
     staffForm: document.getElementById("staffForm"),
@@ -403,10 +404,12 @@
     els.catalogView.classList.toggle("hidden", name !== "catalog");
     els.cartView.classList.toggle("hidden", name !== "cart");
     if (els.historyView) els.historyView.classList.toggle("hidden", name !== "history");
+    if (els.balanceView) els.balanceView.classList.toggle("hidden", name !== "balance");
     els.checkoutView.classList.add("hidden");
     if (els.confirmView) els.confirmView.classList.add("hidden");
     if (name === "cart") renderCart();
     if (name === "history") renderOrdersHistory();
+    if (name === "balance") renderBalanceView();
   }
 
   async function openCheckout() {
@@ -415,6 +418,7 @@
     els.catalogView.classList.add("hidden");
     els.cartView.classList.add("hidden");
     if (els.historyView) els.historyView.classList.add("hidden");
+    if (els.balanceView) els.balanceView.classList.add("hidden");
     if (els.confirmView) els.confirmView.classList.add("hidden");
     els.checkoutView.classList.remove("hidden");
     els.mainTabs.classList.add("hidden");
@@ -2354,9 +2358,46 @@ ${
     return `<span class="${cls}">${sign}${formatMoney(n)}</span>`;
   }
 
+  function ledgerTypeLabel(entryType) {
+    const key = String(entryType || "").trim();
+    if (key === "referral_credit") return "Реферальне нарахування";
+    if (key === "balance_payment") return "Оплата замовлення з балансу";
+    if (key === "prepay_overage_debit") return "Списання (передплата понад «Разом»)";
+    if (key === "manual_credit") return "Ручне нарахування";
+    if (key === "manual_debit") return "Ручне списання";
+    return key || "Операція";
+  }
+
+  function renderLedgerRow(r) {
+    const title = r.title || ledgerTypeLabel(r.entry_type);
+    const typeLabel = ledgerTypeLabel(r.entry_type);
+    const orderNo = String(r.related_order_id || "").trim();
+    const sourceName = String(r.related_dropper_name || "").trim();
+    const when = formatOrderDate(r.created_at) || r.created_at || "";
+    const details = [];
+    if (typeLabel && typeLabel !== title) details.push(typeLabel);
+    if (orderNo) details.push(`Замовлення: ${orderNo}`);
+    if (sourceName) details.push(`Від реферала: ${sourceName}`);
+    if (r.note) details.push(r.note);
+    return `
+      <article class="owner-card ledger-card">
+        <div class="ledger-card-top">
+          <div class="owner-card-title">${escapeHtml(title)}</div>
+          <div class="ledger-amount">${formatLedgerAmount(r.amount)}</div>
+        </div>
+        ${
+          details.length
+            ? `<div class="meta-soft">${details.map((d) => escapeHtml(d)).join("<br/>")}</div>`
+            : ""
+        }
+        <div class="meta-soft">${escapeHtml(when)}</div>
+      </article>`;
+  }
+
   async function renderBalanceView() {
     if (!els.balanceView) return;
     els.balanceHero.textContent = "…";
+    if (els.balanceStats) els.balanceStats.innerHTML = "";
     els.balanceLedger.innerHTML = `<div class="ac-loading">Завантаження...</div>`;
     try {
       const chatId = effectiveDropperChatId();
@@ -2365,27 +2406,52 @@ ${
       );
       const data = await response.json();
       if (!response.ok) throw new Error(data.detail || "Помилка балансу");
-      els.balanceHero.textContent = formatMoney(data.balance || 0);
-      els.balanceReferralTotal.textContent = `Реферально нараховано: ${formatMoney(
-        data.referral_earned_total || 0
-      )}`;
+      const balance = Number(data.balance || 0);
+      els.balanceHero.textContent = formatMoney(balance);
+      const dropper = data.dropper || {};
+      const spendRoom = Number(data.spend_room != null ? data.spend_room : 0);
+      const refTotal = Number(data.referral_earned_total || 0);
+      const debited = Number(data.debited_total || 0);
+      const credited = Number(data.credited_total || 0);
+      if (els.balanceStats) {
+        const bits = [
+          `<div class="balance-stat"><span class="balance-stat-label">Реферально нараховано</span><span class="balance-stat-value">${escapeHtml(
+            formatMoney(refTotal)
+          )}</span></div>`,
+          `<div class="balance-stat"><span class="balance-stat-label">Усього нараховано</span><span class="balance-stat-value ledger-amount-plus">+${escapeHtml(
+            formatMoney(credited)
+          )}</span></div>`,
+          `<div class="balance-stat"><span class="balance-stat-label">Усього списано</span><span class="balance-stat-value ledger-amount-minus">${escapeHtml(
+            formatMoney(-Math.abs(debited))
+          )}</span></div>`,
+        ];
+        if (dropper.allow_balance_payment) {
+          bits.push(
+            `<div class="balance-stat"><span class="balance-stat-label">Доступно до списання</span><span class="balance-stat-value">${escapeHtml(
+              formatMoney(spendRoom)
+            )}</span></div>`
+          );
+        }
+        if (dropper.referral_code) {
+          bits.push(
+            `<div class="balance-stat"><span class="balance-stat-label">Ваш реферальний код</span><span class="balance-stat-value">${escapeHtml(
+              dropper.referral_code
+            )}</span></div>`
+          );
+        }
+        els.balanceStats.innerHTML = bits.join("");
+      }
+      if (els.balanceReferralTotal) {
+        els.balanceReferralTotal.textContent = "";
+      }
       if (data.note && els.balanceHint) els.balanceHint.textContent = data.note;
       const rows = data.ledger || [];
       els.balanceLedger.innerHTML = rows.length
-        ? rows
-            .map(
-              (r) => `
-          <article class="owner-card">
-            <div class="owner-card-title">${escapeHtml(r.title || r.entry_type)}</div>
-            <div class="meta">${formatLedgerAmount(r.amount)}</div>
-            <div class="meta-soft">${escapeHtml(r.note || "")}</div>
-            <div class="meta-soft">${escapeHtml(r.created_at || "")}</div>
-          </article>`
-            )
-            .join("")
-        : `<div class="empty">Поки немає нарахувань. Реферали з’являться після замовлень приведених дропперів.</div>`;
+        ? rows.map(renderLedgerRow).join("")
+        : `<div class="empty">Поки немає операцій по балансу. Тут з’являться списання, нарахування та реферали.</div>`;
     } catch (error) {
       els.balanceHero.textContent = "—";
+      if (els.balanceStats) els.balanceStats.innerHTML = "";
       els.balanceLedger.innerHTML = `<div class="form-error">${escapeHtml(
         error.message || "Помилка"
       )}</div>`;
@@ -3059,16 +3125,18 @@ ${
       return;
     }
     if (mode === "balance") {
-      if (els.balanceView) els.balanceView.classList.remove("hidden");
-      renderBalanceView();
+      els.orderMain.classList.remove("hidden");
+      els.mainTabs.classList.remove("hidden");
+      els.cartChip.classList.remove("hidden");
+      loadColorOptions();
+      loadDropperSettings().then(() => {
+        syncPaymentAndTtn();
+        updateCartIndicators();
+        switchTab("balance");
+      });
       return;
     }
     if (mode === "dropper") {
-      if (queryParam("view") === "balance") {
-        if (els.balanceView) els.balanceView.classList.remove("hidden");
-        renderBalanceView();
-        return;
-      }
       els.orderMain.classList.remove("hidden");
       els.mainTabs.classList.remove("hidden");
       els.cartChip.classList.remove("hidden");
@@ -3077,7 +3145,9 @@ ${
         syncPaymentAndTtn();
         updateCartIndicators();
       });
-      if (queryParam("view") === "history") {
+      if (queryParam("view") === "balance") {
+        switchTab("balance");
+      } else if (queryParam("view") === "history") {
         switchTab("history");
       }
       return;
