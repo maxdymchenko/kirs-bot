@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
   <title>Kirs — Замовлення</title>
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
-  <link rel="stylesheet" href="/static/styles.css?v=20260723ownttn1" />
+  <link rel="stylesheet" href="/static/styles.css?v=20260723bcast1" />
 </head>
 <body>
   <div class="app">
@@ -93,7 +93,33 @@
       </nav>
 
       <div id="ownerTabDroppers" class="owner-panel">
-        <h2 class="section-title">Зареєстровані дроппери</h2>
+        <div class="owner-droppers-head">
+          <h2 class="section-title">Зареєстровані дроппери</h2>
+          <button type="button" class="owner-broadcast-btn" id="ownerBroadcastOpen">
+            Відправити повідомлення дропперам
+          </button>
+        </div>
+        <div id="ownerBroadcastPanel" class="owner-broadcast-panel hidden">
+          <label class="field">
+            <span class="field-label">Текст повідомлення</span>
+            <textarea
+              id="ownerBroadcastText"
+              rows="5"
+              maxlength="3500"
+              placeholder="Новина або оголошення для обраних дропперів…"
+            ></textarea>
+          </label>
+          <div class="owner-broadcast-toolbar">
+            <button type="button" class="btn secondary" id="ownerBroadcastSelectAll">Обрати всіх</button>
+            <button type="button" class="btn secondary" id="ownerBroadcastClearAll">Зняти всіх</button>
+            <span class="meta-soft" id="ownerBroadcastCount">Обрано: 0</span>
+          </div>
+          <p id="ownerBroadcastError" class="form-error hidden"></p>
+          <div class="owner-broadcast-send-row">
+            <button type="button" class="btn primary" id="ownerBroadcastSend">Надіслати</button>
+            <button type="button" class="btn secondary" id="ownerBroadcastCancel">Скасувати</button>
+          </div>
+        </div>
         <div id="ownerDroppers" class="results"></div>
       </div>
 
@@ -659,6 +685,6 @@
   </div>
 
   <button type="button" id="photoZoomBackdrop" class="photo-zoom-backdrop hidden" aria-label="Закрити фото"></button>
-  <script src="/static/app.js?v=20260723ownttn1"></script>
+  <script src="/static/app.js?v=20260723bcast1"></script>
 </body>
 </html>

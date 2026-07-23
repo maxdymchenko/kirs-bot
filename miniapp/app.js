@@ -55,6 +55,15 @@
     blacklistError: document.getElementById("blacklistError"),
     phoneBlacklistWarn: document.getElementById("phoneBlacklistWarn"),
     ownerDroppers: document.getElementById("ownerDroppers"),
+    ownerBroadcastOpen: document.getElementById("ownerBroadcastOpen"),
+    ownerBroadcastPanel: document.getElementById("ownerBroadcastPanel"),
+    ownerBroadcastText: document.getElementById("ownerBroadcastText"),
+    ownerBroadcastSelectAll: document.getElementById("ownerBroadcastSelectAll"),
+    ownerBroadcastClearAll: document.getElementById("ownerBroadcastClearAll"),
+    ownerBroadcastCount: document.getElementById("ownerBroadcastCount"),
+    ownerBroadcastError: document.getElementById("ownerBroadcastError"),
+    ownerBroadcastSend: document.getElementById("ownerBroadcastSend"),
+    ownerBroadcastCancel: document.getElementById("ownerBroadcastCancel"),
     ownerStaff: document.getElementById("ownerStaff"),
     ownerBalances: document.getElementById("ownerBalances"),
     ownerReferralHistory: document.getElementById("ownerReferralHistory"),
@@ -3280,6 +3289,47 @@ ${
     }
   }
 
+  function updateBroadcastSelectedCount() {
+    if (!els.ownerBroadcastCount || !els.ownerDroppers) return;
+    const n = els.ownerDroppers.querySelectorAll(
+      '[data-broadcast-pick]:checked'
+    ).length;
+    els.ownerBroadcastCount.textContent = `Обрано: ${n}`;
+  }
+
+  function setBroadcastMode(on) {
+    const enabled = Boolean(on);
+    if (els.ownerBroadcastPanel) {
+      els.ownerBroadcastPanel.classList.toggle("hidden", !enabled);
+    }
+    if (els.ownerBroadcastOpen) {
+      els.ownerBroadcastOpen.classList.toggle("is-active", enabled);
+    }
+    if (els.ownerDroppers) {
+      els.ownerDroppers.classList.toggle("owner-droppers-broadcast", enabled);
+    }
+    if (!enabled && els.ownerDroppers) {
+      els.ownerDroppers
+        .querySelectorAll("[data-broadcast-pick]")
+        .forEach((box) => {
+          box.checked = false;
+        });
+    }
+    if (els.ownerBroadcastError) {
+      els.ownerBroadcastError.classList.add("hidden");
+      els.ownerBroadcastError.textContent = "";
+    }
+    updateBroadcastSelectedCount();
+  }
+
+  function setBroadcastPicks(checked) {
+    if (!els.ownerDroppers) return;
+    els.ownerDroppers.querySelectorAll("[data-broadcast-pick]").forEach((box) => {
+      box.checked = Boolean(checked);
+    });
+    updateBroadcastSelectedCount();
+  }
+
   async function saveDropperSetting(chatId, patch) {
     const response = await fetch(
       `/api/owner/droppers/${encodeURIComponent(chatId)}/settings`,
@@ -3316,6 +3366,10 @@ ${
             .map(
               (d) => `
           <article class="owner-card is-collapsed" data-dropper-chat="${escapeHtml(d.chat_id)}">
+            <label class="owner-card-pick">
+              <input type="checkbox" data-broadcast-pick value="${escapeHtml(d.chat_id)}" />
+              Обрати для розсилки
+            </label>
             <button type="button" class="owner-card-toggle" aria-expanded="false">
               <div class="owner-card-head">
                 <h3 class="owner-card-title">${escapeHtml(d.company_name)}</h3>
@@ -4144,6 +4198,9 @@ ${
     };
 
     els.ownerDroppers.addEventListener("click", async (event) => {
+      if (event.target.closest("[data-broadcast-pick], .owner-card-pick")) {
+        return;
+      }
       const toggle = event.target.closest(".owner-card-toggle");
       if (toggle && els.ownerDroppers.contains(toggle)) {
         const card = toggle.closest(".owner-card");
@@ -4212,6 +4269,10 @@ ${
     });
 
     els.ownerDroppers.addEventListener("change", async (event) => {
+      if (event.target.matches("[data-broadcast-pick]")) {
+        updateBroadcastSelectedCount();
+        return;
+      }
       const card = event.target.closest("[data-dropper-chat]");
       if (!card) return;
       const check = event.target.closest("[data-rule]");

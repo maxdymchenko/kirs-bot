@@ -134,10 +134,11 @@ class PhoneBlacklistDeleteRequest(BaseModel):
     owner_user_id: str = Field("", max_length=64)
 
 
-class DropperPaymentFlagRequest(BaseModel):
+class DropperBroadcastRequest(BaseModel):
     owner_chat_id: str = Field("", max_length=64)
     owner_user_id: str = Field("", max_length=64)
-    require_full_payment: bool
+    message: str = Field(..., min_length=1, max_length=3500)
+    chat_ids: list[str] = Field(default_factory=list)
 
 
 class DropperSettingsUpdateRequest(BaseModel):
@@ -554,6 +555,82 @@ def create_web_app(
             items.append(data)
         items.sort(key=lambda x: (-float(x.get("turnover") or 0), str(x.get("company_name") or "").casefold()))
         return {"count": len(items), "items": items}
+
+    @app.post("/api/owner/droppers/broadcast")
+    async def owner_broadcast_droppers(payload: DropperBroadcastRequest) -> dict:
+        _require_owner(payload.owner_chat_id, payload.owner_user_id)
+        text = str(payload.message or "").strip()
+        if not text:
+            raise HTTPException(status_code=400, detail="Введіть текст повідомлення")
+        raw_ids = [str(x or "").strip() for x in (payload.chat_ids or [])]
+        chat_ids = []
+        seen: set[str] = set()
+        for cid in raw_ids:
+            if not cid or cid in seen:
+                continue
+            seen.add(cid)
+            chat_ids.append(cid)
+        if not chat_ids:
+            raise HTTPException(status_code=400, detail="Оберіть хоча б одного дроппера")
+        if len(chat_ids) > 300:
+            raise HTTPException(status_code=400, detail="Занадто багато отримувачів (макс. 300)")
+
+        active = {
+            d.chat_id: d
+            for d in storage.list_droppers()
+            if d.status == "active"
+        }
+        sent = 0
+        failed = 0
+        skipped = 0
+        errors: list[str] = []
+        message = f"📢 Повідомлення від постачальника\n\n{text}"
+
+        for cid in chat_ids:
+            dropper = active.get(cid) or active.get(storage.resolve_chat_id(cid) or "")
+            if not dropper:
+                skipped += 1
+                continue
+            target = dropper.chat_id
+            try:
+                cfg = _require_settings()
+
+                def _send(chat: str = target, body: str = message) -> None:
+                    import json
+                    import urllib.request
+
+                    url = f"https://api.telegram.org/bot{cfg.telegram_token}/sendMessage"
+                    req = urllib.request.Request(
+                        url,
+                        data=json.dumps(
+                            {
+                                "chat_id": chat,
+                                "text": body,
+                                "disable_web_page_preview": True,
+                            },
+                            ensure_ascii=False,
+                        ).encode("utf-8"),
+                        headers={"Content-Type": "application/json"},
+                        method="POST",
+                    )
+                    with urllib.request.urlopen(req, timeout=20) as resp:
+                        resp.read()
+
+                await asyncio.to_thread(_send)
+                sent += 1
+            except Exception as exc:
+                failed += 1
+                logger.exception("Broadcast failed for %s", target)
+                if len(errors) < 8:
+                    errors.append(f"{dropper.company_name}: {exc}")
+
+        return {
+            "ok": True,
+            "sent": sent,
+            "failed": failed,
+            "skipped": skipped,
+            "errors": errors,
+        }
 
     @app.get("/api/dropper/balance")
     async def dropper_balance(chat_id: str = Query(..., max_length=64)) -> dict:
