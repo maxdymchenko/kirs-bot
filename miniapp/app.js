@@ -1954,8 +1954,8 @@ ${
     const profit = orderDropperProfit(order);
     const profitHtml =
       profit == null
-        ? ""
-        : `<div class="order-card-profit">${escapeHtml(formatMoney(profit))}</div>`;
+        ? `<span class="order-card-profit is-empty" aria-hidden="true"></span>`
+        : `<span class="order-card-profit">${escapeHtml(formatMoney(profit))}</span>`;
     const orderId = escapeHtml(String(order.id || order.order_number || ""));
     const statusSub = hist.sub
       ? `<div class="order-card-status-sub">${escapeHtml(hist.sub)}</div>`
@@ -1981,8 +1981,10 @@ ${
               )}</div>
               ${statusSub}
             </div>
-            ${profitHtml}
-            <span class="order-card-chevron" aria-hidden="true"></span>
+            <div class="order-card-aside-foot">
+              ${profitHtml}
+              <span class="order-card-chevron" aria-hidden="true"></span>
+            </div>
           </div>
         </button>
         <div class="order-card-details hidden">
