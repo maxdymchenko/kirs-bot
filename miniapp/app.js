@@ -4185,6 +4185,89 @@ ${
     });
   }
 
+  if (els.ownerBroadcastOpen) {
+    els.ownerBroadcastOpen.addEventListener("click", () => {
+      const opening = els.ownerBroadcastPanel?.classList.contains("hidden");
+      setBroadcastMode(opening);
+      if (opening && els.ownerBroadcastText) {
+        els.ownerBroadcastText.focus();
+      }
+    });
+  }
+  if (els.ownerBroadcastCancel) {
+    els.ownerBroadcastCancel.addEventListener("click", () => {
+      if (els.ownerBroadcastText) els.ownerBroadcastText.value = "";
+      setBroadcastMode(false);
+    });
+  }
+  if (els.ownerBroadcastSelectAll) {
+    els.ownerBroadcastSelectAll.addEventListener("click", () => setBroadcastPicks(true));
+  }
+  if (els.ownerBroadcastClearAll) {
+    els.ownerBroadcastClearAll.addEventListener("click", () => setBroadcastPicks(false));
+  }
+  if (els.ownerBroadcastSend) {
+    els.ownerBroadcastSend.addEventListener("click", async () => {
+      if (els.ownerBroadcastError) {
+        els.ownerBroadcastError.classList.add("hidden");
+        els.ownerBroadcastError.textContent = "";
+      }
+      const message = (els.ownerBroadcastText?.value || "").trim();
+      const chatIds = [
+        ...(els.ownerDroppers?.querySelectorAll("[data-broadcast-pick]:checked") || []),
+      ].map((box) => box.value);
+      if (!message) {
+        if (els.ownerBroadcastError) {
+          els.ownerBroadcastError.textContent = "Введіть текст повідомлення";
+          els.ownerBroadcastError.classList.remove("hidden");
+        }
+        return;
+      }
+      if (!chatIds.length) {
+        if (els.ownerBroadcastError) {
+          els.ownerBroadcastError.textContent = "Оберіть хоча б одного дроппера";
+          els.ownerBroadcastError.classList.remove("hidden");
+        }
+        return;
+      }
+      els.ownerBroadcastSend.disabled = true;
+      try {
+        const response = await fetch("/api/owner/droppers/broadcast", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(
+            ownerAuthBody({
+              message,
+              chat_ids: chatIds,
+            })
+          ),
+        });
+        const data = await response.json();
+        if (!response.ok) {
+          throw new Error(typeof data.detail === "string" ? data.detail : "Помилка");
+        }
+        const sent = Number(data.sent || 0);
+        const failed = Number(data.failed || 0);
+        showToast(
+          failed
+            ? `Надіслано: ${sent}, помилок: ${failed}`
+            : `Повідомлення надіслано: ${sent}`
+        );
+        if (els.ownerBroadcastText) els.ownerBroadcastText.value = "";
+        setBroadcastMode(false);
+      } catch (error) {
+        if (els.ownerBroadcastError) {
+          els.ownerBroadcastError.textContent = error.message || "Помилка";
+          els.ownerBroadcastError.classList.remove("hidden");
+        } else {
+          showToast(error.message || "Помилка");
+        }
+      } finally {
+        els.ownerBroadcastSend.disabled = false;
+      }
+    });
+  }
+
   if (els.ownerDroppers) {
     const persistRule = async (card, patch, rollback) => {
       const chatId = card.getAttribute("data-dropper-chat");
