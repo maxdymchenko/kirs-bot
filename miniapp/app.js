@@ -2936,18 +2936,26 @@ ${
       .map(
         (row, index) => `
       <div class="np-key-row" data-np-key-index="${index}">
-        <label class="np-key-enabled">
-          <input type="checkbox" data-np-field="enabled" ${row.enabled ? "checked" : ""} />
-          Використовувати для створення ТТН
-        </label>
-        <input type="text" data-np-field="label" placeholder="Назва кабінету" value="${escapeHtml(
-          row.label || ""
-        )}" />
-        <input type="password" data-np-field="api_key" placeholder="API-ключ Нової Пошти" value="${escapeHtml(
-          row.api_key || ""
-        )}" autocomplete="off" />
-        <div class="np-key-actions">
-          <button type="button" class="btn secondary" data-np-remove="${index}">Видалити</button>
+        <div class="np-key-fields">
+          <label class="field compact-field">
+            <span class="field-label">Назва кабінету</span>
+            <input type="text" data-np-field="label" placeholder="Напр. Кабінет 1" value="${escapeHtml(
+              row.label || ""
+            )}" autocomplete="off" />
+          </label>
+          <label class="field compact-field">
+            <span class="field-label">API-ключ</span>
+            <input type="password" data-np-field="api_key" placeholder="Вставте ключ Нової Пошти" value="${escapeHtml(
+              row.api_key || ""
+            )}" autocomplete="off" />
+          </label>
+        </div>
+        <div class="np-key-footer">
+          <label class="np-key-enabled">
+            <input type="checkbox" data-np-field="enabled" ${row.enabled ? "checked" : ""} />
+            <span>Основний для створення ТТН</span>
+          </label>
+          <button type="button" class="btn danger" data-np-remove="${index}">Видалити</button>
         </div>
       </div>`
       )
