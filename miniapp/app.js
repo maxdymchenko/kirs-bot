@@ -133,6 +133,7 @@
     patronymicHint: document.getElementById("patronymicHint"),
     lastName: document.getElementById("lastName"),
     ownTtn: document.getElementById("ownTtn"),
+    ownTtnToggleRow: document.getElementById("ownTtnToggleRow"),
     ttnFields: document.getElementById("ttnFields"),
     ttnNpBlock: document.getElementById("ttnNpBlock"),
     ttnRmpBlock: document.getElementById("ttnRmpBlock"),
@@ -1055,9 +1056,18 @@
   }
 
   function syncPaymentAndTtn() {
-    const ownTtn = Boolean(els.ownTtn.checked);
     const allowCod = dropperSettings.allow_cod !== false;
     const allowBalance = Boolean(dropperSettings.allow_balance_payment);
+
+    // Без наложки — лише власна ТТН (тумблер не потрібен)
+    if (!allowCod && els.ownTtn && !els.ownTtn.checked) {
+      els.ownTtn.checked = true;
+    }
+    if (els.ownTtnToggleRow) {
+      els.ownTtnToggleRow.classList.toggle("hidden", !allowCod);
+    }
+
+    const ownTtn = Boolean(els.ownTtn?.checked);
     syncOwnTtnCarrierUi();
 
     // При власній ТТН або без дозволу наложки — COD ховаємо
