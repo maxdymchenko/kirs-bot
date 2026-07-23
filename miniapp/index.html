@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
   <title>Kirs — Замовлення</title>
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
-  <link rel="stylesheet" href="/static/styles.css?v=20260722refprog2" />
+  <link rel="stylesheet" href="/static/styles.css?v=20260722dropprice1" />
 </head>
 <body>
   <div class="app">
@@ -277,7 +277,7 @@
         <div id="cartFooter" class="cart-footer hidden">
           <div class="cart-total">
             Позицій: <strong id="cartCount">0</strong>
-            · Разом: <strong id="cartSum">0 ₴</strong>
+            · Дроп ціна: <strong id="cartSum">0 ₴</strong>
           </div>
           <button type="button" class="btn primary block" id="checkoutBtn">Оформити замовлення</button>
         </div>
@@ -482,7 +482,7 @@
             <h2 class="section-title">Спосіб оплати</h2>
             <div class="info-box" id="codPaymentHint">
               При виборі «Оплата при отриманні», поштовій компанії буде вказано Оголошену вартість
-              та Суму зворотної доставки згідно суми «Разом» (з врахуванням передплати) на замовлення.
+              та Суму зворотної доставки згідно суми «Дроп ціна» (з врахуванням передплати) на замовлення.
             </div>
 
             <div class="choice-list" role="radiogroup" aria-label="Спосіб оплати">
@@ -510,7 +510,7 @@
             </div>
 
             <div id="balancePayHint" class="info-box hidden">
-              Суму «Разом» буде списано з балансу дроппера. Якщо коштів не вистачає — підете в мінус у межах дозволеного ліміту.
+              Суму «Дроп ціна» буде списано з балансу дроппера. Якщо коштів не вистачає — підете в мінус у межах дозволеного ліміту.
             </div>
 
             <div id="prepayBlock">
@@ -597,7 +597,7 @@
       <section id="balanceView" class="view hidden">
         <h1 class="title">Баланс</h1>
         <p class="hint" id="balanceHint">
-          Усі нарахування та списання: оплата з балансу, передплата понад «Разом» тощо.
+          Усі нарахування та списання: оплата з балансу, передплата понад «Дроп ціна» тощо.
         </p>
         <div class="balance-hero" id="balanceHero">—</div>
         <div class="balance-stats" id="balanceStats"></div>
@@ -636,6 +636,6 @@
   </div>
 
   <button type="button" id="photoZoomBackdrop" class="photo-zoom-backdrop hidden" aria-label="Закрити фото"></button>
-  <script src="/static/app.js?v=20260722refprog2"></script>
+  <script src="/static/app.js?v=20260722dropprice1"></script>
 </body>
 </html>

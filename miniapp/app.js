@@ -1049,7 +1049,7 @@
     if (els.balancePayHint && showBalance) {
       const room = balanceSpendRoom();
       els.balancePayHint.textContent =
-        `Суму «Разом» (${formatMoneyAmount(total)} грн) буде списано з балансу. ` +
+        `Суму «Дроп ціна» (${formatMoneyAmount(total)} грн) буде списано з балансу. ` +
         `Доступно з урахуванням ліміту мінусу: ${formatMoneyAmount(room)} грн.`;
     }
   }
@@ -1423,7 +1423,7 @@
       const maxPrepay = maxPrepayAmount(data.total);
       if (prepay > maxPrepay) {
         if (dropperSettings.allow_balance_payment) {
-          return `Передплата не може перевищувати ${Math.round(maxPrepay)} грн (Разом + доступний баланс)`;
+          return `Передплата не може перевищувати ${Math.round(maxPrepay)} грн (Дроп ціна + доступний баланс)`;
         }
         return `Передплата не може перевищувати ${Math.round(data.total)} грн`;
       }
@@ -1523,7 +1523,7 @@ ${escapeHtml(deliveryExtra)}</div>
       <div class="confirm-block">
         <div class="confirm-label">Оплата</div>
         <div class="confirm-value">${escapeHtml(paymentMethodLabel(data.paymentMethod))}
-Разом: ${escapeHtml(formatMoneyAmount(totalExact))} ₴
+Дроп ціна: ${escapeHtml(formatMoneyAmount(totalExact))} ₴
 ${
   data.paymentMethod === "cod"
     ? `Накладений платіж: ${escapeHtml(formatMoneyAmount(codExact))} ₴\nПередплата: ${escapeHtml(formatMoneyAmount(prepayExact))} ₴\nПрибуток дроппера: ${escapeHtml(formatMoneyAmount(dropperProfit))} ₴`
@@ -1815,7 +1815,7 @@ ${escapeHtml(deliveryExtra)}</div>
         <div class="confirm-block">
           <div class="confirm-label">Оплата</div>
           <div class="confirm-value">${escapeHtml(paymentMethodLabel(method))}
-Разом: ${escapeHtml(formatMoneyAmount(order.total || 0))} ₴
+Дроп ціна: ${escapeHtml(formatMoneyAmount(order.total || 0))} ₴
 ${
   method === "cod" &&
   !(
@@ -1910,26 +1910,26 @@ ${
       <article class="order-card" data-order-id="${orderId}">
         <button type="button" class="order-card-toggle" aria-expanded="false">
           <div class="order-card-main">
-            <div class="order-card-head">
-              <div class="order-card-num">${escapeHtml(order.order_number || "")}</div>
-              <div class="order-card-status-wrap">
-                <div class="order-card-status status-${escapeHtml(hist.kind)}">${escapeHtml(
-                  hist.label
-                )}</div>
-                ${statusSub}
-              </div>
-            </div>
+            <div class="order-card-num">${escapeHtml(order.order_number || "")}</div>
             <div class="meta">${escapeHtml(formatOrderDate(order.created_at))}</div>
             <div class="meta">${escapeHtml(name || "—")} · ${escapeHtml(recipient.phone || "")}</div>
             <div class="meta">${escapeHtml(delivery.city || "")}</div>
-            <div class="meta">Разом: <b>${escapeHtml(formatMoney(order.total || 0))}</b>
+            <div class="meta">Дроп ціна: <b>${escapeHtml(formatMoney(order.total || 0))}</b>
               ${order.prepay ? ` · передплата ${escapeHtml(formatMoney(order.prepay))}` : ""}
             </div>
             <div class="meta">${escapeHtml(ttnLine)}</div>
             <div class="meta">${escapeHtml(itemsPreview + more)}</div>
           </div>
-          ${profitHtml}
-          <span class="order-card-chevron" aria-hidden="true"></span>
+          <div class="order-card-aside">
+            <div class="order-card-status-wrap">
+              <div class="order-card-status status-${escapeHtml(hist.kind)}">${escapeHtml(
+                hist.label
+              )}</div>
+              ${statusSub}
+            </div>
+            ${profitHtml}
+            <span class="order-card-chevron" aria-hidden="true"></span>
+          </div>
         </button>
         <div class="order-card-details hidden">
           ${renderOrderDetailsHtml(order)}
@@ -2612,7 +2612,7 @@ ${
     const key = String(entryType || "").trim();
     if (key === "referral_credit") return "Реферальне нарахування";
     if (key === "balance_payment") return "Оплата замовлення з балансу";
-    if (key === "prepay_overage_debit") return "Списання (передплата понад «Разом»)";
+    if (key === "prepay_overage_debit") return "Списання (передплата понад «Дроп ціна»)";
     if (key === "cod_profit_credit") return "Прибуток з наложки (посилку отримано)";
     if (key === "cod_profit_reversal") return "Сторно прибутку (повернення)";
     if (key === "return_delivery_debit") return "Доставка при відмові/поверненні";
@@ -2707,8 +2707,8 @@ ${
         els.balanceHint.textContent =
           data.note ||
           (programOn
-            ? "Усі нарахування та списання: оплата з балансу, передплата понад «Разом», реферали тощо."
-            : "Усі нарахування та списання: оплата з балансу, передплата понад «Разом» тощо.");
+            ? "Усі нарахування та списання: оплата з балансу, передплата понад «Дроп ціна», реферали тощо."
+            : "Усі нарахування та списання: оплата з балансу, передплата понад «Дроп ціна» тощо.");
       }
       const rows = data.ledger || [];
       els.balanceLedger.innerHTML = rows.length

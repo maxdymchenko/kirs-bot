@@ -1364,9 +1364,9 @@ input[type="file"] {
 .order-card-toggle {
   width: 100%;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto auto;
-  gap: 10px;
-  align-items: center;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: start;
   padding: 12px 14px;
   border: 0;
   background: transparent;
@@ -1382,12 +1382,24 @@ input[type="file"] {
   min-width: 0;
 }
 
+.order-card-aside {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  justify-content: flex-start;
+  gap: 8px;
+  width: max-content;
+  max-width: 46%;
+  margin-left: auto;
+  text-align: right;
+}
+
 .order-card-profit {
   font-weight: 800;
   font-size: 16px;
   color: var(--ok, #1a7f37);
   white-space: nowrap;
-  justify-self: end;
+  line-height: 1.2;
 }
 
 .order-card-chevron {
@@ -1397,12 +1409,13 @@ input[type="file"] {
   border-bottom: 2px solid var(--muted);
   transform: rotate(45deg);
   transition: transform 0.15s ease;
-  justify-self: end;
+  flex-shrink: 0;
+  margin-top: 2px;
 }
 
 .order-card.is-open .order-card-chevron {
   transform: rotate(-135deg);
-  margin-top: 4px;
+  margin-top: 6px;
 }
 
 .order-card-details {
@@ -1416,46 +1429,44 @@ input[type="file"] {
   padding-top: 12px;
 }
 
-.order-card-head {
-  display: flex;
-  justify-content: space-between;
-  gap: 10px;
-  align-items: baseline;
-}
-
 .order-card-num {
   font-weight: 800;
   font-size: 15px;
 }
 
 .order-card-status-wrap {
+  display: grid;
+  gap: 2px;
+  justify-items: end;
+  width: 100%;
   text-align: right;
-  max-width: 58%;
 }
 
 .order-card-status {
   font-size: 12px;
   font-weight: 700;
-  color: var(--accent);
   line-height: 1.25;
+  text-align: right;
+  max-width: 100%;
 }
 
 .order-card-status-sub {
-  margin-top: 2px;
   font-size: 11px;
   font-weight: 600;
   color: var(--muted);
   line-height: 1.3;
+  text-align: right;
 }
 
-.order-card-status.status-accepted { color: #2f6fed; }
-.order-card-status.status-transit { color: #0f766e; }
-.order-card-status.status-warehouse { color: #b45309; }
-.order-card-status.status-received { color: #15803d; }
-.order-card-status.status-refused { color: #b91c1c; }
-.order-card-status.status-returned { color: #a16207; }
-.order-card-status.status-return_warehouse { color: #6d28d9; }
-.order-card-status.status-other { color: var(--muted); }
+/* Статуси історії замовлень */
+.order-card-status.status-accepted { color: #2563eb; } /* синій — прийнято */
+.order-card-status.status-transit { color: #0d9488; } /* бірюзовий — в дорозі */
+.order-card-status.status-warehouse { color: #d97706; } /* помаранчевий — на відділенні */
+.order-card-status.status-received { color: #16a34a; } /* зелений — отримано */
+.order-card-status.status-refused { color: #dc2626; } /* червоний — відмова */
+.order-card-status.status-returned { color: #ca8a04; } /* жовтий/гірчичний — повернено */
+.order-card-status.status-return_warehouse { color: #7c3aed; } /* фіолетовий — повернення на склад */
+.order-card-status.status-other { color: var(--muted); } /* сірий — інше */
 
 .owner-orders {
   border-top: 1px solid var(--line);

@@ -402,7 +402,7 @@ def credit_cod_profit_if_needed(
         note=(
             f"Накладний {round(float(order.get('cod_amount') or 0), 2)} ₴ − "
             f"передплата {round(float(order.get('prepay') or 0), 2)} ₴ − "
-            f"«Разом» {round(float(order.get('total') or 0), 2)} ₴"
+            f"«Дроп ціна» {round(float(order.get('total') or 0), 2)} ₴"
         ),
         related_order_id=str(order.get("order_number") or ""),
     )
