@@ -122,6 +122,18 @@ class StaffCreateRequest(BaseModel):
     created_by_user_id: str = Field("", max_length=64)
 
 
+class PhoneBlacklistRequest(BaseModel):
+    owner_chat_id: str = Field("", max_length=64)
+    owner_user_id: str = Field("", max_length=64)
+    phone: str = Field(..., min_length=10, max_length=32)
+    note: str = Field("", max_length=500)
+
+
+class PhoneBlacklistDeleteRequest(BaseModel):
+    owner_chat_id: str = Field("", max_length=64)
+    owner_user_id: str = Field("", max_length=64)
+
+
 class DropperPaymentFlagRequest(BaseModel):
     owner_chat_id: str = Field("", max_length=64)
     owner_user_id: str = Field("", max_length=64)
@@ -646,6 +658,55 @@ def create_web_app(
             "rule": "Реф.% рахується від дроп-ціни замовлення приведеного дроппера.",
         }
 
+    @app.get("/api/owner/blacklist")
+    async def owner_list_blacklist(
+        owner_chat_id: str = Query("", max_length=64),
+        owner_user_id: str = Query("", max_length=64),
+    ) -> dict:
+        _require_owner(owner_chat_id, owner_user_id)
+        items = storage.list_phone_blacklist()
+        return {"count": len(items), "items": items}
+
+    @app.post("/api/owner/blacklist")
+    async def owner_add_blacklist(payload: PhoneBlacklistRequest) -> dict:
+        _require_owner(payload.owner_chat_id, payload.owner_user_id)
+        try:
+            entry = storage.add_phone_blacklist(
+                payload.phone,
+                note=payload.note,
+                created_by_user_id=payload.owner_user_id,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {"ok": True, "item": entry}
+
+    @app.delete("/api/owner/blacklist/{entry_id}")
+    async def owner_delete_blacklist(
+        entry_id: int,
+        owner_chat_id: str = Query("", max_length=64),
+        owner_user_id: str = Query("", max_length=64),
+    ) -> dict:
+        _require_owner(owner_chat_id, owner_user_id)
+        ok = storage.remove_phone_blacklist(entry_id)
+        if not ok:
+            raise HTTPException(status_code=404, detail="Запис не знайдено")
+        return {"ok": True}
+
+    @app.get("/api/checkout/blacklist-check")
+    async def checkout_blacklist_check(
+        phone: str = Query(..., min_length=5, max_length=32),
+    ) -> dict:
+        blocked = storage.is_phone_blacklisted(phone)
+        return {
+            "blocked": blocked,
+            "message": (
+                "Клієнт у чорному списку. Відправка неможлива. "
+                "Зверніться до постачальника."
+                if blocked
+                else ""
+            ),
+        }
+
     @app.get("/api/owner/staff")
     async def owner_list_staff(
         owner_chat_id: str = Query("", max_length=64),
@@ -921,6 +982,36 @@ def create_web_app(
         debit = 0.0
         if not str(payload.phone or "").strip():
             raise HTTPException(status_code=400, detail="Вкажіть номер телефону клієнта")
+        if storage.is_phone_blacklisted(payload.phone):
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Клієнт у чорному списку. Відправка неможлива. "
+                    "Зверніться до постачальника."
+                ),
+            )
+
+        # Низький викуп ≤50% — лише повна оплата (без наложки)
+        from bot.buyout import compute_buyout
+
+        buyout = compute_buyout(storage.list_orders_for_dropper(dropper.id, limit=500))
+        if buyout.get("force_full_payment"):
+            if payload.payment_method == "cod":
+                raise HTTPException(
+                    status_code=403,
+                    detail=(
+                        "При рейтингу викупу ≤50% відправка лише після повної оплати "
+                        "(без наложки). Зверніться до постачальника за деталями."
+                    ),
+                )
+            if (
+                payload.payment_method == "requisites"
+                and not payload.receipt_name.strip()
+            ):
+                raise HTTPException(
+                    status_code=400,
+                    detail="При рейтингу викупу ≤50% потрібна квитанція про повну оплату",
+                )
 
         if payload.own_ttn:
             if payload.payment_method not in ("requisites", "balance"):

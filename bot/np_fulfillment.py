@@ -476,6 +476,25 @@ def _order_is_cod(order: dict[str, Any]) -> bool:
     return str(order.get("payment_method") or "") == "cod"
 
 
+async def _maybe_eval_buyout(
+    storage: AppStorage,
+    order: dict[str, Any],
+    notify: NotifyFn | None,
+) -> None:
+    dropper_id = int(order.get("dropper_id") or 0)
+    if not dropper_id:
+        return
+    dropper = storage.get_dropper_by_id(dropper_id)
+    if not dropper:
+        return
+    try:
+        from bot.buyout import evaluate_dropper_buyout
+
+        await evaluate_dropper_buyout(storage, dropper, notify=notify)
+    except Exception:
+        logger.exception("buyout eval after status failed dropper_id=%s", dropper_id)
+
+
 async def _send_dropper_chat(
     notify: NotifyFn | None,
     chat_id: str,
@@ -631,6 +650,7 @@ async def apply_tracking_event(
                 logger.exception("notify profit credit failed")
             order = storage.get_order(order["id"]) or order
             result["order"] = order
+            await _maybe_eval_buyout(storage, order, notify)
 
     if mapped in {"returned", "refused"} and prev not in {"returned", "refused"}:
         # Якщо прибуток уже встигли нарахувати — сторнуємо
@@ -676,6 +696,7 @@ async def apply_tracking_event(
             logger.exception("notify return debit failed")
         order = storage.get_order(order["id"]) or order
         result["order"] = order
+        await _maybe_eval_buyout(storage, order, notify)
 
     return result
 

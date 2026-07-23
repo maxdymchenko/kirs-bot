@@ -1482,9 +1482,13 @@ input[type="file"] {
 
 .owner-orders-filters {
   display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 8px 10px;
-  margin: 4px 0 8px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px 12px;
+  margin: 6px 0 10px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: #fff;
 }
 
 @media (max-width: 520px) {
@@ -1499,6 +1503,68 @@ input[type="file"] {
 
 .owner-orders-filters input {
   width: 100%;
+}
+
+.owner-orders-filters-actions {
+  grid-column: 1 / -1;
+  display: flex;
+  justify-content: flex-end;
+}
+
+.owner-card-title-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 8px 12px;
+}
+
+.buyout-badge {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1.3;
+}
+
+.buyout-badge .buyout-label {
+  font-weight: 600;
+}
+
+.buyout-badge.buyout-high {
+  color: #65a30d;
+}
+
+.buyout-badge.buyout-mid {
+  color: #ca8a04;
+}
+
+.buyout-badge.buyout-low {
+  color: #dc2626;
+}
+
+.buyout-badge.buyout-none {
+  color: var(--muted);
+  font-weight: 600;
+}
+
+.blacklist-form {
+  display: grid;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+
+.blacklist-card {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 10px;
+  align-items: center;
+  padding: 12px 14px;
+}
+
+.blacklist-card .owner-card-head {
+  min-width: 0;
 }
 
 .np-keys-list {

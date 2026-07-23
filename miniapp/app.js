@@ -47,6 +47,13 @@
     ownerTabBalances: document.getElementById("ownerTabBalances"),
     ownerTabSettings: document.getElementById("ownerTabSettings"),
     ownerTabOrder: document.getElementById("ownerTabOrder"),
+    ownerTabBlacklist: document.getElementById("ownerTabBlacklist"),
+    ownerBlacklist: document.getElementById("ownerBlacklist"),
+    blacklistForm: document.getElementById("blacklistForm"),
+    blacklistPhone: document.getElementById("blacklistPhone"),
+    blacklistNote: document.getElementById("blacklistNote"),
+    blacklistError: document.getElementById("blacklistError"),
+    phoneBlacklistWarn: document.getElementById("phoneBlacklistWarn"),
     ownerDroppers: document.getElementById("ownerDroppers"),
     ownerStaff: document.getElementById("ownerStaff"),
     ownerBalances: document.getElementById("ownerBalances"),
@@ -369,6 +376,7 @@
     } catch {
       /* ignore */
     }
+    void checkPhoneBlacklist();
     return formatted;
   }
 
@@ -378,6 +386,47 @@
 
   function isPhoneComplete() {
     return phoneDigits.length === PHONE_MAX_DIGITS;
+  }
+
+  let phoneBlacklisted = false;
+  let phoneBlacklistTimer = null;
+
+  function setPhoneBlacklistWarn(message) {
+    phoneBlacklisted = Boolean(message);
+    if (!els.phoneBlacklistWarn) return;
+    if (message) {
+      els.phoneBlacklistWarn.textContent = message;
+      els.phoneBlacklistWarn.classList.remove("hidden");
+    } else {
+      els.phoneBlacklistWarn.textContent = "";
+      els.phoneBlacklistWarn.classList.add("hidden");
+    }
+  }
+
+  async function checkPhoneBlacklist() {
+    if (phoneBlacklistTimer) {
+      clearTimeout(phoneBlacklistTimer);
+      phoneBlacklistTimer = null;
+    }
+    if (!isPhoneComplete()) {
+      setPhoneBlacklistWarn("");
+      return;
+    }
+    phoneBlacklistTimer = setTimeout(async () => {
+      try {
+        const response = await fetch(
+          `/api/checkout/blacklist-check?phone=${encodeURIComponent(phoneDigits)}`
+        );
+        const data = await response.json();
+        if (!response.ok) {
+          setPhoneBlacklistWarn("");
+          return;
+        }
+        setPhoneBlacklistWarn(data.blocked ? data.message || "Клієнт у чорному списку" : "");
+      } catch {
+        setPhoneBlacklistWarn("");
+      }
+    }, 280);
   }
 
   function showToast(text) {
@@ -1145,7 +1194,7 @@
                 <span>Код: <b>${escapeHtml(item.code || "")}</b> · ${escapeHtml(item.color || "без кольору")}</span>
                 ${
                   item.live_photo_url
-                    ? `<a class="live-photo-btn" href="${escapeHtml(item.live_photo_url)}" target="_blank" rel="noopener noreferrer">Живі фото</a>`
+                    ? `<a class="live-photo-btn" href="${escapeHtml(item.live_photo_url)}" target="_blank" rel="noopener noreferrer">Додаткові фото</a>`
                     : ""
                 }
               </div>
@@ -1309,6 +1358,11 @@
   function validateCheckout(data) {
     if (!data.phone || !isPhoneComplete()) {
       return "Вкажіть повний телефон у форматі +380(XX)XXX-XX-XX";
+    }
+    if (phoneBlacklisted) {
+      return (
+        "Клієнт у чорному списку. Відправка неможлива. Зверніться до постачальника."
+      );
     }
 
     if (data.ownTtn) {
@@ -2018,7 +2072,21 @@ ${
       orderNumber: box.querySelector("[data-filter-order]")?.value?.trim() || "",
       phone: box.querySelector("[data-filter-phone]")?.value?.trim() || "",
       clientName: box.querySelector("[data-filter-name]")?.value?.trim() || "",
+      ttnNumber: box.querySelector("[data-filter-ttn]")?.value?.trim() || "",
+      dateFrom: box.querySelector("[data-filter-date-from]")?.value || "",
+      dateTo: box.querySelector("[data-filter-date-to]")?.value || "",
     };
+  }
+
+  function orderCreatedDateLocal(order) {
+    const raw = String(order.created_at || "").trim();
+    if (!raw) return null;
+    const dt = new Date(raw);
+    if (!Number.isFinite(dt.getTime())) return null;
+    const y = dt.getFullYear();
+    const m = String(dt.getMonth() + 1).padStart(2, "0");
+    const d = String(dt.getDate()).padStart(2, "0");
+    return `${y}-${m}-${d}`;
   }
 
   function orderMatchesOwnerFilters(order, filters) {
@@ -2035,6 +2103,14 @@ ${
     if (filters.orderNumber) {
       const q = filters.orderNumber.toLowerCase();
       if (!String(order.order_number || "").toLowerCase().includes(q)) return false;
+    }
+
+    if (filters.ttnNumber) {
+      const q = String(filters.ttnNumber).replace(/\s+/g, "").toLowerCase();
+      const ttn = String(order.ttn_number || payload.ttn_number || "")
+        .replace(/\s+/g, "")
+        .toLowerCase();
+      if (!q || !ttn.includes(q)) return false;
     }
 
     if (filters.phone) {
@@ -2069,6 +2145,13 @@ ${
       }
     }
 
+    if (filters.dateFrom || filters.dateTo) {
+      const day = orderCreatedDateLocal(order);
+      if (!day) return false;
+      if (filters.dateFrom && day < filters.dateFrom) return false;
+      if (filters.dateTo && day > filters.dateTo) return false;
+    }
+
     return true;
   }
 
@@ -2081,20 +2164,35 @@ ${
         <div class="owner-orders-filters" data-owner-order-filters>
           <label class="field compact-field">
             <span class="field-label">Код товару</span>
-            <input type="text" data-filter-code placeholder="Напр. 1469Д" />
+            <input type="text" data-filter-code placeholder="Напр. 1469Д" autocomplete="off" />
           </label>
           <label class="field compact-field">
             <span class="field-label">№ замовлення</span>
-            <input type="text" data-filter-order placeholder="К-…" />
+            <input type="text" data-filter-order placeholder="К-…" autocomplete="off" />
+          </label>
+          <label class="field compact-field">
+            <span class="field-label">Номер накладної</span>
+            <input type="text" data-filter-ttn placeholder="ТТН / RMP…" autocomplete="off" />
           </label>
           <label class="field compact-field">
             <span class="field-label">Телефон клієнта</span>
-            <input type="text" data-filter-phone placeholder="+380…" />
+            <input type="text" data-filter-phone placeholder="+380…" autocomplete="off" />
           </label>
           <label class="field compact-field">
             <span class="field-label">Прізвище / імʼя</span>
-            <input type="text" data-filter-name placeholder="Прізвище або Імʼя Прізвище" />
+            <input type="text" data-filter-name placeholder="Прізвище або Імʼя" autocomplete="off" />
           </label>
+          <label class="field compact-field">
+            <span class="field-label">Дата від</span>
+            <input type="date" data-filter-date-from />
+          </label>
+          <label class="field compact-field">
+            <span class="field-label">Дата до</span>
+            <input type="date" data-filter-date-to />
+          </label>
+          <div class="owner-orders-filters-actions">
+            <button type="button" class="btn secondary" data-filter-reset>Скинути фільтри</button>
+          </div>
         </div>
         <p class="meta-soft" data-orders-count></p>
         <div data-owner-orders-list></div>
@@ -2103,6 +2201,18 @@ ${
         box.dataset.filtersBound = "1";
         box.addEventListener("input", (event) => {
           if (!event.target.closest("[data-owner-order-filters]")) return;
+          renderOwnerDropperOrdersList(box);
+        });
+        box.addEventListener("change", (event) => {
+          if (!event.target.closest("[data-owner-order-filters]")) return;
+          renderOwnerDropperOrdersList(box);
+        });
+        box.addEventListener("click", (event) => {
+          const reset = event.target.closest("[data-filter-reset]");
+          if (!reset || !box.contains(reset)) return;
+          box.querySelectorAll("[data-owner-order-filters] input").forEach((input) => {
+            input.value = "";
+          });
           renderOwnerDropperOrdersList(box);
         });
       }
@@ -2557,7 +2667,7 @@ ${
   }
 
   function setOwnerTab(tabName) {
-    const allowed = new Set(["droppers", "staff", "balances", "settings", "order"]);
+    const allowed = new Set(["droppers", "staff", "balances", "settings", "order", "blacklist"]);
     const name = allowed.has(tabName) ? tabName : "droppers";
     if (els.ownerTabs) {
       els.ownerTabs.querySelectorAll("[data-owner-tab]").forEach((btn) => {
@@ -2579,6 +2689,9 @@ ${
     if (els.ownerTabOrder) {
       els.ownerTabOrder.classList.toggle("hidden", name !== "order");
     }
+    if (els.ownerTabBlacklist) {
+      els.ownerTabBlacklist.classList.toggle("hidden", name !== "blacklist");
+    }
 
     const showOrder = name === "order";
     if (els.orderMain) els.orderMain.classList.toggle("hidden", !showOrder);
@@ -2587,6 +2700,9 @@ ${
 
     if (name === "balances") {
       renderOwnerBalances();
+    }
+    if (name === "blacklist") {
+      renderOwnerBlacklist();
     }
     if (name === "settings") {
       loadGeneralSettings();
@@ -3030,6 +3146,22 @@ ${
     }
   }
 
+  function buyoutBadgeHtml(buyout) {
+    const info = buyout || {};
+    const percent = info.percent;
+    if (percent == null || !Number.isFinite(Number(percent))) {
+      return `<span class="buyout-badge buyout-none" title="Ще немає завершених замовлень">—</span>`;
+    }
+    const tier = String(info.tier || "");
+    const label = String(info.label || "");
+    const pct = Number(percent);
+    return `<span class="buyout-badge buyout-${escapeHtml(tier)}" title="${escapeHtml(
+      label
+    )}"><b>${escapeHtml(String(pct))}%</b> <span class="buyout-label">${escapeHtml(
+      label
+    )}</span></span>`;
+  }
+
   async function renderOwnerBalances() {
     if (!els.ownerBalances) return;
     els.ownerBalances.innerHTML = `<div class="ac-loading">Завантаження...</div>`;
@@ -3051,7 +3183,10 @@ ${
             )}">
               <button type="button" class="owner-card-toggle" aria-expanded="false">
                 <div class="owner-card-head">
-                  <div class="owner-card-title">${escapeHtml(d.company_name || "")}</div>
+                  <div class="owner-card-title-row">
+                    <div class="owner-card-title">${escapeHtml(d.company_name || "")}</div>
+                    ${buyoutBadgeHtml(row.buyout)}
+                  </div>
                   <div class="meta">Баланс: <b>${escapeHtml(formatMoney(row.balance || 0))}</b></div>
                   <div class="meta-soft">Реф. нараховано: ${escapeHtml(
                     formatMoney(row.referral_earned_total || 0)
@@ -3084,6 +3219,42 @@ ${
       }
     } catch (error) {
       els.ownerBalances.innerHTML = `<div class="form-error">${escapeHtml(
+        error.message || "Помилка"
+      )}</div>`;
+    }
+  }
+
+  async function renderOwnerBlacklist() {
+    if (!els.ownerBlacklist) return;
+    els.ownerBlacklist.innerHTML = `<div class="ac-loading">Завантаження...</div>`;
+    try {
+      const response = await fetch(`/api/owner/blacklist?${ownerAuthParams()}`);
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.detail || "Помилка");
+      const items = data.items || [];
+      els.ownerBlacklist.innerHTML = items.length
+        ? items
+            .map(
+              (row) => `
+          <article class="owner-card blacklist-card">
+            <div class="owner-card-head">
+              <div class="owner-card-title">${escapeHtml(row.phone_display || row.phone_digits)}</div>
+              ${
+                row.note
+                  ? `<div class="meta">${escapeHtml(row.note)}</div>`
+                  : ""
+              }
+              <div class="meta-soft">${escapeHtml(row.created_at || "")}</div>
+            </div>
+            <button type="button" class="btn secondary" data-blacklist-del="${escapeHtml(
+              String(row.id)
+            )}">Видалити</button>
+          </article>`
+            )
+            .join("")
+        : `<div class="empty">Чорний список порожній</div>`;
+    } catch (error) {
+      els.ownerBlacklist.innerHTML = `<div class="form-error">${escapeHtml(
         error.message || "Помилка"
       )}</div>`;
     }
@@ -3869,6 +4040,59 @@ ${
       } catch (error) {
         els.staffError.textContent = error.message || "Помилка";
         els.staffError.classList.remove("hidden");
+      }
+    });
+  }
+
+  if (els.blacklistForm) {
+    els.blacklistForm.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      if (els.blacklistError) els.blacklistError.classList.add("hidden");
+      const phone = (els.blacklistPhone?.value || "").trim();
+      const note = (els.blacklistNote?.value || "").trim();
+      try {
+        const response = await fetch("/api/owner/blacklist", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(ownerAuthBody({ phone, note })),
+        });
+        const data = await response.json();
+        if (!response.ok) {
+          throw new Error(typeof data.detail === "string" ? data.detail : "Помилка");
+        }
+        showToast("Номер додано до чорного списку");
+        els.blacklistForm.reset();
+        renderOwnerBlacklist();
+      } catch (error) {
+        if (els.blacklistError) {
+          els.blacklistError.textContent = error.message || "Помилка";
+          els.blacklistError.classList.remove("hidden");
+        } else {
+          showToast(error.message || "Помилка");
+        }
+      }
+    });
+  }
+
+  if (els.ownerBlacklist) {
+    els.ownerBlacklist.addEventListener("click", async (event) => {
+      const btn = event.target.closest("[data-blacklist-del]");
+      if (!btn || !els.ownerBlacklist.contains(btn)) return;
+      const id = btn.getAttribute("data-blacklist-del");
+      if (!id) return;
+      try {
+        const response = await fetch(
+          `/api/owner/blacklist/${encodeURIComponent(id)}?${ownerAuthParams()}`,
+          { method: "DELETE" }
+        );
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok) {
+          throw new Error(typeof data.detail === "string" ? data.detail : "Помилка");
+        }
+        showToast("Номер видалено");
+        renderOwnerBlacklist();
+      } catch (error) {
+        showToast(error.message || "Помилка");
       }
     });
   }

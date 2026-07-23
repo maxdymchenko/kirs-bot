@@ -83,6 +83,10 @@ class Dropper:
     referred_by_dropper_id: int | None
     referral_percent: float
     referral_expires_at: str | None
+    buyout_percent: float | None
+    buyout_tier: str
+    buyout_tier_notified: str
+    buyout_half_warned: bool
     status: str
     registered_by_user_id: str
     registered_by_username: str
@@ -115,6 +119,10 @@ class Dropper:
             "referred_by_dropper_id": self.referred_by_dropper_id,
             "referral_percent": self.referral_percent,
             "referral_expires_at": self.referral_expires_at,
+            "buyout_percent": self.buyout_percent,
+            "buyout_tier": self.buyout_tier,
+            "buyout_tier_notified": self.buyout_tier_notified,
+            "buyout_half_warned": self.buyout_half_warned,
             "status": self.status,
             "registered_by_user_id": self.registered_by_user_id,
             "registered_by_username": self.registered_by_username,
@@ -216,6 +224,10 @@ class AppStorage:
                 ("referral_program_enabled", "referral_program_enabled INTEGER NOT NULL DEFAULT 0"),
                 ("referral_months", "referral_months INTEGER NOT NULL DEFAULT 12"),
                 ("referral_expires_at", "referral_expires_at TEXT"),
+                ("buyout_percent", "buyout_percent REAL"),
+                ("buyout_tier", "buyout_tier TEXT NOT NULL DEFAULT ''"),
+                ("buyout_tier_notified", "buyout_tier_notified TEXT NOT NULL DEFAULT ''"),
+                ("buyout_half_warned", "buyout_half_warned INTEGER NOT NULL DEFAULT 0"),
             ):
                 self._ensure_column(conn, "droppers", column, ddl)
 
@@ -247,6 +259,19 @@ class AppStorage:
                     first_dropper_id INTEGER,
                     first_seen_at TEXT NOT NULL,
                     UNIQUE(fingerprint_type, fingerprint_value)
+                )
+                """
+            )
+
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS phone_blacklist (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    phone_digits TEXT NOT NULL UNIQUE,
+                    phone_display TEXT NOT NULL DEFAULT '',
+                    note TEXT NOT NULL DEFAULT '',
+                    created_at TEXT NOT NULL,
+                    created_by_user_id TEXT NOT NULL DEFAULT ''
                 )
                 """
             )
@@ -397,6 +422,14 @@ class AppStorage:
             referral_expires_at=(
                 str(self._row_get(row, "referral_expires_at") or "").strip() or None
             ),
+            buyout_percent=(
+                float(self._row_get(row, "buyout_percent"))
+                if self._row_get(row, "buyout_percent") not in (None, "")
+                else None
+            ),
+            buyout_tier=str(self._row_get(row, "buyout_tier", "") or ""),
+            buyout_tier_notified=str(self._row_get(row, "buyout_tier_notified", "") or ""),
+            buyout_half_warned=bool(self._row_get(row, "buyout_half_warned", 0)),
             status=row["status"],
             registered_by_user_id=row["registered_by_user_id"] or "",
             registered_by_username=row["registered_by_username"] or "",
@@ -1092,18 +1125,41 @@ class AppStorage:
         )
 
     def list_dropper_balances(self) -> list[dict[str, Any]]:
+        from bot.buyout import compute_buyout, tier_label
+
         droppers = self.list_droppers()
         items = []
         for d in droppers:
             bal = self.get_balance(d.id)
-            refs = self.list_ledger(d.id, entry_type="referral_credit", limit=5)
-            referral_earned = sum(x["amount"] for x in self.list_ledger(d.id, entry_type="referral_credit", limit=5000))
+            referral_earned = sum(
+                x["amount"]
+                for x in self.list_ledger(d.id, entry_type="referral_credit", limit=5000)
+            )
+            orders = self.list_orders_for_dropper(d.id, limit=500)
+            buyout = compute_buyout(orders)
+            # Кешуємо актуальний % у дроппера (без нотифікацій)
+            if (
+                buyout["percent"] != d.buyout_percent
+                or buyout["tier"] != (d.buyout_tier or "")
+            ):
+                self.update_buyout_state(
+                    d.id,
+                    buyout_percent=buyout["percent"],
+                    buyout_tier=buyout["tier"],
+                )
             items.append(
                 {
-                    "dropper": d.to_dict(),
+                    "dropper": {
+                        **d.to_dict(),
+                        "buyout_percent": buyout["percent"],
+                        "buyout_tier": buyout["tier"],
+                    },
                     "balance": bal,
                     "referral_earned_total": round(float(referral_earned), 2),
-                    "recent_referrals": refs,
+                    "buyout": {
+                        **buyout,
+                        "label": tier_label(buyout["tier"], buyout["percent"]),
+                    },
                 }
             )
         return items
@@ -1354,7 +1410,7 @@ class AppStorage:
     def list_orders_for_dropper(
         self, dropper_id: int, limit: int = 50
     ) -> list[dict[str, Any]]:
-        limit = max(1, min(int(limit or 50), 200))
+        limit = max(1, min(int(limit or 50), 500))
         with self._connect() as conn:
             rows = conn.execute(
                 """
@@ -1366,6 +1422,136 @@ class AppStorage:
                 (int(dropper_id), limit),
             ).fetchall()
         return [self._row_order(r) for r in rows]
+
+    @staticmethod
+    def normalize_client_phone(raw: str) -> str:
+        """Нормалізація телефону клієнта → 380XXXXXXXXX (12 цифр) або ''."""
+        import re
+
+        digits = re.sub(r"\D", "", str(raw or ""))
+        if not digits:
+            return ""
+        if digits.startswith("380"):
+            body = digits[3:]
+            if len(body) >= 9:
+                return "380" + body[-9:]
+            return ""
+        if digits.startswith("0") and len(digits) >= 10:
+            return "380" + digits[1:10]
+        if len(digits) >= 9:
+            return "380" + digits[-9:]
+        return ""
+
+    def update_buyout_state(
+        self,
+        dropper_id: int,
+        *,
+        buyout_percent: float | None | object = ...,
+        buyout_tier: str | None = None,
+        buyout_tier_notified: str | None = None,
+        buyout_half_warned: bool | None = None,
+    ) -> Dropper | None:
+        fields: dict[str, Any] = {}
+        if buyout_percent is not ...:
+            fields["buyout_percent"] = (
+                None if buyout_percent is None else float(buyout_percent)  # type: ignore[arg-type]
+            )
+        if buyout_tier is not None:
+            fields["buyout_tier"] = str(buyout_tier or "")
+        if buyout_tier_notified is not None:
+            fields["buyout_tier_notified"] = str(buyout_tier_notified or "")
+        if buyout_half_warned is not None:
+            fields["buyout_half_warned"] = 1 if buyout_half_warned else 0
+        if not fields:
+            return self.get_dropper_by_id(dropper_id)
+        sets = ", ".join(f"{k} = ?" for k in fields)
+        values = list(fields.values()) + [int(dropper_id)]
+        with self._connect() as conn:
+            conn.execute(f"UPDATE droppers SET {sets} WHERE id = ?", values)
+            conn.commit()
+        return self.get_dropper_by_id(dropper_id)
+
+    def list_phone_blacklist(self) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT * FROM phone_blacklist
+                ORDER BY id DESC
+                """
+            ).fetchall()
+        return [
+            {
+                "id": r["id"],
+                "phone_digits": r["phone_digits"],
+                "phone_display": r["phone_display"] or r["phone_digits"],
+                "note": r["note"] or "",
+                "created_at": r["created_at"],
+                "created_by_user_id": r["created_by_user_id"] or "",
+            }
+            for r in rows
+        ]
+
+    def add_phone_blacklist(
+        self,
+        phone: str,
+        *,
+        note: str = "",
+        created_by_user_id: str = "",
+    ) -> dict[str, Any]:
+        digits = self.normalize_client_phone(phone)
+        if len(digits) < 12:
+            raise ValueError("Вкажіть повний номер телефону (+380…)")
+        display = f"+{digits}"
+        now = _now()
+        with self._connect() as conn:
+            try:
+                conn.execute(
+                    """
+                    INSERT INTO phone_blacklist (
+                        phone_digits, phone_display, note, created_at, created_by_user_id
+                    ) VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (
+                        digits,
+                        display,
+                        str(note or "").strip()[:500],
+                        now,
+                        str(created_by_user_id or "").strip()[:64],
+                    ),
+                )
+                conn.commit()
+            except sqlite3.IntegrityError as exc:
+                raise ValueError("Цей номер уже в чорному списку") from exc
+            row = conn.execute(
+                "SELECT * FROM phone_blacklist WHERE phone_digits = ?", (digits,)
+            ).fetchone()
+        return {
+            "id": row["id"],
+            "phone_digits": row["phone_digits"],
+            "phone_display": row["phone_display"],
+            "note": row["note"] or "",
+            "created_at": row["created_at"],
+            "created_by_user_id": row["created_by_user_id"] or "",
+        }
+
+    def remove_phone_blacklist(self, entry_id: int) -> bool:
+        with self._connect() as conn:
+            cur = conn.execute(
+                "DELETE FROM phone_blacklist WHERE id = ?", (int(entry_id),)
+            )
+            conn.commit()
+            return cur.rowcount > 0
+
+    def is_phone_blacklisted(self, phone: str) -> bool:
+        digits = self.normalize_client_phone(phone)
+        if not digits:
+            return False
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT id FROM phone_blacklist WHERE phone_digits = ? LIMIT 1",
+                (digits,),
+            ).fetchone()
+        return bool(row)
 
     def default_general_settings(self) -> dict[str, Any]:
         return {

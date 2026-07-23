@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
   <title>Kirs — Замовлення</title>
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
-  <link rel="stylesheet" href="/static/styles.css?v=20260722dropprice1" />
+  <link rel="stylesheet" href="/static/styles.css?v=20260723buyout1" />
 </head>
 <body>
   <div class="app">
@@ -89,6 +89,7 @@
         <button type="button" class="tab" data-owner-tab="balances">Баланси</button>
         <button type="button" class="tab" data-owner-tab="settings">Загальні</button>
         <button type="button" class="tab" data-owner-tab="order">Форма</button>
+        <button type="button" class="tab" data-owner-tab="blacklist">Чорний список</button>
       </nav>
 
       <div id="ownerTabDroppers" class="owner-panel">
@@ -218,6 +219,27 @@
         <p class="hint owner-order-hint">
           Тимчасовий доступ до каталогу/форми для налаштування. Пізніше цю вкладку сховаємо з кабінету власника.
         </p>
+      </div>
+
+      <div id="ownerTabBlacklist" class="owner-panel hidden">
+        <h2 class="section-title">Чорний список клієнтів</h2>
+        <p class="hint">
+          Номери в списку не можуть отримувати відправки. Дроппер побачить попередження при оформленні.
+        </p>
+        <form id="blacklistForm" class="blacklist-form" novalidate>
+          <label class="field">
+            <span class="field-label">Номер телефону</span>
+            <input id="blacklistPhone" type="tel" inputmode="tel" placeholder="+380…" required />
+          </label>
+          <label class="field">
+            <span class="field-label">Коментар (необовʼязково)</span>
+            <input id="blacklistNote" type="text" placeholder="Причина…" maxlength="500" />
+          </label>
+          <p id="blacklistError" class="form-error hidden"></p>
+          <button type="submit" class="btn primary block">Додати в список</button>
+        </form>
+        <h2 class="section-title" style="margin-top:18px">Список номерів</h2>
+        <div id="ownerBlacklist" class="results"></div>
       </div>
     </section>
 
@@ -391,6 +413,7 @@
                   required
                 />
               </div>
+              <p id="phoneBlacklistWarn" class="form-error hidden" style="margin-top:8px"></p>
             </label>
           </div>
 
@@ -636,6 +659,6 @@
   </div>
 
   <button type="button" id="photoZoomBackdrop" class="photo-zoom-backdrop hidden" aria-label="Закрити фото"></button>
-  <script src="/static/app.js?v=20260722dropprice1"></script>
+  <script src="/static/app.js?v=20260723buyout1"></script>
 </body>
 </html>
