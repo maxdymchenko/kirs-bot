@@ -1556,6 +1556,7 @@ class AppStorage:
     def default_general_settings(self) -> dict[str, Any]:
         return {
             "np_api_keys": [],
+            "payment_requisites": [],
             "sender_city": {
                 "label": "",
                 "city_ref": "",
@@ -1580,6 +1581,42 @@ class AppStorage:
                 "1RYNXnGbXdB0ve7pBy4KD-SdaKAaoLipiKC9vOeGfczE/edit"
             ),
             "orders_sheet_title": "Заказы",
+        }
+
+    @staticmethod
+    def _normalize_payment_requisite(item: Any) -> dict[str, Any] | None:
+        import uuid
+
+        if not isinstance(item, dict):
+            return None
+        kind = str(item.get("kind") or item.get("type") or "fop").strip().lower()
+        if kind not in ("fop", "card"):
+            kind = "fop"
+        label = str(item.get("label") or "").strip()
+        if not label:
+            label = "ФОП / рахунок" if kind == "fop" else "Картка"
+        enabled = bool(item.get("enabled"))
+        recipient = str(item.get("recipient") or "").strip()[:200]
+        edrpou = str(item.get("edrpou") or "").strip()[:20]
+        iban = str(item.get("iban") or "").strip()[:40]
+        card_number = str(item.get("card_number") or "").strip()[:32]
+        bank = str(item.get("bank") or "").strip()[:120]
+        purpose = str(item.get("purpose") or "").strip()[:300]
+        rid = str(item.get("id") or "").strip() or uuid.uuid4().hex[:10]
+        has_data = bool(recipient or edrpou or iban or card_number or bank or purpose)
+        if not has_data and not enabled and not str(item.get("label") or "").strip():
+            return None
+        return {
+            "id": rid,
+            "kind": kind,
+            "label": label[:80],
+            "enabled": enabled,
+            "recipient": recipient,
+            "edrpou": edrpou,
+            "iban": iban,
+            "card_number": card_number,
+            "bank": bank,
+            "purpose": purpose,
         }
 
     def get_general_settings(self) -> dict[str, Any]:
@@ -1607,6 +1644,15 @@ class AppStorage:
             merged[key] = {**base, **cur}
         if not isinstance(merged.get("np_api_keys"), list):
             merged["np_api_keys"] = []
+        raw_req = merged.get("payment_requisites")
+        if not isinstance(raw_req, list):
+            merged["payment_requisites"] = []
+        else:
+            merged["payment_requisites"] = [
+                row
+                for row in (self._normalize_payment_requisite(x) for x in raw_req)
+                if row
+            ]
         return merged
 
     def save_general_settings(self, payload: dict[str, Any]) -> dict[str, Any]:
@@ -1636,6 +1682,17 @@ class AppStorage:
                         "enabled": enabled,
                     }
                 )
+
+        if "payment_requisites" in payload:
+            req_in = payload.get("payment_requisites")
+            payment_requisites: list[dict[str, Any]] = []
+            if isinstance(req_in, list):
+                for item in req_in:
+                    row = self._normalize_payment_requisite(item)
+                    if row:
+                        payment_requisites.append(row)
+        else:
+            payment_requisites = list(current.get("payment_requisites") or [])
 
         city_in = payload.get("sender_city") if isinstance(payload.get("sender_city"), dict) else {}
         wh_in = (
@@ -1670,6 +1727,7 @@ class AppStorage:
 
         saved = {
             "np_api_keys": np_keys,
+            "payment_requisites": payment_requisites,
             "sender_city": {
                 "label": str(city_in.get("label") or "").strip()[:200],
                 "city_ref": str(city_in.get("city_ref") or "").strip()[:64],
@@ -1721,6 +1779,32 @@ class AppStorage:
             for k in keys
             if isinstance(k, dict) and k.get("enabled") and str(k.get("api_key") or "").strip()
         ]
+
+    def get_enabled_payment_requisites(self) -> list[dict[str, Any]]:
+        """Лише реквізити з галочкою — те, що бачать дроппери."""
+        settings = self.get_general_settings()
+        rows = settings.get("payment_requisites") or []
+        out: list[dict[str, Any]] = []
+        for row in rows:
+            if not isinstance(row, dict) or not row.get("enabled"):
+                continue
+            kind = str(row.get("kind") or "fop").strip().lower()
+            if kind not in ("fop", "card"):
+                kind = "fop"
+            out.append(
+                {
+                    "id": str(row.get("id") or ""),
+                    "kind": kind,
+                    "label": str(row.get("label") or "").strip(),
+                    "recipient": str(row.get("recipient") or "").strip(),
+                    "edrpou": str(row.get("edrpou") or "").strip(),
+                    "iban": str(row.get("iban") or "").strip(),
+                    "card_number": str(row.get("card_number") or "").strip(),
+                    "bank": str(row.get("bank") or "").strip(),
+                    "purpose": str(row.get("purpose") or "").strip(),
+                }
+            )
+        return out
 
     def get_np_api_keys_for_rotation(self) -> list[dict[str, Any]]:
         """

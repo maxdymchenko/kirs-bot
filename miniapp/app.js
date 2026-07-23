@@ -26,14 +26,16 @@
 
   const CART_KEY = "kirs_cart_v1";
 
-  // Реквізити для оплати — підставте реальні дані бізнесу
-  const PAYMENT_REQUISITES = {
+  // Fallback, якщо власник ще не зберіг реквізити в «Загальні»
+  const PAYMENT_REQUISITES_FALLBACK = {
     recipient: "ФОП (вкажіть отримувача)",
     edrpou: "0000000000",
     iban: "UA000000000000000000000000000",
     bank: "АТ КБ «ПРИВАТБАНК»",
-    purpose: "Назва товару, скорочено",
+    purpose: "Оплата замовлення",
   };
+
+  let activePaymentRequisites = [];
 
   const els = {
     bootStatus: document.getElementById("bootStatus"),
@@ -73,6 +75,8 @@
     npApiKeysList: document.getElementById("npApiKeysList"),
     npApiKeyAdd: document.getElementById("npApiKeyAdd"),
     npWebhookHint: document.getElementById("npWebhookHint"),
+    paymentRequisitesList: document.getElementById("paymentRequisitesList"),
+    paymentRequisiteAdd: document.getElementById("paymentRequisiteAdd"),
     senderCity: document.getElementById("senderCity"),
     senderCityDropdown: document.getElementById("senderCityDropdown"),
     senderCityRef: document.getElementById("senderCityRef"),
@@ -819,13 +823,62 @@
   }
 
   function renderRequisitesDetails() {
-    els.requisitesDetails.innerHTML = `
-      <div><strong>Отримувач:</strong> ${escapeHtml(PAYMENT_REQUISITES.recipient)}</div>
-      <div><strong>ЄДРПОУ:</strong> ${escapeHtml(PAYMENT_REQUISITES.edrpou)}</div>
-      <div><strong>Рахунок IBAN:</strong> ${escapeHtml(PAYMENT_REQUISITES.iban)}</div>
-      <div><strong>Банк:</strong> ${escapeHtml(PAYMENT_REQUISITES.bank)}</div>
-      <div><strong>Призначення:</strong> ${escapeHtml(PAYMENT_REQUISITES.purpose)}</div>
-    `;
+    if (!els.requisitesDetails) return;
+    const items =
+      Array.isArray(activePaymentRequisites) && activePaymentRequisites.length
+        ? activePaymentRequisites
+        : [
+            {
+              kind: "fop",
+              label: "",
+              ...PAYMENT_REQUISITES_FALLBACK,
+            },
+          ];
+    els.requisitesDetails.innerHTML = items
+      .map((row) => {
+        const kind = row.kind === "card" ? "card" : "fop";
+        const title =
+          (row.label || "").trim() ||
+          (kind === "card" ? "Картка" : "ФОП / рахунок");
+        const lines = [];
+        if (row.recipient) {
+          lines.push(
+            `<div><strong>Отримувач:</strong> ${escapeHtml(row.recipient)}</div>`
+          );
+        }
+        if (kind === "fop") {
+          if (row.edrpou) {
+            lines.push(
+              `<div><strong>ЄДРПОУ:</strong> ${escapeHtml(row.edrpou)}</div>`
+            );
+          }
+          if (row.iban) {
+            lines.push(
+              `<div><strong>Рахунок IBAN:</strong> ${escapeHtml(row.iban)}</div>`
+            );
+          }
+        } else if (row.card_number) {
+          lines.push(
+            `<div><strong>Картка:</strong> ${escapeHtml(row.card_number)}</div>`
+          );
+        }
+        if (row.bank) {
+          lines.push(`<div><strong>Банк:</strong> ${escapeHtml(row.bank)}</div>`);
+        }
+        if (row.purpose) {
+          lines.push(
+            `<div><strong>Призначення:</strong> ${escapeHtml(row.purpose)}</div>`
+          );
+        }
+        if (!lines.length) {
+          lines.push(`<div>${escapeHtml("Реквізити не заповнені")}</div>`);
+        }
+        return `<div class="requisites-account">
+          <div class="requisites-account-title">${escapeHtml(title)}</div>
+          ${lines.join("")}
+        </div>`;
+      })
+      .join("");
   }
 
   function selectedPaymentMethod() {
@@ -904,6 +957,10 @@
       dropperSettings.referral_percent = Number(data.referral_percent || 0);
       dropperSettings.notify_shipping_events = Boolean(data.notify_shipping_events);
       if (data.chat_id) dropperSettings.chat_id = String(data.chat_id);
+      activePaymentRequisites = Array.isArray(data.payment_requisites)
+        ? data.payment_requisites
+        : [];
+      renderRequisitesDetails();
     } catch (error) {
       console.warn("dropper settings", error);
       dropperSettings.require_full_payment = false;
@@ -915,6 +972,16 @@
       dropperSettings.extra_discount_percent = 0;
       dropperSettings.orders_disabled = false;
       dropperSettings.notify_shipping_events = false;
+      try {
+        const reqRes = await fetch("/api/payment-requisites");
+        const reqData = await reqRes.json();
+        if (reqRes.ok && Array.isArray(reqData.items)) {
+          activePaymentRequisites = reqData.items;
+        }
+      } catch (_e) {
+        /* keep previous */
+      }
+      renderRequisitesDetails();
     }
   }
 
@@ -2933,6 +3000,7 @@ ${
 
   let generalSettingsState = {
     np_api_keys: [],
+    payment_requisites: [],
     sheet_columns: [],
   };
 
@@ -2941,6 +3009,22 @@ ${
       id: data.id || `k${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`,
       label: data.label || "",
       api_key: data.api_key || "",
+      enabled: Boolean(data.enabled),
+    };
+  }
+
+  function newPaymentRequisiteRow(data = {}) {
+    const kind = data.kind === "card" ? "card" : "fop";
+    return {
+      id: data.id || `r${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`,
+      kind,
+      label: data.label || "",
+      recipient: data.recipient || "",
+      edrpou: data.edrpou || "",
+      iban: data.iban || "",
+      card_number: data.card_number || "",
+      bank: data.bank || "",
+      purpose: data.purpose || "",
       enabled: Boolean(data.enabled),
     };
   }
@@ -2981,6 +3065,83 @@ ${
       .join("");
   }
 
+  function renderPaymentRequisites() {
+    if (!els.paymentRequisitesList) return;
+    if (!generalSettingsState.payment_requisites?.length) {
+      generalSettingsState.payment_requisites = [
+        newPaymentRequisiteRow({ label: "ФОП / рахунок 1", kind: "fop" }),
+      ];
+    }
+    els.paymentRequisitesList.innerHTML = generalSettingsState.payment_requisites
+      .map((row, index) => {
+        const kind = row.kind === "card" ? "card" : "fop";
+        const fopHidden = kind === "card" ? "hidden" : "";
+        const cardHidden = kind === "fop" ? "hidden" : "";
+        return `
+      <div class="np-key-row" data-req-index="${index}">
+        <div class="req-key-fields">
+          <label class="field compact-field">
+            <span class="field-label">Тип</span>
+            <select data-req-field="kind">
+              <option value="fop" ${kind === "fop" ? "selected" : ""}>ФОП / IBAN</option>
+              <option value="card" ${kind === "card" ? "selected" : ""}>Звичайна картка</option>
+            </select>
+          </label>
+          <label class="field compact-field">
+            <span class="field-label">Назва (для вас)</span>
+            <input type="text" data-req-field="label" placeholder="Напр. ФОП Приват" value="${escapeHtml(
+              row.label || ""
+            )}" autocomplete="off" />
+          </label>
+          <label class="field compact-field req-span-2">
+            <span class="field-label">Отримувач</span>
+            <input type="text" data-req-field="recipient" placeholder="ПІБ або назва ФОП" value="${escapeHtml(
+              row.recipient || ""
+            )}" autocomplete="off" />
+          </label>
+          <label class="field compact-field ${fopHidden}" data-req-show="fop">
+            <span class="field-label">ЄДРПОУ</span>
+            <input type="text" data-req-field="edrpou" placeholder="XXXXXXXXXX" value="${escapeHtml(
+              row.edrpou || ""
+            )}" autocomplete="off" />
+          </label>
+          <label class="field compact-field ${fopHidden}" data-req-show="fop">
+            <span class="field-label">IBAN</span>
+            <input type="text" data-req-field="iban" placeholder="UA..." value="${escapeHtml(
+              row.iban || ""
+            )}" autocomplete="off" />
+          </label>
+          <label class="field compact-field req-span-2 ${cardHidden}" data-req-show="card">
+            <span class="field-label">Номер картки</span>
+            <input type="text" data-req-field="card_number" placeholder="XXXX XXXX XXXX XXXX" value="${escapeHtml(
+              row.card_number || ""
+            )}" autocomplete="off" />
+          </label>
+          <label class="field compact-field">
+            <span class="field-label">Банк</span>
+            <input type="text" data-req-field="bank" placeholder="АТ КБ «ПРИВАТБАНК»" value="${escapeHtml(
+              row.bank || ""
+            )}" autocomplete="off" />
+          </label>
+          <label class="field compact-field">
+            <span class="field-label">Призначення платежу</span>
+            <input type="text" data-req-field="purpose" placeholder="Оплата замовлення" value="${escapeHtml(
+              row.purpose || ""
+            )}" autocomplete="off" />
+          </label>
+        </div>
+        <div class="np-key-footer">
+          <label class="np-key-enabled">
+            <input type="checkbox" data-req-field="enabled" ${row.enabled ? "checked" : ""} />
+            <span>Показувати дропперам</span>
+          </label>
+          <button type="button" class="btn danger" data-req-remove="${index}">Видалити</button>
+        </div>
+      </div>`;
+      })
+      .join("");
+  }
+
   function collectNpApiKeysFromDom() {
     if (!els.npApiKeysList) return generalSettingsState.np_api_keys || [];
     const rows = [...els.npApiKeysList.querySelectorAll(".np-key-row")];
@@ -2995,13 +3156,45 @@ ${
     });
   }
 
+  function collectPaymentRequisitesFromDom() {
+    if (!els.paymentRequisitesList) return generalSettingsState.payment_requisites || [];
+    const rows = [...els.paymentRequisitesList.querySelectorAll("[data-req-index]")];
+    return rows.map((row, index) => {
+      const prev = generalSettingsState.payment_requisites[index] || newPaymentRequisiteRow();
+      const kind =
+        row.querySelector('[data-req-field="kind"]')?.value === "card" ? "card" : "fop";
+      return {
+        id: prev.id,
+        kind,
+        label: row.querySelector('[data-req-field="label"]')?.value?.trim() || "",
+        recipient: row.querySelector('[data-req-field="recipient"]')?.value?.trim() || "",
+        edrpou: row.querySelector('[data-req-field="edrpou"]')?.value?.trim() || "",
+        iban: row.querySelector('[data-req-field="iban"]')?.value?.trim() || "",
+        card_number:
+          row.querySelector('[data-req-field="card_number"]')?.value?.trim() || "",
+        bank: row.querySelector('[data-req-field="bank"]')?.value?.trim() || "",
+        purpose: row.querySelector('[data-req-field="purpose"]')?.value?.trim() || "",
+        enabled: Boolean(row.querySelector('[data-req-field="enabled"]')?.checked),
+      };
+    });
+  }
+
   function fillGeneralSettingsForm(settings, sheetColumns) {
     generalSettingsState.np_api_keys = (settings.np_api_keys || []).map((k) => newNpKeyRow(k));
     if (!generalSettingsState.np_api_keys.length) {
       generalSettingsState.np_api_keys = [newNpKeyRow({ label: "Кабінет 1" })];
     }
+    generalSettingsState.payment_requisites = (settings.payment_requisites || []).map((r) =>
+      newPaymentRequisiteRow(r)
+    );
+    if (!generalSettingsState.payment_requisites.length) {
+      generalSettingsState.payment_requisites = [
+        newPaymentRequisiteRow({ label: "ФОП / рахунок 1", kind: "fop" }),
+      ];
+    }
     generalSettingsState.sheet_columns = sheetColumns || [];
     renderNpApiKeys();
+    renderPaymentRequisites();
 
     const city = settings.sender_city || {};
     const wh = settings.sender_warehouse || {};
@@ -3082,6 +3275,7 @@ ${
     return {
       ...ownerAuthBody(),
       np_api_keys: collectNpApiKeysFromDom(),
+      payment_requisites: collectPaymentRequisitesFromDom(),
       sender_city: {
         label: els.senderCity?.value?.trim() || "",
         city_ref: els.senderCityRef?.value?.trim() || "",
@@ -3958,6 +4152,44 @@ ${
     });
   }
 
+  if (els.paymentRequisiteAdd) {
+    els.paymentRequisiteAdd.addEventListener("click", () => {
+      generalSettingsState.payment_requisites = collectPaymentRequisitesFromDom();
+      const n = generalSettingsState.payment_requisites.length + 1;
+      generalSettingsState.payment_requisites.push(
+        newPaymentRequisiteRow({ label: `Реквізити ${n}`, kind: "fop" })
+      );
+      renderPaymentRequisites();
+    });
+  }
+
+  if (els.paymentRequisitesList) {
+    els.paymentRequisitesList.addEventListener("click", (event) => {
+      const removeBtn = event.target.closest("[data-req-remove]");
+      if (!removeBtn) return;
+      const index = Number(removeBtn.getAttribute("data-req-remove"));
+      generalSettingsState.payment_requisites = collectPaymentRequisitesFromDom();
+      generalSettingsState.payment_requisites.splice(index, 1);
+      if (!generalSettingsState.payment_requisites.length) {
+        generalSettingsState.payment_requisites = [
+          newPaymentRequisiteRow({ label: "ФОП / рахунок 1", kind: "fop" }),
+        ];
+      }
+      renderPaymentRequisites();
+    });
+    els.paymentRequisitesList.addEventListener("change", (event) => {
+      const select = event.target.closest('[data-req-field="kind"]');
+      if (!select) return;
+      const row = select.closest("[data-req-index]");
+      if (!row) return;
+      const kind = select.value === "card" ? "card" : "fop";
+      row.querySelectorAll("[data-req-show]").forEach((el) => {
+        const show = el.getAttribute("data-req-show");
+        el.classList.toggle("hidden", show !== kind);
+      });
+    });
+  }
+
   if (els.generalSettingsForm) {
     els.generalSettingsForm.addEventListener("submit", async (event) => {
       event.preventDefault();
@@ -3977,10 +4209,14 @@ ${
           throw new Error(typeof data.detail === "string" ? data.detail : "Помилка збереження");
         }
         fillGeneralSettingsForm(data.settings || {}, generalSettingsState.sheet_columns || []);
+        activePaymentRequisites = (data.settings?.payment_requisites || []).filter(
+          (r) => r.enabled
+        );
+        renderRequisitesDetails();
         if (els.generalSettingsOk) {
           els.generalSettingsOk.textContent = `Збережено. Основних кабінетів НП: ${
             data.enabled_np_keys_count || 0
-          }`;
+          }. Активних реквізитів: ${data.enabled_payment_requisites_count || 0}`;
           els.generalSettingsOk.classList.remove("hidden");
         }
         showToast("Загальні налаштування збережено");

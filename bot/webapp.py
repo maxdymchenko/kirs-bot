@@ -201,6 +201,7 @@ class GeneralSettingsUpdateRequest(BaseModel):
     owner_chat_id: str = Field("", max_length=64)
     owner_user_id: str = Field("", max_length=64)
     np_api_keys: list[dict] = Field(default_factory=list)
+    payment_requisites: list[dict] = Field(default_factory=list)
     sender_city: dict = Field(default_factory=dict)
     sender_warehouse: dict = Field(default_factory=dict)
     parcel_defaults: dict = Field(default_factory=dict)
@@ -358,6 +359,7 @@ def create_web_app(
 
     @app.get("/api/dropper/settings")
     async def dropper_settings(chat_id: str = Query("", max_length=64)) -> dict:
+        payment_requisites = storage.get_enabled_payment_requisites()
         db_dropper = storage.get_dropper_by_chat(chat_id)
         if db_dropper:
             data = db_dropper.to_public_dict()
@@ -376,11 +378,13 @@ def create_web_app(
                     for r in storage.list_referrals(db_dropper.id)
                 ]
             data["balance"] = storage.get_balance(db_dropper.id)
+            data["payment_requisites"] = payment_requisites
             return data
         yaml_dropper = _yaml_dropper(chat_id)
         if yaml_dropper:
             data = yaml_dropper.to_public_dict()
             data["source"] = "yaml"
+            data["payment_requisites"] = payment_requisites
             return data
         return {
             "chat_id": str(chat_id or "").strip(),
@@ -394,8 +398,15 @@ def create_web_app(
             "orders_disabled": False,
             "referral_percent": 0,
             "notify_shipping_events": False,
+            "payment_requisites": payment_requisites,
             "source": "default",
         }
+
+    @app.get("/api/payment-requisites")
+    async def public_payment_requisites() -> dict:
+        """Активні реквізити для оплати (галочка у «Загальні»)."""
+        items = storage.get_enabled_payment_requisites()
+        return {"items": items, "count": len(items)}
 
     @app.post("/api/dropper/settings")
     async def dropper_update_own_settings(
@@ -1482,6 +1493,7 @@ def create_web_app(
         saved = storage.save_general_settings(
             {
                 "np_api_keys": payload.np_api_keys,
+                "payment_requisites": payload.payment_requisites,
                 "sender_city": payload.sender_city,
                 "sender_warehouse": payload.sender_warehouse,
                 "parcel_defaults": payload.parcel_defaults,
@@ -1495,6 +1507,9 @@ def create_web_app(
             "settings": saved,
             "enabled_np_keys_count": len(
                 [k for k in saved.get("np_api_keys", []) if k.get("enabled") and k.get("api_key")]
+            ),
+            "enabled_payment_requisites_count": len(
+                [r for r in saved.get("payment_requisites", []) if r.get("enabled")]
             ),
         }
 
