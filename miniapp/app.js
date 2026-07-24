@@ -895,10 +895,14 @@
   }
 
   function selectedPaymentMethod() {
-    return (
-      els.checkoutForm.querySelector('input[name="paymentMethod"]:checked')?.value ||
-      "cod"
+    const checked = els.checkoutForm.querySelector(
+      'input[name="paymentMethod"]:checked:not([disabled])'
     );
+    if (checked) return checked.value;
+    if (isFlagEnabled(dropperSettings.allow_cod, true) && !els.ownTtn?.checked) {
+      return "cod";
+    }
+    return "requisites";
   }
 
   function queryParam(name) {
@@ -944,6 +948,12 @@
     };
   }
 
+  function isFlagEnabled(value, defaultOn = true) {
+    if (value === undefined || value === null || value === "") return defaultOn;
+    if (value === false || value === 0 || value === "0" || value === "false") return false;
+    return Boolean(value);
+  }
+
   async function loadDropperSettings(chatIdOverride) {
     const chatId =
       chatIdOverride != null && String(chatIdOverride).trim()
@@ -959,7 +969,8 @@
         throw new Error(data.detail || "settings error");
       }
       dropperSettings.require_full_payment = Boolean(data.require_full_payment);
-      dropperSettings.allow_cod = data.allow_cod !== false;
+      // Явно false/0 з API = вимкнено; відсутнє поле → увімкнено (сумісність)
+      dropperSettings.allow_cod = isFlagEnabled(data.allow_cod, true);
       dropperSettings.allow_balance_payment = Boolean(data.allow_balance_payment);
       dropperSettings.allow_negative_balance = Boolean(data.allow_negative_balance);
       dropperSettings.negative_balance_limit = Number(data.negative_balance_limit || 0);
@@ -977,7 +988,8 @@
     } catch (error) {
       console.warn("dropper settings", error);
       dropperSettings.require_full_payment = false;
-      dropperSettings.allow_cod = true;
+      // При помилці налаштувань не показуємо наложку «на всяк випадок»
+      dropperSettings.allow_cod = false;
       dropperSettings.allow_balance_payment = false;
       dropperSettings.allow_negative_balance = false;
       dropperSettings.negative_balance_limit = 0;
@@ -1145,30 +1157,47 @@
   }
 
   function syncPaymentAndTtn() {
-    const allowCod = dropperSettings.allow_cod !== false;
+    const allowCod = isFlagEnabled(dropperSettings.allow_cod, true);
     const allowBalance = Boolean(dropperSettings.allow_balance_payment);
 
     const ownTtn = Boolean(els.ownTtn?.checked);
     syncOwnTtnCarrierUi();
 
     const hideCod = ownTtn || !allowCod;
-    els.codPaymentCard.classList.toggle("hidden", hideCod);
-    els.codPaymentHint.classList.toggle("hidden", hideCod);
+    if (els.codPaymentCard) {
+      els.codPaymentCard.classList.toggle("hidden", hideCod);
+      const codInput = els.codPaymentCard.querySelector('input[name="paymentMethod"]');
+      if (codInput) {
+        codInput.disabled = hideCod;
+        if (hideCod) codInput.checked = false;
+      }
+    }
+    if (els.codPaymentHint) {
+      els.codPaymentHint.classList.toggle("hidden", hideCod);
+    }
     if (els.balancePaymentCard) {
       els.balancePaymentCard.classList.toggle("hidden", !allowBalance);
+      const balInput = els.balancePaymentCard.querySelector('input[name="paymentMethod"]');
+      if (balInput) balInput.disabled = !allowBalance;
     }
 
     let payment = selectedPaymentMethod();
-    if (hideCod && payment === "cod") {
+    if (hideCod && (payment === "cod" || !payment)) {
       const fallback = allowBalance
         ? els.checkoutForm.querySelector('input[name="paymentMethod"][value="balance"]')
         : els.checkoutForm.querySelector('input[name="paymentMethod"][value="requisites"]');
-      if (fallback) fallback.checked = true;
+      if (fallback) {
+        fallback.disabled = false;
+        fallback.checked = true;
+      }
       payment = selectedPaymentMethod();
     }
     if (!allowBalance && payment === "balance") {
       const req = els.checkoutForm.querySelector('input[name="paymentMethod"][value="requisites"]');
-      if (req) req.checked = true;
+      if (req) {
+        req.disabled = false;
+        req.checked = true;
+      }
       payment = selectedPaymentMethod();
     }
 
@@ -1178,7 +1207,7 @@
     const showPaymentEstimated = !ownTtn && payment !== "cod";
     const showReceipt = showRequisites && dropperSettings.require_full_payment;
 
-    els.prepayBlock.classList.toggle("hidden", !showPrepay);
+    if (els.prepayBlock) els.prepayBlock.classList.toggle("hidden", !showPrepay);
     if (els.prepayField) els.prepayField.classList.toggle("hidden", !showPrepay);
     if (els.codAmountField) {
       els.codAmountField.classList.toggle("hidden", !showPrepay);
@@ -1566,6 +1595,10 @@
     }
     if (!data.rulesAccepted) {
       return "Підтвердіть ознайомлення з правилами";
+    }
+
+    if (data.paymentMethod === "cod" && !isFlagEnabled(dropperSettings.allow_cod, true)) {
+      return "Передачу замовлень наложкою для вас вимкнено";
     }
 
     if (data.paymentMethod === "balance") {
@@ -2482,7 +2515,7 @@ ${
     const cart = Array.isArray(payload.cart) ? payload.cart : [];
     const editMode = options.editMode || "owner";
     const allowCod =
-      editMode === "owner" ? true : dropperSettings.allow_cod !== false;
+      editMode === "owner" ? true : isFlagEnabled(dropperSettings.allow_cod, true);
     const allowBalance =
       editMode === "owner" ? true : Boolean(dropperSettings.allow_balance_payment);
     let method = order.payment_method || payment.method || "cod";
@@ -5159,7 +5192,7 @@ ${
                 <span class="setting-control">
                   <span class="toggle">
                     <input type="checkbox" data-rule="allow_cod" ${
-                      d.allow_cod !== false ? "checked" : ""
+                      isFlagEnabled(d.allow_cod, true) ? "checked" : ""
                     } />
                     <span class="toggle-ui"></span>
                   </span>

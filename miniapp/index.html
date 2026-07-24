@@ -560,15 +560,15 @@
             </div>
 
             <div class="choice-list" role="radiogroup" aria-label="Спосіб оплати">
-              <label class="choice-card" id="codPaymentCard">
-                <input type="radio" name="paymentMethod" value="cod" checked />
+              <label class="choice-card hidden" id="codPaymentCard">
+                <input type="radio" name="paymentMethod" value="cod" />
                 <span class="choice-body">
                   <span class="choice-title">Оплата при отриманні</span>
                   <span class="choice-sub">Оплата при отриманні</span>
                 </span>
               </label>
               <label class="choice-card" id="requisitesPaymentCard">
-                <input type="radio" name="paymentMethod" value="requisites" />
+                <input type="radio" name="paymentMethod" value="requisites" checked />
                 <span class="choice-body">
                   <span class="choice-title">Оплата на реквізити</span>
                   <span class="choice-sub">Оплата на реквізити</span>
@@ -587,7 +587,7 @@
               Суму «Дроп ціна» буде списано з балансу дроппера. Якщо коштів не вистачає — підете в мінус у межах дозволеного ліміту.
             </div>
 
-            <div id="prepayBlock">
+            <div id="prepayBlock" class="hidden">
               <div class="info-box" id="prepayHint">
                 Якщо отримувач вніс передплату, вкажіть суму для вирахування з накладеного платежу
               </div>
@@ -736,6 +736,6 @@
   </div>
 
   <button type="button" id="photoZoomBackdrop" class="photo-zoom-backdrop hidden" aria-label="Закрити фото"></button>
-  <script src="/static/app.js?v=20260724rmttn1"></script>
+  <script src="/static/app.js?v=20260724cod1"></script>
 </body>
 </html>
