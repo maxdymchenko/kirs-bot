@@ -8,8 +8,30 @@ from typing import Any
 
 from bot.accounts import AppStorage
 from bot.np_fulfillment import order_cod_profit
+from bot.np_fulfillment import (
+    AWAITING_SHIPMENT_STATUSES,
+    SHIPPED_OR_FINAL_STATUSES,
+)
 
 logger = logging.getLogger(__name__)
+
+
+def can_modify_unshipped_order(order: dict[str, Any]) -> bool:
+    """
+    Редагувати/скасувати можна, поки посилка ще не відправлена.
+    Власна ТТН (provided) — теж дозволено, доки немає shipped-статусів.
+    """
+    if not order:
+        return False
+    if str(order.get("status") or "").strip() == "cancelled":
+        return False
+    status = str(order.get("ttn_status") or "none").strip() or "none"
+    if status in SHIPPED_OR_FINAL_STATUSES:
+        return False
+    if status in AWAITING_SHIPMENT_STATUSES or status == "provided":
+        return True
+    code = str((order.get("payload") or {}).get("np_status_code") or "").strip()
+    return code in {"", "1"}
 
 
 def _s(value: Any) -> str:
@@ -350,5 +372,33 @@ def enrich_orders_with_changes(
     for order in items:
         row = dict(order)
         row["changes"] = by_id.get(int(order["id"]), []) if order.get("id") else []
+        row["can_modify"] = can_modify_unshipped_order(row)
         out.append(row)
     return out
+
+
+def clear_ledger_for_cancelled_order(storage: AppStorage, order: dict[str, Any]) -> None:
+    """Прибрати всі ledger-записи, привʼязані до скасованого замовлення."""
+    dropper_id = int(order.get("dropper_id") or 0)
+    order_number = str(order.get("order_number") or "").strip()
+    if not dropper_id or not order_number:
+        return
+    for entry_type in (
+        "balance_payment",
+        "prepay_overage_debit",
+        "cod_profit_credit",
+        "cod_profit_reversal",
+        "return_delivery_debit",
+    ):
+        storage.delete_ledger_entry_for_order(
+            dropper_id=dropper_id,
+            entry_type=entry_type,
+            related_order_id=order_number,
+        )
+    source = storage.get_dropper_by_id(dropper_id)
+    if source and source.referred_by_dropper_id:
+        storage.delete_ledger_entry_for_order(
+            dropper_id=int(source.referred_by_dropper_id),
+            entry_type="referral_credit",
+            related_order_id=order_number,
+        )

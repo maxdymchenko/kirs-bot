@@ -207,6 +207,21 @@ class OrderOwnerUpdateRequest(OrderCreateRequest):
     payment_method: str = Field("", max_length=32)
 
 
+class OrderDropperUpdateRequest(OrderCreateRequest):
+    """Редагування замовлення дроппером."""
+
+    chat_id: str = Field(..., min_length=2, max_length=64)
+    user_id: str = Field("", max_length=64)
+    phone: str = Field("", min_length=0, max_length=32)
+    payment_method: str = Field("", max_length=32)
+
+
+class OrderDropperActionRequest(BaseModel):
+    chat_id: str = Field(..., min_length=2, max_length=64)
+    user_id: str = Field("", max_length=64)
+    message: str = Field("", max_length=1000)
+
+
 class GeneralSettingsUpdateRequest(BaseModel):
     owner_chat_id: str = Field("", max_length=64)
     owner_user_id: str = Field("", max_length=64)
@@ -1438,13 +1453,25 @@ def create_web_app(
         limit: int = Query(50, ge=1, le=200),
     ) -> dict:
         from bot.order_edit import enrich_orders_with_changes
+        from bot.order_edit_window import dropper_edit_window_info
 
         dropper = storage.get_dropper_by_chat(chat_id)
         if not dropper:
             raise HTTPException(status_code=404, detail="Дроппера не знайдено")
         items = storage.list_orders_for_dropper(dropper.id, limit=limit)
         items = enrich_orders_with_changes(storage, items)
-        return {"count": len(items), "items": items}
+        window = dropper_edit_window_info()
+        return {
+            "count": len(items),
+            "items": items,
+            "edit_window": window,
+        }
+
+    @app.get("/api/orders/edit-window")
+    async def orders_edit_window() -> dict:
+        from bot.order_edit_window import dropper_edit_window_info
+
+        return dropper_edit_window_info()
 
     @app.get("/api/owner/droppers/{chat_id}/orders")
     async def owner_dropper_orders(
@@ -1467,50 +1494,39 @@ def create_web_app(
             "items": items,
         }
 
-    @app.get("/api/owner/orders/{order_id}")
-    async def owner_get_order(
+    async def _perform_order_edit(
+        *,
         order_id: int,
-        owner_chat_id: str = Query("", max_length=64),
-        owner_user_id: str = Query("", max_length=64),
-    ) -> dict:
-        _require_owner(owner_chat_id, owner_user_id)
-        order = storage.get_order(order_id)
-        if not order:
-            raise HTTPException(status_code=404, detail="Замовлення не знайдено")
-        changes = storage.list_order_changes(order_id, limit=100)
-        payload = order.get("payload") or {}
-        return {
-            "order": {**order, "changes": changes},
-            "tracking_events": payload.get("tracking_events") or [],
-            "changes": changes,
-        }
-
-    @app.patch("/api/owner/orders/{order_id}")
-    async def owner_update_order(
-        order_id: int,
-        payload: OrderOwnerUpdateRequest,
+        edit_data: dict,
+        dropper,
+        actor_role: str,
+        actor_user_id: str,
+        actor_label: str,
+        notify_dropper_group: bool,
+        for_owner_edit: bool,
+        skip_unshipped_check: bool = False,
     ) -> dict:
         from bot.catalog import InsufficientStockError
         from bot.np_fulfillment import can_recreate_ttn, recreate_ttn_for_order
         from bot.novaposhta import NovaPoshtaError
         from bot.order_edit import (
             build_payload_from_edit,
+            can_modify_unshipped_order,
             compute_order_diff,
             summarize_diffs,
             sync_ledger_for_edited_order,
         )
 
-        _require_owner(payload.owner_chat_id, payload.owner_user_id)
         order = storage.get_order(order_id)
         if not order:
             raise HTTPException(status_code=404, detail="Замовлення не знайдено")
+        if not skip_unshipped_check and not can_modify_unshipped_order(order):
+            raise HTTPException(
+                status_code=400,
+                detail="Замовлення вже відправлено — редагування недоступне",
+            )
 
-        dropper = storage.get_dropper_by_id(int(order["dropper_id"]))
-        if not dropper:
-            raise HTTPException(status_code=404, detail="Дроппера не знайдено")
-
-        # Підставляємо chat_id дроппера для валідації
-        edit_data = payload.model_dump()
+        edit_data = dict(edit_data)
         edit_data["chat_id"] = dropper.chat_id
         if not str(edit_data.get("phone") or "").strip():
             edit_data["phone"] = ((order.get("payload") or {}).get("recipient") or {}).get(
@@ -1524,7 +1540,7 @@ def create_web_app(
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
         total, prepay, debit, cod_amount = _validate_order_payload(
-            validate_payload, dropper, for_owner_edit=True
+            validate_payload, dropper, for_owner_edit=for_owner_edit
         )
 
         own_ttn = bool(validate_payload.own_ttn)
@@ -1538,7 +1554,6 @@ def create_web_app(
         elif own_ttn:
             ttn_number = re.sub(r"\D", "", validate_payload.ttn_number or "")
         else:
-            # Зберігаємо поточну ТТН до можливого recreate
             ttn_number = str(order.get("ttn_number") or "").strip()
 
         safe_cart = []
@@ -1618,7 +1633,6 @@ def create_web_app(
                 "diff": [],
             }
 
-        # Склад: повернути старий кошик, списати новий
         try:
             catalog.replace_cart_stock(old_cart, safe_cart)
         except InsufficientStockError as exc:
@@ -1644,13 +1658,13 @@ def create_web_app(
         )
 
         ttn_status = str(order.get("ttn_status") or "none")
+        saved_ttn_number = ttn_number if own_ttn else str(order.get("ttn_number") or "")
         if own_ttn:
             ttn_status = "provided"
             new_payload["ttn_number"] = ttn_number
         elif order.get("own_ttn") and not own_ttn:
-            # Була власна → тепер API НП
             ttn_status = "pending_create"
-            ttn_number = ""
+            saved_ttn_number = ""
             new_payload["ttn_number"] = ""
 
         saved = storage.replace_order(
@@ -1662,7 +1676,7 @@ def create_web_app(
             prepay=prepay,
             prepay_balance_debit=debit,
             cod_amount=cod_amount,
-            ttn_number=ttn_number if own_ttn else str(order.get("ttn_number") or ""),
+            ttn_number=saved_ttn_number,
             ttn_status=ttn_status,
             payload=new_payload,
             sheets_sync_status="pending",
@@ -1682,9 +1696,9 @@ def create_web_app(
         storage.add_order_change(
             order_id=order_id,
             order_number=str(saved.get("order_number") or ""),
-            actor_role="owner",
-            actor_user_id=str(payload.owner_user_id or "").strip(),
-            actor_label="Власник",
+            actor_role=actor_role,
+            actor_user_id=str(actor_user_id or "").strip(),
+            actor_label=actor_label,
             change_type="edit",
             summary=summary or "Замовлення відредаговано",
             diff=diffs,
@@ -1692,6 +1706,7 @@ def create_web_app(
 
         ttn_recreated = False
         ttn_error = ""
+        # Для recreate потрібен статус awaiting; після replace own_ttn=false pending — can_recreate
         if not own_ttn and can_recreate_ttn(saved):
             try:
                 saved = recreate_ttn_for_order(storage, saved)
@@ -1732,29 +1747,45 @@ def create_web_app(
 
         saved = storage.get_order(order_id) or saved
 
-        notify_lines = [
-            "✏️ Замовлення відредаговано власником",
-            "",
-            f"Номер: {saved.get('order_number')}",
-            "",
-            "Що змінилось:",
-            summary or "—",
-        ]
-        if ttn_recreated and saved.get("ttn_number"):
+        if notify_dropper_group:
+            who = actor_label or actor_role
+            notify_lines = [
+                f"✏️ Замовлення відредаговано ({who})",
+                "",
+                f"Номер: {saved.get('order_number')}",
+                "",
+                "Що змінилось:",
+                summary or "—",
+            ]
+            if ttn_recreated and saved.get("ttn_number"):
+                notify_lines.append("")
+                notify_lines.append(f"Нова ТТН: {saved.get('ttn_number')}")
+            elif ttn_error:
+                notify_lines.append("")
+                notify_lines.append(f"ТТН: помилка перестворення ({ttn_error[:200]})")
             notify_lines.append("")
-            notify_lines.append(f"Нова ТТН: {saved.get('ttn_number')}")
-        elif ttn_error:
-            notify_lines.append("")
-            notify_lines.append(f"ТТН: помилка перестворення ({ttn_error[:200]})")
-        notify_lines.append("")
-        notify_lines.append("Деталі — у вкладці «Історія замовлень» Mini App.")
-        try:
-            await _notify(str(saved.get("chat_id") or dropper.chat_id), "\n".join(notify_lines))
-        except Exception:
-            logger.exception(
-                "Не вдалося повідомити дроппера про редагування %s",
-                saved.get("order_number"),
-            )
+            notify_lines.append("Деталі — у вкладці «Історія замовлень» Mini App.")
+            try:
+                await _notify(
+                    str(saved.get("chat_id") or dropper.chat_id),
+                    "\n".join(notify_lines),
+                )
+            except Exception:
+                logger.exception(
+                    "Не вдалося повідомити про редагування %s",
+                    saved.get("order_number"),
+                )
+
+        if actor_role == "dropper":
+            try:
+                await _notify_owners(
+                    "✏️ Дроппер відредагував замовлення\n"
+                    f"Номер: {saved.get('order_number')}\n"
+                    f"Дроппер: {dropper.company_name}\n"
+                    f"{summary or '—'}"
+                )
+            except Exception:
+                logger.exception("notify owners about dropper edit failed")
 
         changes = storage.list_order_changes(order_id, limit=100)
         return {
@@ -1766,6 +1797,257 @@ def create_web_app(
             "diff": diffs,
             "can_recreate_ttn": can_recreate_ttn(saved),
         }
+
+    @app.get("/api/owner/orders/{order_id}")
+    async def owner_get_order(
+        order_id: int,
+        owner_chat_id: str = Query("", max_length=64),
+        owner_user_id: str = Query("", max_length=64),
+    ) -> dict:
+        _require_owner(owner_chat_id, owner_user_id)
+        order = storage.get_order(order_id)
+        if not order:
+            raise HTTPException(status_code=404, detail="Замовлення не знайдено")
+        changes = storage.list_order_changes(order_id, limit=100)
+        payload = order.get("payload") or {}
+        return {
+            "order": {**order, "changes": changes},
+            "tracking_events": payload.get("tracking_events") or [],
+            "changes": changes,
+        }
+
+    @app.patch("/api/owner/orders/{order_id}")
+    async def owner_update_order(
+        order_id: int,
+        payload: OrderOwnerUpdateRequest,
+    ) -> dict:
+        _require_owner(payload.owner_chat_id, payload.owner_user_id)
+        order = storage.get_order(order_id)
+        if not order:
+            raise HTTPException(status_code=404, detail="Замовлення не знайдено")
+        dropper = storage.get_dropper_by_id(int(order["dropper_id"]))
+        if not dropper:
+            raise HTTPException(status_code=404, detail="Дроппера не знайдено")
+        return await _perform_order_edit(
+            order_id=order_id,
+            edit_data=payload.model_dump(),
+            dropper=dropper,
+            actor_role="owner",
+            actor_user_id=payload.owner_user_id,
+            actor_label="Власник",
+            notify_dropper_group=True,
+            for_owner_edit=True,
+            skip_unshipped_check=True,
+        )
+
+    @app.patch("/api/dropper/orders/{order_id}")
+    async def dropper_update_order(
+        order_id: int,
+        payload: OrderDropperUpdateRequest,
+    ) -> dict:
+        from bot.order_edit import can_modify_unshipped_order
+        from bot.order_edit_window import dropper_edit_window_info, is_dropper_edit_locked
+
+        dropper = storage.get_dropper_by_chat(payload.chat_id)
+        if not dropper:
+            raise HTTPException(status_code=404, detail="Дроппера не знайдено")
+        order = storage.get_order(order_id)
+        if not order or int(order.get("dropper_id") or 0) != int(dropper.id):
+            raise HTTPException(status_code=404, detail="Замовлення не знайдено")
+        if is_dropper_edit_locked():
+            window = dropper_edit_window_info()
+            raise HTTPException(
+                status_code=403,
+                detail=window.get("message")
+                or "Редагування тимчасово закрите (13:30–14:30). Подайте запит власнику.",
+            )
+        if not can_modify_unshipped_order(order):
+            raise HTTPException(
+                status_code=400,
+                detail="Замовлення вже відправлено — редагування недоступне",
+            )
+        return await _perform_order_edit(
+            order_id=order_id,
+            edit_data=payload.model_dump(),
+            dropper=dropper,
+            actor_role="dropper",
+            actor_user_id=payload.user_id,
+            actor_label=dropper.company_name or "Дроппер",
+            notify_dropper_group=True,
+            for_owner_edit=True,
+            skip_unshipped_check=False,
+        )
+
+    @app.post("/api/dropper/orders/{order_id}/cancel")
+    async def dropper_cancel_order(
+        order_id: int,
+        payload: OrderDropperActionRequest,
+    ) -> dict:
+        from bot.np_fulfillment import delete_ttn_document_if_possible
+        from bot.order_edit import (
+            can_modify_unshipped_order,
+            clear_ledger_for_cancelled_order,
+        )
+        from bot.order_edit_window import dropper_edit_window_info, is_dropper_edit_locked
+
+        dropper = storage.get_dropper_by_chat(payload.chat_id)
+        if not dropper:
+            raise HTTPException(status_code=404, detail="Дроппера не знайдено")
+        order = storage.get_order(order_id)
+        if not order or int(order.get("dropper_id") or 0) != int(dropper.id):
+            raise HTTPException(status_code=404, detail="Замовлення не знайдено")
+        if is_dropper_edit_locked():
+            window = dropper_edit_window_info()
+            raise HTTPException(
+                status_code=403,
+                detail=window.get("message")
+                or "Скасування тимчасово закрите (13:30–14:30). Подайте запит власнику.",
+            )
+        if not can_modify_unshipped_order(order):
+            raise HTTPException(
+                status_code=400,
+                detail="Замовлення вже відправлено — скасування недоступне",
+            )
+
+        old_cart = list((order.get("payload") or {}).get("cart") or [])
+        ttn_ok, ttn_err = delete_ttn_document_if_possible(storage, order)
+        if not ttn_ok:
+            raise HTTPException(
+                status_code=502,
+                detail=f"Не вдалося видалити ТТН у Новій Пошті: {ttn_err}",
+            )
+
+        try:
+            if old_cart:
+                catalog.restore_cart_stock(old_cart)
+        except Exception:
+            logger.exception("Stock restore failed on cancel %s", order.get("order_number"))
+            raise HTTPException(
+                status_code=503,
+                detail="Не вдалося повернути наявність. Спробуйте ще раз.",
+            )
+
+        payload_new = dict(order.get("payload") or {})
+        payload_new["cancelled_by"] = "dropper"
+        payload_new["ttn_number"] = ""
+        payload_new["np_document_ref"] = ""
+        payload_new["np_error"] = ""
+
+        saved = storage.replace_order(
+            order_id,
+            payment_method=str(order.get("payment_method") or ""),
+            delivery_method=str(order.get("delivery_method") or ""),
+            own_ttn=bool(order.get("own_ttn")),
+            total=float(order.get("total") or 0),
+            prepay=float(order.get("prepay") or 0),
+            prepay_balance_debit=float(order.get("prepay_balance_debit") or 0),
+            cod_amount=float(order.get("cod_amount") or 0),
+            ttn_number="",
+            ttn_status="cancelled",
+            payload=payload_new,
+            status="cancelled",
+            sheets_sync_status="pending",
+        )
+        clear_ledger_for_cancelled_order(storage, saved or order)
+        storage.add_order_change(
+            order_id=order_id,
+            order_number=str((saved or order).get("order_number") or ""),
+            actor_role="dropper",
+            actor_user_id=str(payload.user_id or "").strip(),
+            actor_label=dropper.company_name or "Дроппер",
+            change_type="status",
+            summary="Замовлення скасовано дроппером",
+            diff=[{"field": "status", "old": order.get("status") or "", "new": "cancelled"}],
+        )
+
+        text = (
+            f"❌ Замовлення скасовано\n"
+            f"Номер: {(saved or order).get('order_number')}\n"
+            f"Дроппер: {dropper.company_name}"
+        )
+        try:
+            await _notify(str(order.get("chat_id") or dropper.chat_id), text)
+        except Exception:
+            logger.exception("notify cancel to dropper failed")
+        try:
+            await _notify_owners(text)
+        except Exception:
+            logger.exception("notify cancel to owners failed")
+
+        changes = storage.list_order_changes(order_id, limit=100)
+        return {
+            "ok": True,
+            "order": {**(saved or order), "changes": changes},
+            "cancelled": True,
+        }
+
+    @app.post("/api/dropper/orders/{order_id}/correction-request")
+    async def dropper_correction_request(
+        order_id: int,
+        payload: OrderDropperActionRequest,
+    ) -> dict:
+        from bot.order_edit import can_modify_unshipped_order
+        from bot.order_edit_window import is_dropper_edit_locked
+
+        dropper = storage.get_dropper_by_chat(payload.chat_id)
+        if not dropper:
+            raise HTTPException(status_code=404, detail="Дроппера не знайдено")
+        order = storage.get_order(order_id)
+        if not order or int(order.get("dropper_id") or 0) != int(dropper.id):
+            raise HTTPException(status_code=404, detail="Замовлення не знайдено")
+        if not can_modify_unshipped_order(order):
+            raise HTTPException(
+                status_code=400,
+                detail="Замовлення вже відправлено — виправлення недоступне",
+            )
+        # Запит потрібен саме в закрите вікно; поза ним можна редагувати самим
+        if not is_dropper_edit_locked():
+            raise HTTPException(
+                status_code=400,
+                detail="Зараз редагування відкрите — внесіть правки самі у Mini App",
+            )
+
+        note = str(payload.message or "").strip() or "Без деталей"
+        storage.add_order_change(
+            order_id=order_id,
+            order_number=str(order.get("order_number") or ""),
+            actor_role="dropper",
+            actor_user_id=str(payload.user_id or "").strip(),
+            actor_label=dropper.company_name or "Дроппер",
+            change_type="system",
+            summary=f"Запит на виправлення: {note}",
+            diff=[{"field": "correction_request", "old": "", "new": note}],
+        )
+        storage.merge_order_payload(
+            order_id,
+            {
+                "correction_request": note,
+                "correction_request_at": __import__("datetime")
+                .datetime.now()
+                .isoformat(timespec="seconds"),
+            },
+        )
+        owner_text = (
+            "📩 Запит на виправлення замовлення\n"
+            f"Номер: {order.get('order_number')}\n"
+            f"Дроппер: {dropper.company_name}\n"
+            f"chat_id: {dropper.chat_id}\n"
+            f"Що потрібно: {note}\n"
+            "\n"
+            "Зараз 13:30–14:30 — дроппер не може редагувати сам. "
+            "Відкрийте замовлення в кабінеті власника і внесіть правки."
+        )
+        await _notify_owners(owner_text)
+        try:
+            await _notify(
+                dropper.chat_id,
+                f"📩 Запит на виправлення {order.get('order_number')} надіслано власнику.",
+            )
+        except Exception:
+            logger.exception("ack correction request failed")
+
+        changes = storage.list_order_changes(order_id, limit=100)
+        return {"ok": True, "order": {**order, "changes": changes}}
 
     @app.get("/api/owner/settings")
     async def get_owner_settings(

@@ -498,6 +498,39 @@ def recreate_ttn_for_order(
     return create_ttn_for_order(storage, order)
 
 
+def delete_ttn_document_if_possible(
+    storage: AppStorage, order: dict[str, Any]
+) -> tuple[bool, str]:
+    """
+    Спробувати видалити ТТН у кабінеті НП.
+    Повертає (ok, error_message). Для own_ttn — (True, '').
+    """
+    if order.get("own_ttn"):
+        return True, ""
+    payload = dict(order.get("payload") or {})
+    doc_ref = str(payload.get("np_document_ref") or "").strip()
+    if not doc_ref:
+        return True, ""
+    clients = list_np_clients(storage)
+    last_err = ""
+    for label, client, _is_primary in clients:
+        try:
+            client.delete_internet_document(doc_ref)
+            logger.info(
+                "Deleted TTN ref %s via «%s» for order %s (cancel)",
+                doc_ref,
+                label,
+                order.get("order_number"),
+            )
+            return True, ""
+        except NovaPoshtaError as exc:
+            last_err = str(exc)
+        except Exception as exc:
+            last_err = str(exc)
+            logger.exception("TTN delete on cancel failed via «%s»", label)
+    return False, last_err or "Не вдалося видалити ТТН"
+
+
 def order_cod_profit(order: dict[str, Any]) -> float:
     if str(order.get("payment_method") or "") != "cod":
         return 0.0

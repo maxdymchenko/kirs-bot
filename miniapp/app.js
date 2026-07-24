@@ -1861,6 +1861,9 @@ ${
     if (payload.return_at_warehouse || ttn === "return_at_warehouse") {
       return { kind: "return_warehouse", label: "Отримано повернення на склад", sub: "" };
     }
+    if (String(order.status || "") === "cancelled" || ttn === "cancelled") {
+      return { kind: "refused", label: "Скасовано", sub: "" };
+    }
     if (
       payload.dropper_return ||
       payload.return_after_received ||
@@ -1994,15 +1997,24 @@ ${
               )}</div></div>`
             : ""
         }
+        ${
+          options.editable && payload.correction_request
+            ? `<div class="confirm-block">
+                <div class="confirm-label">Запит дроппера на виправлення</div>
+                <div class="confirm-value">${escapeHtml(payload.correction_request)}</div>
+              </div>`
+            : ""
+        }
         ${renderOrderTrackingTimelineHtml(order)}
         ${renderOrderChangesTimelineHtml(order)}
+        ${renderOrderDropperActionsHtml(order, options)}
         ${
           options.editable
             ? `<div class="order-edit-actions">
                 <p class="hint">ТТН буде перестворено лише якщо ще очікує відправки.</p>
                 <button type="button" class="btn primary" data-order-edit-open="${escapeHtml(
                   String(order.id || "")
-                )}">Редагувати</button>
+                )}" data-order-edit-mode="${escapeHtml(options.editMode || "owner")}">Редагувати</button>
                 <div class="order-edit-panel hidden" data-order-edit-panel="${escapeHtml(
                   String(order.id || "")
                 )}"></div>
@@ -2011,6 +2023,49 @@ ${
         }
       </div>
     `;
+  }
+
+  function renderOrderDropperActionsHtml(order, options = {}) {
+    if (!options.dropperActions) return "";
+    if (String(order.status || "") === "cancelled") {
+      return `<div class="order-edit-actions"><p class="hint">Замовлення скасовано</p></div>`;
+    }
+    const canModify = order.can_modify !== false;
+    if (!canModify) {
+      return `<div class="order-edit-actions"><p class="hint">Замовлення вже в дорозі — зміни недоступні</p></div>`;
+    }
+    const locked = Boolean(options.editWindow?.locked);
+    if (locked) {
+      return `
+        <div class="order-edit-actions">
+          <p class="hint">${escapeHtml(
+            options.editWindow?.message ||
+              "Зараз 13:30–14:30 — редагування закрите. Можна подати запит власнику."
+          )}</p>
+          <label class="field">
+            <span class="field-label">Що потрібно виправити</span>
+            <textarea data-correction-text rows="2" placeholder="Опишіть правки…"></textarea>
+          </label>
+          <button type="button" class="btn primary" data-order-correction-request="${escapeHtml(
+            String(order.id || "")
+          )}">Подати запит на виправлення</button>
+        </div>`;
+    }
+    return `
+      <div class="order-edit-actions">
+        <p class="hint">До 13:30 і після 14:30 (Київ) можна змінити або скасувати, якщо ще не відправлено. ТТН перествориться автоматично.</p>
+        <div class="order-edit-actions-row">
+          <button type="button" class="btn primary" data-order-edit-open="${escapeHtml(
+            String(order.id || "")
+          )}" data-order-edit-mode="dropper">Редагувати</button>
+          <button type="button" class="btn danger" data-order-cancel="${escapeHtml(
+            String(order.id || "")
+          )}">Скасувати замовлення</button>
+        </div>
+        <div class="order-edit-panel hidden" data-order-edit-panel="${escapeHtml(
+          String(order.id || "")
+        )}"></div>
+      </div>`;
   }
 
   function formatChangeFieldLabel(field) {
@@ -2153,7 +2208,10 @@ ${
     return "ТТН: —";
   }
 
-  function renderOrderCard(order, { compact = false, editable = false } = {}) {
+  function renderOrderCard(
+    order,
+    { compact = false, editable = false, dropperActions = false, editWindow = null, editMode = "owner" } = {}
+  ) {
     const payload = order.payload || {};
     const recipient = payload.recipient || {};
     const delivery = payload.delivery || {};
@@ -2205,7 +2263,12 @@ ${
           </div>
         </button>
         <div class="order-card-details hidden">
-          ${renderOrderDetailsHtml(order, { editable })}
+          ${renderOrderDetailsHtml(order, {
+            editable,
+            dropperActions,
+            editWindow,
+            editMode,
+          })}
         </div>
       </article>
     `;
@@ -2215,7 +2278,9 @@ ${
     if (!root || root.dataset.orderClicksBound === "1") return;
     root.dataset.orderClicksBound = "1";
     root.addEventListener("click", (event) => {
-      if (event.target.closest("[data-order-edit-open], [data-order-edit-panel], .order-edit-panel")) {
+      if (event.target.closest(
+        "[data-order-edit-open], [data-order-edit-panel], .order-edit-panel, [data-order-cancel], [data-order-correction-request], [data-correction-text]"
+      )) {
         return;
       }
       const toggle = event.target.closest(".order-card-toggle");
@@ -2236,8 +2301,10 @@ ${
     for (const box of boxes) {
       const items = box._ordersCache || [];
       const found = items.find((o) => String(o.id) === id);
-      if (found) return { order: found, box };
+      if (found) return { order: found, box, mode: "owner" };
     }
+    const dropperHit = (dropperOrdersCache || []).find((o) => String(o.id) === id);
+    if (dropperHit) return { order: dropperHit, box: null, mode: "dropper" };
     return null;
   }
 
@@ -2424,15 +2491,22 @@ ${
     }));
   }
 
-  function collectOwnerOrderEditPayload(form, order) {
+  function collectOwnerOrderEditPayload(form, order, mode = "owner") {
     const payload = order.payload || {};
     const delivery = payload.delivery || {};
     const deliveryMethod = form.delivery_method?.value || "np_warehouse";
     const ownTtn = deliveryMethod === "own_ttn";
     const cart = collectEditFormCart(form);
     const total = calcEditCartTotal(cart);
+    const base =
+      mode === "dropper"
+        ? {
+            chat_id: effectiveDropperChatId(),
+            user_id: currentTelegramUser().user_id || "",
+          }
+        : ownerAuthBody();
     return {
-      ...ownerAuthBody(),
+      ...base,
       first_name: form.first_name?.value?.trim() || "",
       last_name: form.last_name?.value?.trim() || "",
       patronymic: form.patronymic?.value?.trim() || "",
@@ -2462,31 +2536,34 @@ ${
     };
   }
 
-  async function openOwnerOrderEdit(orderId, card) {
+  async function openOwnerOrderEdit(orderId, card, modeHint) {
     const hit = findOrderInOwnerCaches(orderId);
     if (!hit) {
       showToast("Замовлення не знайдено в кеші");
       return;
     }
+    const mode = modeHint || hit.mode || "owner";
     const panel = card.querySelector(`[data-order-edit-panel="${orderId}"]`);
     if (!panel) return;
     panel.innerHTML = renderOwnerOrderEditForm(hit.order);
     panel.classList.remove("hidden");
     panel._orderRef = hit.order;
     panel._boxRef = hit.box;
+    panel._editMode = mode;
   }
 
   async function saveOwnerOrderEdit(form) {
     const orderId = form.getAttribute("data-order-edit-form");
     const panel = form.closest("[data-order-edit-panel]");
     const order = panel?._orderRef;
+    const mode = panel?._editMode || "owner";
     const errEl = form.querySelector("[data-edit-error]");
     if (errEl) {
       errEl.classList.add("hidden");
       errEl.textContent = "";
     }
     if (!order) return;
-    const body = collectOwnerOrderEditPayload(form, order);
+    const body = collectOwnerOrderEditPayload(form, order, mode);
     if (!body.cart.length) {
       if (errEl) {
         errEl.textContent = "Додайте хоча б один товар";
@@ -2497,7 +2574,11 @@ ${
     const submitBtn = form.querySelector('button[type="submit"]');
     if (submitBtn) submitBtn.disabled = true;
     try {
-      const response = await fetch(`/api/owner/orders/${encodeURIComponent(orderId)}`, {
+      const url =
+        mode === "dropper"
+          ? `/api/dropper/orders/${encodeURIComponent(orderId)}`
+          : `/api/owner/orders/${encodeURIComponent(orderId)}`;
+      const response = await fetch(url, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
@@ -2513,6 +2594,8 @@ ${
           String(o.id) === String(updated.id) ? updated : o
         );
         renderOwnerDropperOrdersPanel(box);
+      } else if (mode === "dropper") {
+        await renderOrdersHistory();
       }
       let msg = "Замовлення збережено";
       if (data.ttn_recreated) msg += ` · нова ТТН ${updated?.ttn_number || ""}`;
@@ -2574,7 +2657,11 @@ ${
       };
       // preserve filled fields: rebuild form
       const panel = form.closest("[data-order-edit-panel]");
-      const preserved = collectOwnerOrderEditPayload(form, panel._orderRef || stub);
+      const preserved = collectOwnerOrderEditPayload(
+        form,
+        panel._orderRef || stub,
+        panel._editMode || "owner"
+      );
       panel._orderRef = {
         ...panel._orderRef,
         payload: {
@@ -2618,8 +2705,25 @@ ${
     if (openBtn) {
       event.preventDefault();
       const orderId = openBtn.getAttribute("data-order-edit-open");
+      const mode = openBtn.getAttribute("data-order-edit-mode") || "owner";
       const card = openBtn.closest(".order-card");
-      if (orderId && card) openOwnerOrderEdit(orderId, card);
+      if (orderId && card) openOwnerOrderEdit(orderId, card, mode);
+      return;
+    }
+    const cancelOrderBtn = event.target.closest("[data-order-cancel]");
+    if (cancelOrderBtn) {
+      event.preventDefault();
+      const orderId = cancelOrderBtn.getAttribute("data-order-cancel");
+      if (orderId) cancelDropperOrder(orderId);
+      return;
+    }
+    const correctionBtn = event.target.closest("[data-order-correction-request]");
+    if (correctionBtn) {
+      event.preventDefault();
+      const orderId = correctionBtn.getAttribute("data-order-correction-request");
+      const wrap = correctionBtn.closest(".order-edit-actions");
+      const text = wrap?.querySelector("[data-correction-text]")?.value?.trim() || "";
+      if (orderId) requestOrderCorrection(orderId, text);
       return;
     }
     const cancelBtn = event.target.closest("[data-edit-cancel]");
@@ -2644,12 +2748,64 @@ ${
     }
   });
 
+  async function cancelDropperOrder(orderId) {
+    if (!window.confirm("Скасувати замовлення? ТТН буде видалено, наявність повернеться.")) {
+      return;
+    }
+    try {
+      const response = await fetch(`/api/dropper/orders/${encodeURIComponent(orderId)}/cancel`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          chat_id: effectiveDropperChatId(),
+          user_id: currentTelegramUser().user_id || "",
+        }),
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(typeof data.detail === "string" ? data.detail : "Помилка скасування");
+      }
+      showToast("Замовлення скасовано");
+      await renderOrdersHistory();
+    } catch (error) {
+      showToast(error.message || "Помилка");
+    }
+  }
+
+  async function requestOrderCorrection(orderId, message) {
+    try {
+      const response = await fetch(
+        `/api/dropper/orders/${encodeURIComponent(orderId)}/correction-request`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            chat_id: effectiveDropperChatId(),
+            user_id: currentTelegramUser().user_id || "",
+            message: message || "",
+          }),
+        }
+      );
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(typeof data.detail === "string" ? data.detail : "Помилка запиту");
+      }
+      showToast("Запит надіслано власнику");
+      await renderOrdersHistory();
+    } catch (error) {
+      showToast(error.message || "Помилка");
+    }
+  }
+
   document.addEventListener("submit", (event) => {
     const form = event.target.closest("[data-order-edit-form]");
     if (!form) return;
     event.preventDefault();
     saveOwnerOrderEdit(form);
   });
+
+  let dropperOrdersEditWindow = null;
+  let dropperOrdersCache = [];
 
   async function renderOrdersHistory() {
     if (!els.ordersHistory) return;
@@ -2664,9 +2820,32 @@ ${
         throw new Error(typeof data.detail === "string" ? data.detail : "Помилка");
       }
       const items = data.items || [];
-      els.ordersHistory.innerHTML = items.length
-        ? items.map((o) => renderOrderCard(o)).join("")
-        : `<div class="empty">Поки немає переданих замовлень</div>`;
+      dropperOrdersCache = items;
+      dropperOrdersEditWindow = data.edit_window || null;
+      const lockedHint =
+        dropperOrdersEditWindow?.locked
+          ? `<div class="hint order-window-banner">${escapeHtml(
+              dropperOrdersEditWindow.message ||
+                "13:30–14:30 — редагування закрите, можна лише запит власнику."
+            )}</div>`
+          : dropperOrdersEditWindow
+            ? `<div class="hint order-window-banner">${escapeHtml(
+                dropperOrdersEditWindow.message || ""
+              )}</div>`
+            : "";
+      els.ordersHistory.innerHTML =
+        lockedHint +
+        (items.length
+          ? items
+              .map((o) =>
+                renderOrderCard(o, {
+                  dropperActions: true,
+                  editWindow: dropperOrdersEditWindow,
+                  editMode: "dropper",
+                })
+              )
+              .join("")
+          : `<div class="empty">Поки немає переданих замовлень</div>`);
       bindOrderCardClicks(els.ordersHistory);
     } catch (error) {
       els.ordersHistory.innerHTML = `<div class="form-error">${escapeHtml(
@@ -2875,7 +3054,9 @@ ${
     }
     if (listEl) {
       listEl.innerHTML = filtered.length
-        ? filtered.map((o) => renderOrderCard(o, { compact: true, editable: true })).join("")
+        ? filtered.map((o) =>
+            renderOrderCard(o, { compact: true, editable: true, editMode: "owner" })
+          ).join("")
         : `<div class="empty">${
             all.length ? "Нічого не знайдено за фільтрами" : "Замовлень ще немає"
           }</div>`;
