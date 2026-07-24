@@ -2723,17 +2723,46 @@ ${
             <span class="field-label">Телефон</span>
             <input name="phone" type="tel" required value="${escapeHtml(recipient.phone || "")}" />
           </label>
-          <label class="field compact-field">
+          <label class="field compact-field" style="grid-column:1/-1">
             <span class="field-label">Місто</span>
-            <input name="city" type="text" value="${escapeHtml(delivery.city || "")}" />
+            <div class="ac-field" data-edit-ac="city">
+              <input
+                name="city"
+                type="text"
+                autocomplete="off"
+                placeholder="Почніть вводити назву (укр/рос)"
+                value="${escapeHtml(delivery.city || "")}"
+              />
+              <div class="ac-dropdown hidden" data-edit-city-dropdown role="listbox"></div>
+            </div>
+            <p class="field-hint">Оберіть пункт зі списку Нової Пошти</p>
           </label>
-          <label class="field compact-field">
-            <span class="field-label">Відділення</span>
-            <input name="warehouse" type="text" value="${escapeHtml(delivery.warehouse || "")}" />
+          <label class="field compact-field" data-edit-warehouse-wrap style="grid-column:1/-1">
+            <span class="field-label">Відділення / поштомат</span>
+            <div class="ac-field" data-edit-ac="warehouse">
+              <input
+                name="warehouse"
+                type="text"
+                autocomplete="off"
+                placeholder="Номер або адреса відділення"
+                value="${escapeHtml(delivery.warehouse || "")}"
+              />
+              <div class="ac-dropdown hidden" data-edit-warehouse-dropdown role="listbox"></div>
+            </div>
+            <p class="field-hint">Оберіть зі списку після вибору міста</p>
           </label>
-          <label class="field compact-field">
+          <label class="field compact-field" data-edit-street-wrap style="grid-column:1/-1">
             <span class="field-label">Вулиця (курʼєр)</span>
-            <input name="street" type="text" value="${escapeHtml(delivery.street || "")}" />
+            <div class="ac-field" data-edit-ac="street">
+              <input
+                name="street"
+                type="text"
+                autocomplete="off"
+                placeholder="Почніть вводити назву вулиці"
+                value="${escapeHtml(delivery.street || "")}"
+              />
+              <div class="ac-dropdown hidden" data-edit-street-dropdown role="listbox"></div>
+            </div>
           </label>
           <label class="field compact-field">
             <span class="field-label">Будинок</span>
@@ -2882,10 +2911,356 @@ ${
       comment: form.comment?.value?.trim() || "",
       cart,
       total,
-      np_city: delivery.np_city || null,
-      np_warehouse: delivery.np_warehouse || null,
-      np_street: delivery.np_street || null,
+      np_city: form._editNp?.city || delivery.np_city || null,
+      np_warehouse: form._editNp?.warehouse || delivery.np_warehouse || null,
+      np_street: form._editNp?.street || delivery.np_street || null,
     };
+  }
+
+  function syncOrderEditDeliveryFields(form) {
+    if (!form) return;
+    const method = form.delivery_method?.value || "np_warehouse";
+    const isCourier = method === "np_courier";
+    const isOwn = method === "own_ttn";
+    form.querySelectorAll("[data-edit-warehouse-wrap]").forEach((el) => {
+      el.classList.toggle("hidden", isCourier || isOwn);
+    });
+    form.querySelectorAll("[data-edit-street-wrap]").forEach((el) => {
+      el.classList.toggle("hidden", !isCourier || isOwn);
+    });
+    const house = form.house?.closest(".field");
+    const apt = form.apartment?.closest(".field");
+    if (house) house.classList.toggle("hidden", !isCourier || isOwn);
+    if (apt) apt.classList.toggle("hidden", !isCourier || isOwn);
+  }
+
+  function bindOrderEditNpAutocomplete(form, order) {
+    if (!form || form.dataset.npBound === "1") return;
+    form.dataset.npBound = "1";
+    const delivery = (order && order.payload && order.payload.delivery) || {};
+    const state = {
+      city: delivery.np_city || null,
+      warehouse: delivery.np_warehouse || null,
+      street: delivery.np_street || null,
+      warehouseCache: { cityRef: "", query: "", items: [] },
+      cityTimer: null,
+      warehouseTimer: null,
+      streetTimer: null,
+      cityReq: 0,
+      warehouseReq: 0,
+      streetReq: 0,
+    };
+    // Відновити мінімальний стан з збережених ref, якщо немає np_* обʼєктів
+    if (!state.city && (delivery.city_ref || form.city_ref?.value)) {
+      state.city = {
+        label: delivery.city || form.city?.value || "",
+        city_ref: delivery.city_ref || form.city_ref?.value || "",
+        settlement_ref: delivery.settlement_ref || form.settlement_ref?.value || "",
+      };
+    }
+    if (!state.warehouse && (delivery.warehouse_ref || form.warehouse_ref?.value)) {
+      state.warehouse = {
+        label: delivery.warehouse || form.warehouse?.value || "",
+        ref: delivery.warehouse_ref || form.warehouse_ref?.value || "",
+      };
+    }
+    if (!state.street && (delivery.street_ref || form.street_ref?.value)) {
+      state.street = {
+        label: delivery.street || form.street?.value || "",
+        ref: delivery.street_ref || form.street_ref?.value || "",
+      };
+    }
+    form._editNp = state;
+
+    const cityInput = form.city;
+    const warehouseInput = form.warehouse;
+    const streetInput = form.street;
+    const cityDrop = form.querySelector("[data-edit-city-dropdown]");
+    const whDrop = form.querySelector("[data-edit-warehouse-dropdown]");
+    const streetDrop = form.querySelector("[data-edit-street-dropdown]");
+
+    const mark = (input, selected) => {
+      input?.closest(".ac-field")?.classList.toggle("is-selected", Boolean(selected));
+    };
+    const hide = (dropdown) => {
+      if (!dropdown) return;
+      dropdown.classList.add("hidden");
+      dropdown.innerHTML = "";
+    };
+    const showMsg = (dropdown, text, className = "ac-empty") => {
+      if (!dropdown) return;
+      dropdown.innerHTML = `<div class="${className}">${escapeHtml(text)}</div>`;
+      dropdown.classList.remove("hidden");
+    };
+
+    if (state.city?.city_ref) mark(cityInput, true);
+    if (state.warehouse?.ref) mark(warehouseInput, true);
+    if (state.street?.ref) mark(streetInput, true);
+
+    const clearWarehouse = ({ keepText = true } = {}) => {
+      state.warehouse = null;
+      state.warehouseCache = { cityRef: "", query: "", items: [] };
+      if (form.warehouse_ref) form.warehouse_ref.value = "";
+      if (!keepText && warehouseInput) warehouseInput.value = "";
+      mark(warehouseInput, false);
+      hide(whDrop);
+    };
+    const clearStreet = ({ keepText = true } = {}) => {
+      state.street = null;
+      if (form.street_ref) form.street_ref.value = "";
+      if (!keepText && streetInput) streetInput.value = "";
+      mark(streetInput, false);
+      hide(streetDrop);
+    };
+
+    const selectCityItem = (item) => {
+      state.city = item;
+      if (cityInput) cityInput.value = item.label || item.present || item.main_description || "";
+      if (form.city_ref) form.city_ref.value = item.city_ref || "";
+      if (form.settlement_ref) form.settlement_ref.value = item.settlement_ref || "";
+      mark(cityInput, true);
+      hide(cityDrop);
+      clearWarehouse({ keepText: false });
+      clearStreet({ keepText: false });
+      syncEditWhEnabled();
+    };
+    const selectWarehouseItem = (item) => {
+      state.warehouse = item;
+      if (warehouseInput) warehouseInput.value = item.label || item.description || "";
+      if (form.warehouse_ref) form.warehouse_ref.value = item.ref || "";
+      mark(warehouseInput, true);
+      hide(whDrop);
+    };
+    const selectStreetItem = (item) => {
+      state.street = item;
+      if (streetInput) streetInput.value = item.label || item.present || item.description || "";
+      if (form.street_ref) form.street_ref.value = item.ref || "";
+      mark(streetInput, true);
+      hide(streetDrop);
+    };
+
+    const syncEditWhEnabled = () => {
+      const hasCity = Boolean(state.city?.city_ref || form.city_ref?.value);
+      if (warehouseInput) warehouseInput.disabled = !hasCity;
+      if (streetInput) streetInput.disabled = !hasCity;
+      if (!hasCity) {
+        clearWarehouse({ keepText: false });
+        clearStreet({ keepText: false });
+      }
+    };
+    syncEditWhEnabled();
+
+    async function searchEditCities(query) {
+      const reqId = ++state.cityReq;
+      showMsg(cityDrop, "Шукаємо...", "ac-loading");
+      try {
+        const response = await fetch(
+          `/api/np/settlements?q=${encodeURIComponent(query)}&limit=20`
+        );
+        const data = await response.json();
+        if (reqId !== state.cityReq) return;
+        if (!response.ok) throw new Error(data.detail || "Помилка пошуку");
+        const items = data.items || [];
+        if (!items.length) {
+          showMsg(cityDrop, "Нічого не знайдено. Спробуйте іншу назву.");
+          return;
+        }
+        cityDrop.innerHTML = items
+          .map((item, index) => {
+            const title = item.label || item.present || item.main_description || "";
+            const parts = [item.area, item.region].filter(Boolean).join(", ");
+            return `<button type="button" class="ac-option" data-edit-city-index="${index}">
+              <span>${escapeHtml(title)}</span>
+              ${parts ? `<span class="ac-option-sub">${escapeHtml(parts)}</span>` : ""}
+            </button>`;
+          })
+          .join("");
+        cityDrop.dataset.items = JSON.stringify(items);
+        cityDrop.classList.remove("hidden");
+      } catch (error) {
+        if (reqId !== state.cityReq) return;
+        showMsg(cityDrop, error.message || "Помилка пошуку міст");
+      }
+    }
+
+    async function searchEditWarehouses(query) {
+      const cityRef = state.city?.city_ref || form.city_ref?.value;
+      if (!cityRef) return;
+      const q = normalizeWarehouseQuery(query);
+      const limit = q ? 10 : 20;
+      if (
+        state.warehouseCache.cityRef === cityRef &&
+        state.warehouseCache.query === q &&
+        state.warehouseCache.items?.length
+      ) {
+        renderEditWh(state.warehouseCache.items);
+        return;
+      }
+      const reqId = ++state.warehouseReq;
+      showMsg(whDrop, "Шукаємо...", "ac-loading");
+      try {
+        const response = await fetch(
+          `/api/np/warehouses?city_ref=${encodeURIComponent(cityRef)}&q=${encodeURIComponent(
+            q
+          )}&limit=${limit}`
+        );
+        const data = await response.json();
+        if (reqId !== state.warehouseReq) return;
+        if (!response.ok) throw new Error(data.detail || "Помилка пошуку");
+        const items = data.items || [];
+        state.warehouseCache = { cityRef, query: q, items };
+        renderEditWh(items);
+      } catch (error) {
+        if (reqId !== state.warehouseReq) return;
+        showMsg(whDrop, error.message || "Помилка пошуку відділень");
+      }
+    }
+
+    function renderEditWh(items) {
+      if (!items.length) {
+        showMsg(whDrop, "Нічого не знайдено. Введіть номер або частину адреси.");
+        return;
+      }
+      whDrop.innerHTML = items
+        .map((item, index) => {
+          const title = item.label || item.description || "";
+          const sub = item.number ? `№ ${item.number}` : "";
+          return `<button type="button" class="ac-option" data-edit-wh-index="${index}">
+            <span>${escapeHtml(title)}</span>
+            ${sub ? `<span class="ac-option-sub">${escapeHtml(sub)}</span>` : ""}
+          </button>`;
+        })
+        .join("");
+      whDrop.dataset.items = JSON.stringify(items);
+      whDrop.classList.remove("hidden");
+    }
+
+    async function searchEditStreets(query) {
+      const settlementRef = state.city?.settlement_ref || form.settlement_ref?.value;
+      const cityRef = state.city?.city_ref || form.city_ref?.value;
+      if (!settlementRef && !cityRef) return;
+      const reqId = ++state.streetReq;
+      showMsg(streetDrop, "Шукаємо...", "ac-loading");
+      try {
+        const params = new URLSearchParams({ q: query, limit: "20" });
+        if (settlementRef) params.set("settlement_ref", settlementRef);
+        if (cityRef) params.set("city_ref", cityRef);
+        const response = await fetch(`/api/np/streets?${params.toString()}`);
+        const data = await response.json();
+        if (reqId !== state.streetReq) return;
+        if (!response.ok) throw new Error(data.detail || "Помилка пошуку");
+        const items = data.items || [];
+        if (!items.length) {
+          showMsg(streetDrop, "Нічого не знайдено");
+          return;
+        }
+        streetDrop.innerHTML = items
+          .map((item, index) => {
+            const title = item.label || item.present || item.description || "";
+            return `<button type="button" class="ac-option" data-edit-street-index="${index}">
+              <span>${escapeHtml(title)}</span>
+            </button>`;
+          })
+          .join("");
+        streetDrop.dataset.items = JSON.stringify(items);
+        streetDrop.classList.remove("hidden");
+      } catch (error) {
+        if (reqId !== state.streetReq) return;
+        showMsg(streetDrop, error.message || "Помилка пошуку вулиць");
+      }
+    }
+
+    cityInput?.addEventListener("input", () => {
+      state.city = null;
+      mark(cityInput, false);
+      if (form.city_ref) form.city_ref.value = "";
+      if (form.settlement_ref) form.settlement_ref.value = "";
+      clearWarehouse({ keepText: false });
+      clearStreet({ keepText: false });
+      syncEditWhEnabled();
+      clearTimeout(state.cityTimer);
+      const q = cityInput.value.trim();
+      if (q.length < 2) {
+        hide(cityDrop);
+        return;
+      }
+      state.cityTimer = setTimeout(() => searchEditCities(q), 300);
+    });
+    cityInput?.addEventListener("focus", () => {
+      if (cityInput.value.trim().length >= 2 && !state.city) {
+        searchEditCities(cityInput.value.trim());
+      }
+    });
+
+    warehouseInput?.addEventListener("input", () => {
+      state.warehouse = null;
+      mark(warehouseInput, false);
+      if (form.warehouse_ref) form.warehouse_ref.value = "";
+      clearTimeout(state.warehouseTimer);
+      const q = warehouseInput.value.trim();
+      state.warehouseTimer = setTimeout(() => searchEditWarehouses(q), q ? 250 : 0);
+    });
+    warehouseInput?.addEventListener("focus", () => {
+      if (!warehouseInput.disabled) searchEditWarehouses(warehouseInput.value.trim());
+    });
+
+    streetInput?.addEventListener("input", () => {
+      state.street = null;
+      mark(streetInput, false);
+      if (form.street_ref) form.street_ref.value = "";
+      clearTimeout(state.streetTimer);
+      const q = streetInput.value.trim();
+      if (q.length < 2) {
+        hide(streetDrop);
+        return;
+      }
+      state.streetTimer = setTimeout(() => searchEditStreets(q), 300);
+    });
+    streetInput?.addEventListener("focus", () => {
+      if (!streetInput.disabled && streetInput.value.trim().length >= 2 && !state.street) {
+        searchEditStreets(streetInput.value.trim());
+      }
+    });
+
+    cityDrop?.addEventListener("mousedown", (event) => {
+      const btn = event.target.closest("[data-edit-city-index]");
+      if (!btn) return;
+      event.preventDefault();
+      try {
+        const items = JSON.parse(cityDrop.dataset.items || "[]");
+        const item = items[Number(btn.getAttribute("data-edit-city-index"))];
+        if (item) selectCityItem(item);
+      } catch {
+        /* ignore */
+      }
+    });
+    whDrop?.addEventListener("mousedown", (event) => {
+      const btn = event.target.closest("[data-edit-wh-index]");
+      if (!btn) return;
+      event.preventDefault();
+      try {
+        const items = JSON.parse(whDrop.dataset.items || "[]");
+        const item = items[Number(btn.getAttribute("data-edit-wh-index"))];
+        if (item) selectWarehouseItem(item);
+      } catch {
+        /* ignore */
+      }
+    });
+    streetDrop?.addEventListener("mousedown", (event) => {
+      const btn = event.target.closest("[data-edit-street-index]");
+      if (!btn) return;
+      event.preventDefault();
+      try {
+        const items = JSON.parse(streetDrop.dataset.items || "[]");
+        const item = items[Number(btn.getAttribute("data-edit-street-index"))];
+        if (item) selectStreetItem(item);
+      } catch {
+        /* ignore */
+      }
+    });
+
+    form.delivery_method?.addEventListener("change", () => syncOrderEditDeliveryFields(form));
+    syncOrderEditDeliveryFields(form);
   }
 
   function syncOrderEditPaymentFields(form) {
@@ -2920,6 +3295,7 @@ ${
     const form = panel.querySelector("[data-order-edit-form]");
     syncOrderEditPaymentFields(form);
     form?.payment_method?.addEventListener("change", () => syncOrderEditPaymentFields(form));
+    bindOrderEditNpAutocomplete(form, hit.order);
   }
 
   async function saveOwnerOrderEdit(form) {
@@ -3072,6 +3448,7 @@ ${
       formAfter?.payment_method?.addEventListener("change", () =>
         syncOrderEditPaymentFields(formAfter)
       );
+      bindOrderEditNpAutocomplete(formAfter, panel._orderRef);
     } catch (error) {
       showToast(error.message || "Помилка пошуку");
     }
