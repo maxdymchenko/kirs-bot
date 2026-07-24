@@ -407,11 +407,25 @@
               <p class="hint" id="paymentControlHint">
                 Увімкніть, щоб клієнт сплатив суму при отриманні (гроші на ваш кабінет НП).
               </p>
-              <div id="generateTtnResult" class="info-box hidden"></div>
-              <button type="button" class="btn primary block" id="generateTtnBtn">
-                Згенерувати накладну
-              </button>
-              <input type="hidden" id="generatedTtnNumber" name="generatedTtnNumber" value="" />
+              <div id="generateEstimatedSlot"></div>
+              <div id="generateCodSlot" class="hidden">
+                <label class="field" id="generateCodField">
+                  <span class="field-label">Сума накладного платежу</span>
+                  <div class="input-with-prefix">
+                    <span class="input-prefix">₴</span>
+                    <input
+                      id="generateCodAmount"
+                      name="generateCodAmount"
+                      type="number"
+                      min="1"
+                      step="1"
+                      inputmode="numeric"
+                      placeholder="Сума накладного платежу"
+                    />
+                  </div>
+                  <p class="field-hint">Клієнт сплатить цю суму при отриманні (контроль оплати НП)</p>
+                </label>
+              </div>
             </div>
 
             <div id="ttnFields" class="hidden">
@@ -591,6 +605,15 @@
                 </div>
               </div>
             </div>
+
+            <div id="generateTtnActions" class="hidden" style="margin-top:14px">
+              <div id="generateTtnResult" class="info-box hidden"></div>
+              <button type="button" class="btn primary block" id="generateTtnBtn">
+                Згенерувати накладну
+              </button>
+              <input type="hidden" id="generatedTtnNumber" name="generatedTtnNumber" value="" />
+              <p class="field-hint">Натисніть після заповнення ПІБ, телефону та відділення/адреси</p>
+            </div>
           </div>
 
           <div class="form-section">
@@ -656,23 +679,25 @@
               </label>
             </div>
 
-            <div id="estimatedCostBlock" class="hidden">
-              <label class="field">
-                <span class="field-label" id="estimatedCostLabel">Оціночна вартість</span>
-                <div class="input-with-prefix">
-                  <span class="input-prefix">₴</span>
-                  <input
-                    id="estimatedCost"
-                    name="estimatedCost"
-                    type="number"
-                    min="1"
-                    step="1"
-                    inputmode="numeric"
-                    placeholder="Оціночна вартість посилки"
-                  />
-                </div>
-                <p class="field-hint" id="estimatedCostHint">Для накладної Нової Пошти (оголошена вартість)</p>
-              </label>
+            <div id="paymentEstimatedSlot">
+              <div id="estimatedCostBlock" class="hidden">
+                <label class="field">
+                  <span class="field-label" id="estimatedCostLabel">Оціночна вартість</span>
+                  <div class="input-with-prefix">
+                    <span class="input-prefix">₴</span>
+                    <input
+                      id="estimatedCost"
+                      name="estimatedCost"
+                      type="number"
+                      min="1"
+                      step="1"
+                      inputmode="numeric"
+                      placeholder="Оціночна вартість посилки"
+                    />
+                  </div>
+                  <p class="field-hint" id="estimatedCostHint">Для накладної Нової Пошти (оголошена вартість)</p>
+                </label>
+              </div>
             </div>
 
             <div id="requisitesBlock" class="hidden">
@@ -788,6 +813,6 @@
   </div>
 
   <button type="button" id="photoZoomBackdrop" class="photo-zoom-backdrop hidden" aria-label="Закрити фото"></button>
-  <script src="/static/app.js?v=20260724ret7"></script>
+  <script src="/static/app.js?v=20260724ttn4"></script>
 </body>
 </html>
