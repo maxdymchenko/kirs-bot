@@ -290,7 +290,7 @@ def _build_save_props(
         props["RecipientAddress"] = warehouse_ref
 
     cod_amount = max(0.0, float(order.get("cod_amount") or 0))
-    # Наложка клієнта: payment_method=cod АБО явно в shipment (режим generate_ttn)
+    # Наложка: payment_method=cod (або legacy client_cod у старих замовленнях)
     want_cod = (
         str(order.get("payment_method") or "") == "cod"
         or bool(shipment.get("client_cod"))
@@ -328,54 +328,13 @@ def build_cart_ttn_description(cart: list[dict] | None) -> str:
     return text[:100]
 
 
-def create_ttn_with_dropper_key(
-    storage: AppStorage,
-    order: dict[str, Any],
-    api_key: str,
-) -> dict[str, Any]:
-    """
-    Створити ТТН ключем дроппера.
-    Місто/відділення/габарити відправника — з налаштувань власника;
-    контрагент-відправник — з кабінету дроппера (його API-ключ).
-    """
-    key = str(api_key or "").strip()
-    if not key:
-        raise NovaPoshtaError("Немає API-ключа Нової Пошти дроппера")
-    client = NovaPoshtaClient(api_key=key)
-    if not client.configured():
-        raise NovaPoshtaError("API-ключ Нової Пошти недійсний")
-    settings = storage.get_general_settings()
-    sender = _pick_sender_bundle(client, settings)
-    recipient_ref, contact_ref = _ensure_recipient_refs(client, order)
-    props = _build_save_props(order, settings, sender, recipient_ref, contact_ref)
-    result = client.create_internet_document(props)
-    storage.update_order_flags(
-        order["id"],
-        ttn_number=result["ttn_number"],
-        ttn_status="created",
-    )
-    storage.merge_order_payload(
-        order["id"],
-        {
-            "ttn_number": result["ttn_number"],
-            "np_document_ref": result.get("ref") or "",
-            "np_recipient_ref": recipient_ref,
-            "np_contact_recipient_ref": contact_ref,
-            "np_cost_on_site": result.get("cost_on_site"),
-            "np_estimated_delivery_date": result.get("estimated_delivery_date"),
-            "np_created_by_dropper_key": True,
-            "np_error": "",
-        },
-    )
-    return storage.get_order(order["id"]) or order
-
-
 def create_ttn_for_order(
     storage: AppStorage, order: dict[str, Any]
 ) -> dict[str, Any]:
     if order.get("own_ttn"):
         return order
     payload = order.get("payload") or {}
+    # Legacy: ТТН вже створена ключем дроппера — не створювати повторно ключем власника
     if payload.get("generate_ttn_in_order") or payload.get("np_created_by_dropper_key"):
         return order
     status = str(order.get("ttn_status") or "")
