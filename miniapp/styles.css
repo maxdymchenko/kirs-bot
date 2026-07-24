@@ -1664,6 +1664,31 @@ input[type="file"] {
   border-top: 1px solid var(--line);
 }
 
+.order-card-details .confirm-block {
+  display: grid;
+  gap: 4px;
+  padding-top: 10px;
+}
+
+.order-card-details .confirm-block:first-child {
+  padding-top: 0;
+}
+
+.order-card-details .confirm-label {
+  font-size: 13px;
+  font-weight: 800;
+  color: var(--text);
+  letter-spacing: 0.02em;
+}
+
+.order-card-details .confirm-value {
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  color: var(--muted);
+}
+
 .order-details-grid {
   display: grid;
   gap: 10px;
