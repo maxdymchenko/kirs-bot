@@ -524,7 +524,9 @@
     if (els.confirmView) els.confirmView.classList.add("hidden");
     els.checkoutView.classList.remove("hidden");
     els.mainTabs.classList.add("hidden");
-    document.querySelectorAll(".tab").forEach((tab) => tab.classList.remove("active"));
+    if (els.mainTabs) {
+      els.mainTabs.querySelectorAll("[data-tab]").forEach((tab) => tab.classList.remove("active"));
+    }
     await loadDropperSettings();
     renderRequisitesDetails();
     syncDeliveryFields();
@@ -3666,7 +3668,7 @@ ${
     els.photoZoomBackdrop.addEventListener("click", () => closePhotoZoom());
   }
 
-  document.querySelectorAll(".tab").forEach((tab) => {
+  document.querySelectorAll("#mainTabs [data-tab]").forEach((tab) => {
     tab.addEventListener("click", () => switchTab(tab.dataset.tab));
   });
 
