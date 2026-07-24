@@ -162,6 +162,41 @@ class DropperSelfSettingsUpdateRequest(BaseModel):
     chat_id: str = Field(..., min_length=2, max_length=64)
     user_id: str = Field("", max_length=64)
     notify_shipping_events: bool | None = None
+    np_api_keys: list[dict] | None = None
+
+
+class DropperNpKeyProbeRequest(BaseModel):
+    chat_id: str = Field(..., min_length=2, max_length=64)
+    api_key: str = Field(..., min_length=8, max_length=128)
+
+
+class DropperTtnCreateRequest(BaseModel):
+    chat_id: str = Field(..., min_length=2, max_length=64)
+    user_id: str = Field("", max_length=64)
+    np_key_id: str = Field(..., min_length=1, max_length=64)
+    first_name: str = Field("", max_length=80)
+    patronymic: str = Field("", max_length=80)
+    last_name: str = Field("", max_length=80)
+    phone: str = Field(..., min_length=10, max_length=32)
+    delivery_method: str = Field("np_warehouse", max_length=32)
+    city: str = Field("", max_length=200)
+    city_ref: str = Field("", max_length=64)
+    settlement_ref: str = Field("", max_length=64)
+    warehouse: str = Field("", max_length=300)
+    warehouse_ref: str = Field("", max_length=64)
+    street: str = Field("", max_length=200)
+    street_ref: str = Field("", max_length=64)
+    house: str = Field("", max_length=32)
+    apartment: str = Field("", max_length=32)
+    payer_type: str = Field("Recipient", max_length=32)
+    estimated_cost: float = Field(0, ge=0)
+    cargo_description: str = Field("", max_length=100)
+    client_cod: bool = False
+    cod_amount: float = Field(0, ge=0)
+    cart: list[dict] = Field(default_factory=list)
+    np_city: dict | None = None
+    np_warehouse: dict | None = None
+    np_street: dict | None = None
 
 
 class OrderCreateRequest(BaseModel):
@@ -184,6 +219,12 @@ class OrderCreateRequest(BaseModel):
     own_ttn: bool = False
     own_ttn_carrier: str = Field("", max_length=32)
     ttn_number: str = Field("", max_length=64)
+    generate_ttn_in_order: bool = False
+    np_key_id: str = Field("", max_length=64)
+    payer_type: str = Field("Recipient", max_length=32)
+    estimated_cost: float = Field(0, ge=0)
+    cargo_description: str = Field("", max_length=100)
+    client_cod: bool = False
     payment_method: str = Field(..., min_length=2, max_length=32)
     prepay: float = Field(0, ge=0)
     cod_amount: float = Field(0, ge=0)
@@ -404,12 +445,14 @@ def create_web_app(
                 ]
             data["balance"] = storage.get_balance(db_dropper.id)
             data["payment_requisites"] = payment_requisites
+            data["np_api_keys"] = storage.get_dropper_np_api_keys(db_dropper.id)
             return data
         yaml_dropper = _yaml_dropper(chat_id)
         if yaml_dropper:
             data = yaml_dropper.to_public_dict()
             data["source"] = "yaml"
             data["payment_requisites"] = payment_requisites
+            data["np_api_keys"] = []
             return data
         return {
             "chat_id": str(chat_id or "").strip(),
@@ -424,6 +467,7 @@ def create_web_app(
             "referral_percent": 0,
             "notify_shipping_events": False,
             "payment_requisites": payment_requisites,
+            "np_api_keys": [],
             "source": "default",
         }
 
@@ -432,6 +476,127 @@ def create_web_app(
         """Активні реквізити для оплати (галочка у «Загальні»)."""
         items = storage.get_enabled_payment_requisites()
         return {"items": items, "count": len(items)}
+
+    @app.post("/api/dropper/np-keys/probe")
+    async def dropper_probe_np_key(payload: DropperNpKeyProbeRequest) -> dict:
+        dropper = storage.get_dropper_by_chat(payload.chat_id)
+        if not dropper:
+            raise HTTPException(status_code=404, detail="Дроппера не знайдено")
+        key = str(payload.api_key or "").strip()
+        client = NovaPoshtaClient(api_key=key)
+        if not client.configured():
+            raise HTTPException(status_code=400, detail="Некоректний API-ключ")
+        try:
+            fop_name = await asyncio.to_thread(client.resolve_cabinet_fop_name)
+        except NovaPoshtaError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except Exception:
+            logger.exception("NP probe failed")
+            raise HTTPException(status_code=502, detail="Не вдалося перевірити ключ НП") from None
+        if not fop_name:
+            raise HTTPException(
+                status_code=400,
+                detail="Ключ прийнято, але в кабінеті немає відправника (ФОП)",
+            )
+        return {"ok": True, "fop_name": fop_name, "label": fop_name}
+
+    @app.post("/api/dropper/ttn/create")
+    async def dropper_create_ttn(payload: DropperTtnCreateRequest) -> dict:
+        from bot.np_fulfillment import (
+            _build_save_props,
+            _ensure_recipient_refs,
+            _pick_sender_bundle,
+            build_cart_ttn_description,
+        )
+
+        dropper = storage.get_dropper_by_chat(payload.chat_id)
+        if not dropper:
+            raise HTTPException(status_code=404, detail="Дроппера не знайдено")
+        key_row = storage.get_dropper_np_api_key_by_id(dropper.id, payload.np_key_id)
+        if not key_row or not key_row.get("api_key"):
+            raise HTTPException(status_code=400, detail="Оберіть API-ключ / ФОП")
+        if not payload.first_name.strip() or not payload.last_name.strip():
+            raise HTTPException(status_code=400, detail="Вкажіть ім'я та прізвище отримувача")
+        if not payload.city_ref.strip():
+            raise HTTPException(status_code=400, detail="Оберіть населений пункт")
+        if payload.delivery_method == "np_warehouse" and not payload.warehouse_ref:
+            raise HTTPException(status_code=400, detail="Оберіть відділення")
+        if payload.delivery_method == "np_courier":
+            if not payload.street_ref or not payload.house.strip():
+                raise HTTPException(status_code=400, detail="Вкажіть адресу для курʼєра")
+
+        desc = (payload.cargo_description or "").strip() or build_cart_ttn_description(
+            payload.cart
+        )
+        estimated = float(payload.estimated_cost or 0)
+        if estimated <= 0:
+            estimated = 1.0
+        draft = {
+            "id": 0,
+            "payment_method": "cod" if payload.client_cod else "requisites",
+            "delivery_method": payload.delivery_method,
+            "cod_amount": float(payload.cod_amount or 0),
+            "total": estimated,
+            "payload": {
+                "recipient": {
+                    "first_name": payload.first_name.strip(),
+                    "patronymic": payload.patronymic.strip(),
+                    "last_name": payload.last_name.strip(),
+                    "phone": payload.phone.strip(),
+                },
+                "delivery": {
+                    "method": payload.delivery_method,
+                    "city": payload.city,
+                    "city_ref": payload.city_ref,
+                    "settlement_ref": payload.settlement_ref,
+                    "warehouse": payload.warehouse,
+                    "warehouse_ref": payload.warehouse_ref,
+                    "street": payload.street,
+                    "street_ref": payload.street_ref,
+                    "house": payload.house,
+                    "apartment": payload.apartment,
+                    "np_city": payload.np_city,
+                    "np_warehouse": payload.np_warehouse,
+                    "np_street": payload.np_street,
+                },
+                "shipment": {
+                    "payer_type": payload.payer_type or "Recipient",
+                    "estimated_cost": estimated,
+                    "description": desc,
+                    "client_cod": bool(payload.client_cod),
+                },
+                "cart": payload.cart or [],
+            },
+        }
+
+        client = NovaPoshtaClient(api_key=key_row["api_key"])
+        settings = storage.get_general_settings()
+        try:
+            sender = await asyncio.to_thread(_pick_sender_bundle, client, settings)
+            recipient_ref, contact_ref = await asyncio.to_thread(
+                _ensure_recipient_refs, client, draft
+            )
+            props = _build_save_props(
+                draft, settings, sender, recipient_ref, contact_ref
+            )
+            result = await asyncio.to_thread(client.create_internet_document, props)
+        except NovaPoshtaError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except Exception:
+            logger.exception("Dropper TTN create failed")
+            raise HTTPException(status_code=502, detail="Не вдалося створити ТТН") from None
+
+        return {
+            "ok": True,
+            "ttn_number": result["ttn_number"],
+            "ref": result.get("ref") or "",
+            "cost_on_site": result.get("cost_on_site"),
+            "estimated_delivery_date": result.get("estimated_delivery_date"),
+            "np_key_id": key_row["id"],
+            "fop_name": key_row.get("fop_name") or key_row.get("label") or "",
+            "description": desc,
+            "estimated_cost": estimated,
+        }
 
     @app.post("/api/dropper/settings")
     async def dropper_update_own_settings(
@@ -448,6 +613,27 @@ def create_web_app(
             raise HTTPException(status_code=404, detail="Дроппера не знайдено")
         data = updated.to_public_dict()
         data["name"] = updated.company_name
+        if payload.np_api_keys is not None:
+            enriched = []
+            for row in payload.np_api_keys:
+                if not isinstance(row, dict):
+                    continue
+                item = dict(row)
+                api_key = str(item.get("api_key") or "").strip()
+                if api_key and not str(item.get("fop_name") or "").strip():
+                    try:
+                        client = NovaPoshtaClient(api_key=api_key)
+                        item["fop_name"] = await asyncio.to_thread(
+                            client.resolve_cabinet_fop_name
+                        )
+                        if item["fop_name"] and not str(item.get("label") or "").strip():
+                            item["label"] = item["fop_name"]
+                    except Exception:
+                        logger.exception("NP fop resolve on save failed")
+                enriched.append(item)
+            data["np_api_keys"] = storage.save_dropper_np_api_keys(updated.id, enriched)
+        else:
+            data["np_api_keys"] = storage.get_dropper_np_api_keys(updated.id)
         data["balance"] = storage.get_balance(updated.id)
         return {"ok": True, "dropper": data}
 
@@ -1160,6 +1346,29 @@ def create_web_app(
                         detail="Файл 100×100 має бути у форматі PDF",
                     )
 
+        if getattr(payload, "generate_ttn_in_order", False):
+            if payload.own_ttn:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Не можна одночасно власну ТТН і генерацію в замовленні",
+                )
+            if payload.payment_method not in ("requisites", "balance"):
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        "При генерації ТТН оплата постачальнику — на реквізити або з балансу. "
+                        "Накладний платіж клієнта вказується окремо."
+                    ),
+                )
+            ttn = re.sub(r"\D", "", str(payload.ttn_number or ""))
+            if len(ttn) < 10:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Спочатку згенеруйте накладну (кнопка «Згенерувати накладну»)",
+                )
+            if not str(payload.np_key_id or "").strip():
+                raise HTTPException(status_code=400, detail="Оберіть ФОП / API-ключ")
+
         if payload.payment_method == "balance":
             if not for_owner_edit and not dropper.allow_balance_payment:
                 raise HTTPException(
@@ -1178,10 +1387,18 @@ def create_web_app(
                     )
             debit = round(total, 2)
             prepay = 0.0
-            cod_amount = 0.0
+            if not getattr(payload, "generate_ttn_in_order", False) and not getattr(
+                payload, "client_cod", False
+            ):
+                cod_amount = 0.0
         elif payload.own_ttn:
             cod_amount = 0.0
             prepay = 0.0
+        elif getattr(payload, "generate_ttn_in_order", False):
+            # Оплата постачальнику з реквізитів; наложка клієнта — окремо
+            prepay = 0.0
+            if not getattr(payload, "client_cod", False):
+                cod_amount = 0.0
         elif payload.payment_method == "cod":
             if not for_owner_edit and not getattr(dropper, "allow_cod", True):
                 raise HTTPException(
@@ -1205,7 +1422,9 @@ def create_web_app(
                     )
             debit = max(0.0, round(prepay - total, 2))
         else:
-            cod_amount = 0.0
+            if not getattr(payload, "client_cod", False):
+                cod_amount = 0.0
+            prepay = 0.0
 
         if payload.own_ttn:
             # Доставка й ПІБ вже в етикетці ТТН — перевіряємо лише телефон вище.
@@ -1291,18 +1510,18 @@ def create_web_app(
         total, prepay, debit, cod_amount = _validate_order_payload(payload, dropper)
 
         own_ttn = bool(payload.own_ttn)
+        generate_ttn = bool(payload.generate_ttn_in_order) and not own_ttn
         carrier = (payload.own_ttn_carrier or "nova_poshta").strip().lower() if own_ttn else ""
         if own_ttn and carrier == "rozetka":
             ttn_number = re.sub(r"\s+", "", payload.ttn_number or "").upper()
-        elif own_ttn:
+        elif own_ttn or generate_ttn:
             ttn_number = re.sub(r"\D", "", payload.ttn_number or "")
         else:
             ttn_number = ""
         if own_ttn:
             ttn_status = "provided"
-        elif payload.payment_method == "cod":
-            # Створення ТТН через API НП — окремий етап (потрібні реквізити відправника)
-            ttn_status = "pending_create"
+        elif generate_ttn:
+            ttn_status = "created"
         else:
             ttn_status = "pending_create"
 
@@ -1335,6 +1554,15 @@ def create_web_app(
                 detail="Не вдалося оновити наявність у таблиці. Спробуйте ще раз.",
             )
 
+        from bot.np_fulfillment import build_cart_ttn_description
+
+        cargo_desc = (payload.cargo_description or "").strip() or build_cart_ttn_description(
+            safe_cart
+        )
+        estimated = float(payload.estimated_cost or 0)
+        if estimated <= 0:
+            estimated = max(1.0, total)
+
         order_payload = {
             "recipient": {
                 "first_name": payload.first_name.strip(),
@@ -1364,13 +1592,24 @@ def create_web_app(
                 "prepay_balance_debit": debit,
                 "receipt_name": payload.receipt_name,
             },
+            "shipment": {
+                "payer_type": payload.payer_type or "Recipient",
+                "estimated_cost": estimated,
+                "description": cargo_desc,
+                "client_cod": bool(payload.client_cod) or (
+                    generate_ttn and cod_amount > 0
+                ),
+                "np_key_id": payload.np_key_id or "",
+            },
             "own_ttn": own_ttn,
             "own_ttn_carrier": carrier,
+            "generate_ttn_in_order": generate_ttn,
             "ttn_number": ttn_number,
             "ttn_pdf_name": payload.ttn_pdf_name,
             "comment": payload.comment.strip(),
             "cart": safe_cart,
             "created_by_user_id": payload.user_id.strip(),
+            "np_created_by_dropper_key": generate_ttn,
         }
 
         if own_ttn:
@@ -1433,7 +1672,7 @@ def create_web_app(
             logger.exception("Не вдалося повідомити дроппера про заказ %s", order["order_number"])
             storage.update_order_flags(order["id"], notify_dropper_status="error")
 
-        if not own_ttn:
+        if not own_ttn and not generate_ttn:
             from bot.np_fulfillment import fulfill_new_order
 
             try:
@@ -1644,6 +1883,12 @@ def create_web_app(
                 detail="Не вдалося оновити наявність у таблиці. Спробуйте ще раз.",
             )
 
+        estimated = float(getattr(validate_payload, "estimated_cost", 0) or 0)
+        if estimated <= 0:
+            estimated = max(1.0, total)
+        shipment_block = dict(old_payload.get("shipment") or {})
+        shipment_block["estimated_cost"] = estimated
+
         new_payload = build_payload_from_edit(
             old_payload=old_payload,
             recipient=recipient,
@@ -1655,6 +1900,7 @@ def create_web_app(
             own_ttn_carrier=carrier,
             ttn_number=ttn_number if own_ttn else str(order.get("ttn_number") or ""),
             ttn_pdf_name=validate_payload.ttn_pdf_name,
+            shipment=shipment_block,
         )
 
         ttn_status = str(order.get("ttn_status") or "none")

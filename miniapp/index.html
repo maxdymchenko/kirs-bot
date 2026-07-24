@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
   <title>Kirs — Замовлення</title>
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
-  <link rel="stylesheet" href="/static/styles.css?v=20260724drop1" />
+  <link rel="stylesheet" href="/static/styles.css?v=20260724ttn1" />
 </head>
 <body>
   <div class="app">
@@ -358,6 +358,43 @@
               <span class="toggle-ui" aria-hidden="true"></span>
             </label>
 
+            <label class="toggle-row" id="generateTtnToggleRow">
+              <span class="toggle-text">Сгенерувати ТТН в замовленні</span>
+              <input type="checkbox" id="generateTtnInOrder" name="generateTtnInOrder" class="toggle-input" />
+              <span class="toggle-ui" aria-hidden="true"></span>
+            </label>
+
+            <div id="generateTtnFields" class="hidden">
+              <p class="hint">
+                ТТН створюється вашим API-ключем. Місто/відділення відправлення та габарити —
+                з налаштувань власника. Накладний платіж (якщо є) піде вам.
+              </p>
+              <label class="field">
+                <span class="field-label">ФОП / кабінет НП</span>
+                <select id="checkoutNpKeyId" name="npKeyId"></select>
+              </label>
+              <label class="field">
+                <span class="field-label">Хто платить за доставку</span>
+                <select id="shipmentPayerType" name="payerType">
+                  <option value="Recipient">Отримувач</option>
+                  <option value="Sender">Відправник</option>
+                </select>
+              </label>
+              <label class="field">
+                <span class="field-label">Опис вантажу (код + колір)</span>
+                <input id="cargoDescription" name="cargoDescription" type="text" maxlength="100" />
+              </label>
+              <label class="check-row">
+                <input type="checkbox" id="clientCod" name="clientCod" />
+                <span>Накладний платіж клієнту (гроші на ваш кабінет НП)</span>
+              </label>
+              <div id="generateTtnResult" class="info-box hidden"></div>
+              <button type="button" class="btn primary block" id="generateTtnBtn">
+                Згенерувати накладну
+              </button>
+              <input type="hidden" id="generatedTtnNumber" name="generatedTtnNumber" value="" />
+            </div>
+
             <div id="ttnFields" class="hidden">
               <h2 class="section-title" style="margin-top:4px">Спосіб відправлення</h2>
               <div class="choice-list" role="radiogroup" aria-label="Спосіб відправлення за ТТН">
@@ -576,7 +613,7 @@
               <div class="info-box" id="prepayHint">
                 Якщо отримувач вніс передплату, вкажіть суму для вирахування з накладеного платежу
               </div>
-              <label class="field">
+              <label class="field" id="codAmountField">
                 <span class="field-label">Сума накладного платежу</span>
                 <div class="input-with-prefix">
                   <span class="input-prefix">₴</span>
@@ -591,12 +628,31 @@
                   />
                 </div>
               </label>
-              <label class="field">
+              <label class="field" id="prepayField">
                 <span class="field-label">Сума передплати</span>
                 <div class="input-with-prefix">
                   <span class="input-prefix">₴</span>
                   <input id="prepay" name="prepay" type="number" min="0" step="1" inputmode="numeric" placeholder="Сума передплати" />
                 </div>
+              </label>
+            </div>
+
+            <div id="estimatedCostBlock" class="hidden">
+              <label class="field">
+                <span class="field-label">Оціночна вартість</span>
+                <div class="input-with-prefix">
+                  <span class="input-prefix">₴</span>
+                  <input
+                    id="estimatedCost"
+                    name="estimatedCost"
+                    type="number"
+                    min="1"
+                    step="1"
+                    inputmode="numeric"
+                    placeholder="Оціночна вартість посилки"
+                  />
+                </div>
+                <p class="field-hint">Для накладної Нової Пошти (оголошена вартість)</p>
               </label>
             </div>
 
@@ -666,7 +722,7 @@
 
       <section id="dropperSettingsView" class="view hidden">
         <h1 class="title">Налаштування</h1>
-        <p class="hint">Особисті налаштування сповіщень.</p>
+        <p class="hint">Сповіщення та API-ключі Нової Пошти для генерації ТТН.</p>
 
         <div class="form-section">
           <h2 class="section-title">Сповіщення в Telegram</h2>
@@ -688,6 +744,19 @@
             />
             <span class="toggle-ui" aria-hidden="true"></span>
           </label>
+        </div>
+
+        <div class="form-section">
+          <h2 class="section-title">API-ключі Нової Пошти</h2>
+          <p class="hint">
+            Ключі ваших кабінетів (ФОП). При збереженні підтягнеться назва кабінету.
+            У замовленні можна обрати, від якого ФОП піде посилка.
+          </p>
+          <div id="dropperNpKeysList" class="np-keys-list"></div>
+          <button type="button" class="btn primary" id="dropperNpKeyAdd">+ Додати API-ключ</button>
+          <button type="button" class="btn primary block" id="dropperNpKeysSave" style="margin-top:12px">
+            Зберегти ключі
+          </button>
           <p id="dropperSettingsStatus" class="hint hidden" style="margin-top:10px"></p>
         </div>
       </section>
@@ -695,6 +764,6 @@
   </div>
 
   <button type="button" id="photoZoomBackdrop" class="photo-zoom-backdrop hidden" aria-label="Закрити фото"></button>
-  <script src="/static/app.js?v=20260724drop1"></script>
+  <script src="/static/app.js?v=20260724ttn2"></script>
 </body>
 </html>

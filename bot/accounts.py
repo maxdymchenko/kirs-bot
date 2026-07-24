@@ -228,6 +228,7 @@ class AppStorage:
                 ("buyout_tier", "buyout_tier TEXT NOT NULL DEFAULT ''"),
                 ("buyout_tier_notified", "buyout_tier_notified TEXT NOT NULL DEFAULT ''"),
                 ("buyout_half_warned", "buyout_half_warned INTEGER NOT NULL DEFAULT 0"),
+                ("np_api_keys_json", "np_api_keys_json TEXT NOT NULL DEFAULT '[]'"),
             ):
                 self._ensure_column(conn, "droppers", column, ddl)
 
@@ -908,6 +909,75 @@ class AppStorage:
         return self.update_dropper_settings(
             chat_id, require_full_payment=require_full_payment
         )
+
+    @staticmethod
+    def normalize_dropper_np_api_keys(raw: Any) -> list[dict[str, Any]]:
+        import uuid
+
+        if isinstance(raw, str):
+            try:
+                import json
+
+                raw = json.loads(raw or "[]")
+            except json.JSONDecodeError:
+                raw = []
+        if not isinstance(raw, list):
+            return []
+        out: list[dict[str, Any]] = []
+        for item in raw:
+            if not isinstance(item, dict):
+                continue
+            api_key = str(item.get("api_key") or "").strip()
+            if not api_key:
+                continue
+            label = str(item.get("label") or "").strip()
+            fop_name = str(item.get("fop_name") or "").strip()
+            if not label:
+                label = fop_name or "Кабінет НП"
+            out.append(
+                {
+                    "id": str(item.get("id") or "").strip() or uuid.uuid4().hex[:10],
+                    "label": label[:80],
+                    "api_key": api_key[:128],
+                    "fop_name": fop_name[:200],
+                }
+            )
+        return out
+
+    def get_dropper_np_api_keys(self, dropper_id: int) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT np_api_keys_json FROM droppers WHERE id = ?",
+                (int(dropper_id),),
+            ).fetchone()
+        if not row:
+            return []
+        return self.normalize_dropper_np_api_keys(self._row_get(row, "np_api_keys_json", "[]"))
+
+    def get_dropper_np_api_key_by_id(
+        self, dropper_id: int, key_id: str
+    ) -> dict[str, Any] | None:
+        kid = str(key_id or "").strip()
+        if not kid:
+            return None
+        for row in self.get_dropper_np_api_keys(dropper_id):
+            if row.get("id") == kid:
+                return row
+        return None
+
+    def save_dropper_np_api_keys(
+        self, dropper_id: int, keys: list[dict[str, Any]] | Any
+    ) -> list[dict[str, Any]]:
+        import json
+
+        normalized = self.normalize_dropper_np_api_keys(keys)
+        with self._connect() as conn:
+            conn.execute(
+                "UPDATE droppers SET np_api_keys_json = ? WHERE id = ?",
+                (json.dumps(normalized, ensure_ascii=False), int(dropper_id)),
+            )
+            conn.commit()
+        return normalized
 
     def get_staff_by_user(self, telegram_user_id: str) -> StaffMember | None:
         return self.get_staff_by_identity(telegram_user_id=telegram_user_id)

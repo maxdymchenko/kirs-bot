@@ -147,6 +147,23 @@
     lastName: document.getElementById("lastName"),
     ownTtn: document.getElementById("ownTtn"),
     ownTtnToggleRow: document.getElementById("ownTtnToggleRow"),
+    generateTtnInOrder: document.getElementById("generateTtnInOrder"),
+    generateTtnToggleRow: document.getElementById("generateTtnToggleRow"),
+    generateTtnFields: document.getElementById("generateTtnFields"),
+    checkoutNpKeyId: document.getElementById("checkoutNpKeyId"),
+    shipmentPayerType: document.getElementById("shipmentPayerType"),
+    cargoDescription: document.getElementById("cargoDescription"),
+    clientCod: document.getElementById("clientCod"),
+    generateTtnBtn: document.getElementById("generateTtnBtn"),
+    generateTtnResult: document.getElementById("generateTtnResult"),
+    generatedTtnNumber: document.getElementById("generatedTtnNumber"),
+    estimatedCostBlock: document.getElementById("estimatedCostBlock"),
+    estimatedCost: document.getElementById("estimatedCost"),
+    prepayField: document.getElementById("prepayField"),
+    codAmountField: document.getElementById("codAmountField"),
+    dropperNpKeysList: document.getElementById("dropperNpKeysList"),
+    dropperNpKeyAdd: document.getElementById("dropperNpKeyAdd"),
+    dropperNpKeysSave: document.getElementById("dropperNpKeysSave"),
     ttnFields: document.getElementById("ttnFields"),
     ttnNpBlock: document.getElementById("ttnNpBlock"),
     ttnRmpBlock: document.getElementById("ttnRmpBlock"),
@@ -212,7 +229,10 @@
     referral_code: "",
     referral_percent: 0,
     notify_shipping_events: false,
+    np_api_keys: [],
   };
+
+  let dropperNpKeysState = [];
 
   const sessionState = {
     role: "guest",
@@ -956,6 +976,7 @@
       dropperSettings.referral_code = data.referral_code || "";
       dropperSettings.referral_percent = Number(data.referral_percent || 0);
       dropperSettings.notify_shipping_events = Boolean(data.notify_shipping_events);
+      dropperSettings.np_api_keys = Array.isArray(data.np_api_keys) ? data.np_api_keys : [];
       if (data.chat_id) dropperSettings.chat_id = String(data.chat_id);
       activePaymentRequisites = Array.isArray(data.payment_requisites)
         ? data.payment_requisites
@@ -972,6 +993,7 @@
       dropperSettings.extra_discount_percent = 0;
       dropperSettings.orders_disabled = false;
       dropperSettings.notify_shipping_events = false;
+      dropperSettings.np_api_keys = [];
       try {
         const reqRes = await fetch("/api/payment-requisites");
         const reqData = await reqRes.json();
@@ -1131,12 +1153,57 @@
     if (els.ttnRmpBlock) els.ttnRmpBlock.classList.toggle("hidden", isNp);
   }
 
+  function buildCartDescription() {
+    return (getCart() || [])
+      .map((item) => {
+        const code = item.code || "";
+        const color = item.color || "";
+        const qty = Math.max(1, Number(item.qty) || 1);
+        let chunk = code;
+        if (color) chunk = `${code} ${color}`;
+        if (qty > 1) chunk = `${chunk}×${qty}`;
+        return chunk;
+      })
+      .filter(Boolean)
+      .join(", ")
+      .slice(0, 100);
+  }
+
+  function fillCheckoutNpKeySelect() {
+    if (!els.checkoutNpKeyId) return;
+    const keys = dropperSettings.np_api_keys || [];
+    const prev = els.checkoutNpKeyId.value;
+    els.checkoutNpKeyId.innerHTML = keys.length
+      ? keys
+          .map(
+            (k) =>
+              `<option value="${escapeHtml(k.id)}">${escapeHtml(
+                k.fop_name || k.label || "Кабінет НП"
+              )}</option>`
+          )
+          .join("")
+      : `<option value="">Додайте ключ у Налаштуваннях</option>`;
+    if (prev && keys.some((k) => k.id === prev)) els.checkoutNpKeyId.value = prev;
+  }
+
   function syncPaymentAndTtn() {
     const allowCod = dropperSettings.allow_cod !== false;
     const allowBalance = Boolean(dropperSettings.allow_balance_payment);
+    const hasNpKeys = (dropperSettings.np_api_keys || []).length > 0;
 
-    // Без наложки — лише власна ТТН (тумблер не потрібен)
-    if (!allowCod && els.ownTtn && !els.ownTtn.checked) {
+    if (els.generateTtnToggleRow) {
+      els.generateTtnToggleRow.classList.toggle("hidden", !hasNpKeys);
+    }
+    if (!hasNpKeys && els.generateTtnInOrder) {
+      els.generateTtnInOrder.checked = false;
+    }
+
+    // Взаємовиключення тумблерів
+    if (els.ownTtn?.checked && els.generateTtnInOrder?.checked) {
+      els.generateTtnInOrder.checked = false;
+    }
+
+    if (!allowCod && els.ownTtn && !els.ownTtn.checked && !els.generateTtnInOrder?.checked) {
       els.ownTtn.checked = true;
     }
     if (els.ownTtnToggleRow) {
@@ -1144,10 +1211,22 @@
     }
 
     const ownTtn = Boolean(els.ownTtn?.checked);
+    const generateTtn = Boolean(els.generateTtnInOrder?.checked) && !ownTtn;
     syncOwnTtnCarrierUi();
+    if (els.generateTtnFields) {
+      els.generateTtnFields.classList.toggle("hidden", !generateTtn);
+    }
+    if (generateTtn) {
+      fillCheckoutNpKeySelect();
+      if (els.cargoDescription && !els.cargoDescription.value.trim()) {
+        els.cargoDescription.value = buildCartDescription();
+      }
+      if (els.recipientNameFields) els.recipientNameFields.classList.remove("hidden");
+      if (els.deliverySection) els.deliverySection.classList.remove("hidden");
+    }
 
-    // При власній ТТН або без дозволу наложки — COD ховаємо
-    const hideCod = ownTtn || !allowCod;
+    // При generate TTN: оплата постачальнику = balance/requisites; COD картка ховається
+    const hideCod = ownTtn || !allowCod || generateTtn;
     els.codPaymentCard.classList.toggle("hidden", hideCod);
     els.codPaymentHint.classList.toggle("hidden", hideCod);
     if (els.balancePaymentCard) {
@@ -1170,15 +1249,29 @@
 
     const showRequisites = payment === "requisites";
     const showBalance = payment === "balance";
-    const showPrepay = !ownTtn && allowCod && payment === "cod";
+    const clientCodOn = Boolean(els.clientCod?.checked);
+    const showPrepay = !ownTtn && !generateTtn && allowCod && payment === "cod";
+    const showEstimated =
+      !ownTtn && (generateTtn || payment !== "cod");
     const showReceipt = showRequisites && dropperSettings.require_full_payment;
 
-    els.prepayBlock.classList.toggle("hidden", !showPrepay);
+    els.prepayBlock.classList.toggle("hidden", !(showPrepay || (generateTtn && clientCodOn)));
+    if (els.prepayField) els.prepayField.classList.toggle("hidden", !showPrepay);
+    if (els.codAmountField) {
+      els.codAmountField.classList.toggle("hidden", !(showPrepay || (generateTtn && clientCodOn)));
+    }
+    if (els.prepayHint) els.prepayHint.classList.toggle("hidden", !showPrepay);
+    if (els.estimatedCostBlock) {
+      els.estimatedCostBlock.classList.toggle("hidden", !showEstimated);
+    }
     els.requisitesBlock.classList.toggle("hidden", !showRequisites);
     els.receiptField.classList.toggle("hidden", !showReceipt);
     if (els.balancePayHint) els.balancePayHint.classList.toggle("hidden", !showBalance);
 
     const total = cartMoneyTotal();
+    if (els.estimatedCost && showEstimated && !els.estimatedCost.value) {
+      els.estimatedCost.value = String(Math.max(1, Math.round(total)));
+    }
     updatePrepayUi(total);
     updateRequisitesIntro(total);
     if (els.balancePayHint && showBalance) {
@@ -1402,6 +1495,12 @@
       form.querySelector('input[name="paymentMethod"]:checked')?.value || "";
     const receiptFile = els.paymentReceipt?.files?.[0] || null;
     const ttnPdfFile = els.ttnPdf?.files?.[0] || null;
+    const generateTtn = Boolean(els.generateTtnInOrder?.checked) && !Boolean(form.ownTtn?.checked);
+    const generatedTtn = (els.generatedTtnNumber?.value || "").replace(/\D/g, "");
+    const ownTtnNumber =
+      selectedOwnTtnCarrier() === "rozetka"
+        ? normalizeRmpNumber(form.rmpNumber?.value || "")
+        : (form.ttnNumber?.value || "").replace(/\D/g, "");
     return {
       firstName: form.firstName.value.trim(),
       patronymic: form.patronymic.value.trim(),
@@ -1422,10 +1521,15 @@
       npStreet: npState.street,
       ownTtn: Boolean(form.ownTtn.checked),
       ownTtnCarrier: selectedOwnTtnCarrier(),
-      ttnNumber:
-        selectedOwnTtnCarrier() === "rozetka"
-          ? normalizeRmpNumber(form.rmpNumber?.value || "")
-          : (form.ttnNumber?.value || "").replace(/\D/g, ""),
+      generateTtnInOrder: generateTtn,
+      npKeyId: generateTtn ? els.checkoutNpKeyId?.value || "" : "",
+      payerType: generateTtn ? els.shipmentPayerType?.value || "Recipient" : "Recipient",
+      cargoDescription: generateTtn
+        ? (els.cargoDescription?.value || "").trim() || buildCartDescription()
+        : "",
+      clientCod: generateTtn && Boolean(els.clientCod?.checked),
+      estimatedCost: form.estimatedCost?.value?.trim() || "",
+      ttnNumber: generateTtn ? generatedTtn : ownTtnNumber,
       rmpNumber: normalizeRmpNumber(form.rmpNumber?.value || ""),
       paymentMethod,
       codAmount: form.codAmount?.value?.trim() || "",
@@ -1468,6 +1572,8 @@
       data.npCity = null;
       data.npWarehouse = null;
       data.npStreet = null;
+      data.generateTtnInOrder = false;
+      data.clientCod = false;
 
       if (data.paymentMethod !== "requisites" && data.paymentMethod !== "balance") {
         return "При власній ТТН доступна оплата на реквізити або з балансу";
@@ -1502,6 +1608,44 @@
       if (!pdfName.endsWith(".pdf")) {
         return "Файл 100×100 має бути у форматі PDF";
       }
+    } else if (data.generateTtnInOrder) {
+      if (!data.npKeyId) return "Оберіть ФОП / кабінет НП";
+      if (!data.firstName) return "Вкажіть ім'я отримувача";
+      if (!data.lastName) return "Вкажіть прізвище отримувача";
+      if (!data.cityRef || !npState.city) {
+        return "Оберіть населений пункт зі списку Нової Пошти";
+      }
+      if (data.deliveryMethod === "np_warehouse" && (!data.warehouseRef || !npState.warehouse)) {
+        return "Оберіть відділення/поштомат зі списку Нової Пошти";
+      }
+      if (data.deliveryMethod === "np_courier") {
+        if (!data.patronymic) return "Для курʼєра вкажіть по батькові";
+        if (!data.streetRef || !npState.street) {
+          return "Оберіть вулицю зі списку Нової Пошти";
+        }
+        if (!data.house) return "Вкажіть номер будинку";
+      }
+      if (!data.ttnNumber || data.ttnNumber.length < 10) {
+        return "Спочатку натисніть «Згенерувати накладну»";
+      }
+      if (data.paymentMethod !== "requisites" && data.paymentMethod !== "balance") {
+        return "При генерації ТТН оплата постачальнику — на реквізити або з балансу";
+      }
+      const estRaw = data.estimatedCost === "" ? null : Number(data.estimatedCost);
+      if (estRaw === null || Number.isNaN(estRaw) || estRaw < 1) {
+        return "Вкажіть оціночну вартість (мін. 1 ₴)";
+      }
+      data.estimatedCost = Math.round(estRaw);
+      if (data.clientCod) {
+        const codRaw = data.codAmount === "" ? null : Number(data.codAmount);
+        if (codRaw === null || Number.isNaN(codRaw) || codRaw < 0) {
+          return "Вкажіть суму накладного платежу клієнту";
+        }
+        data.codAmount = Math.round(codRaw);
+      } else {
+        data.codAmount = 0;
+      }
+      data.prepay = "";
     } else {
       if (!data.firstName) return "Вкажіть ім'я отримувача";
       if (!data.lastName) return "Вкажіть прізвище отримувача";
@@ -1517,6 +1661,13 @@
           return "Оберіть вулицю зі списку Нової Пошти";
         }
         if (!data.house) return "Вкажіть номер будинку";
+      }
+      if (data.paymentMethod !== "cod") {
+        const estRaw = data.estimatedCost === "" ? null : Number(data.estimatedCost);
+        if (estRaw === null || Number.isNaN(estRaw) || estRaw < 1) {
+          return "Вкажіть оціночну вартість (мін. 1 ₴)";
+        }
+        data.estimatedCost = Math.round(estRaw);
       }
     }
 
@@ -1543,10 +1694,12 @@
           `доступно ${formatMoneyAmount(room)} грн)`
         );
       }
-      data.codAmount = 0;
+      if (!data.generateTtnInOrder || !data.clientCod) {
+        data.codAmount = 0;
+      }
       data.prepay = "";
       data.prepayBalanceDebit = total;
-    } else if (!data.ownTtn && data.paymentMethod === "cod") {
+    } else if (!data.ownTtn && !data.generateTtnInOrder && data.paymentMethod === "cod") {
       const codRaw = data.codAmount === "" ? null : Number(data.codAmount);
       if (codRaw === null || Number.isNaN(codRaw) || codRaw < 0) {
         return "Вкажіть суму накладного платежу";
@@ -1571,6 +1724,10 @@
         0,
         roundMoney(prepay - Number(data.total || 0))
       );
+    } else if (data.generateTtnInOrder) {
+      data.prepayBalanceDebit =
+        data.paymentMethod === "balance" ? roundMoney(data.total || 0) : 0;
+      data.prepay = "";
     } else {
       data.codAmount = 0;
       data.prepayBalanceDebit = 0;
@@ -1631,16 +1788,20 @@
         : data.warehouse || "";
     const debit = roundMoney(data.prepayBalanceDebit || 0);
     const totalExact = roundMoney(data.total || 0);
+    const clientCod = Boolean(data.generateTtnInOrder && data.clientCod);
+    const showClassicCod = data.paymentMethod === "cod" && !data.generateTtnInOrder;
     const codExact =
-      data.paymentMethod === "cod" ? roundMoney(data.codAmount || 0) : 0;
-    const prepayExact =
-      data.paymentMethod === "cod"
-        ? roundMoney(data.prepay === "" ? 0 : data.prepay || 0)
+      showClassicCod || clientCod ? roundMoney(data.codAmount || 0) : 0;
+    const prepayExact = showClassicCod
+      ? roundMoney(data.prepay === "" ? 0 : data.prepay || 0)
+      : 0;
+    const dropperProfit = showClassicCod
+      ? roundMoney(codExact - prepayExact - totalExact)
+      : null;
+    const estExact =
+      !data.ownTtn && (data.generateTtnInOrder || data.paymentMethod !== "cod")
+        ? roundMoney(data.estimatedCost || 0)
         : 0;
-    const dropperProfit =
-      data.paymentMethod === "cod"
-        ? roundMoney(codExact - prepayExact - totalExact)
-        : null;
     const recipientBlock = data.ownTtn
       ? `<div class="confirm-block">
         <div class="confirm-label">Клієнт</div>
@@ -1658,25 +1819,34 @@
 ${escapeHtml(data.city || "")}
 ${escapeHtml(deliveryExtra)}</div>
       </div>`;
+    const paymentExtra = showClassicCod
+      ? `Накладений платіж: ${escapeHtml(formatMoneyAmount(codExact))} ₴\nПередплата: ${escapeHtml(formatMoneyAmount(prepayExact))} ₴\nПрибуток дроппера: ${escapeHtml(formatMoneyAmount(dropperProfit))} ₴`
+      : [
+          estExact > 0
+            ? `Оціночна вартість: ${escapeHtml(formatMoneyAmount(estExact))} ₴`
+            : "",
+          clientCod
+            ? `Накладений платіж клієнту: ${escapeHtml(formatMoneyAmount(codExact))} ₴`
+            : "",
+        ]
+          .filter(Boolean)
+          .join("\n");
+    const ttnLine = data.ownTtn
+      ? data.ownTtnCarrier === "rozetka"
+        ? `Власний RMP: ${escapeHtml(data.ttnNumber || data.rmpNumber || "")}`
+        : `Власна ТТН НП: ${escapeHtml(data.ttnNumber || "")}`
+      : data.generateTtnInOrder
+        ? `ТТН згенерована: ${escapeHtml(data.ttnNumber || "")}`
+        : "ТТН: створиться пізніше (НП)";
     els.confirmSummary.innerHTML = `
       ${recipientBlock}
       <div class="confirm-block">
         <div class="confirm-label">Оплата</div>
         <div class="confirm-value">${escapeHtml(paymentMethodLabel(data.paymentMethod))}
 Дроп ціна: ${escapeHtml(formatMoneyAmount(totalExact))} ₴
-${
-  data.paymentMethod === "cod"
-    ? `Накладений платіж: ${escapeHtml(formatMoneyAmount(codExact))} ₴\nПередплата: ${escapeHtml(formatMoneyAmount(prepayExact))} ₴\nПрибуток дроппера: ${escapeHtml(formatMoneyAmount(dropperProfit))} ₴`
-    : ""
-}
+${paymentExtra}
 ${debit > 0 ? `З балансу спишеться: ${escapeHtml(formatMoneyAmount(debit))} ₴` : ""}
-${
-  data.ownTtn
-    ? data.ownTtnCarrier === "rozetka"
-      ? `Власний RMP: ${escapeHtml(data.ttnNumber || data.rmpNumber || "")}`
-      : `Власна ТТН НП: ${escapeHtml(data.ttnNumber || "")}`
-    : "ТТН: створиться пізніше (НП)"
-}</div>
+${ttnLine}</div>
       </div>
       <div class="confirm-block">
         <div class="confirm-label">Товари</div>
@@ -1706,6 +1876,7 @@ ${
 
   function buildOrderApiPayload(data) {
     const ownTtn = Boolean(data.ownTtn);
+    const generateTtn = Boolean(data.generateTtnInOrder) && !ownTtn;
     return {
       chat_id: effectiveDropperChatId(),
       user_id: currentTelegramUser().user_id,
@@ -1726,6 +1897,12 @@ ${
       own_ttn: ownTtn,
       own_ttn_carrier: ownTtn ? data.ownTtnCarrier || "nova_poshta" : "",
       ttn_number: data.ttnNumber || "",
+      generate_ttn_in_order: generateTtn,
+      np_key_id: generateTtn ? data.npKeyId || "" : "",
+      payer_type: generateTtn ? data.payerType || "Recipient" : "Recipient",
+      estimated_cost: Number(data.estimatedCost || 0),
+      cargo_description: generateTtn ? data.cargoDescription || "" : "",
+      client_cod: generateTtn ? Boolean(data.clientCod) : false,
       payment_method: data.paymentMethod,
       prepay: data.prepay === "" ? 0 : Number(data.prepay || 0),
       cod_amount: Number(data.codAmount || 0),
@@ -2420,16 +2597,26 @@ ${
               <option value="balance" ${method === "balance" ? "selected" : ""}>З балансу</option>
             </select>
           </label>
-          <label class="field compact-field">
+          <label class="field compact-field" data-edit-prepay-wrap>
             <span class="field-label">Передплата ₴</span>
             <input name="prepay" type="number" min="0" step="1" value="${escapeHtml(
               String(order.prepay || 0)
             )}" />
           </label>
-          <label class="field compact-field">
+          <label class="field compact-field" data-edit-cod-wrap>
             <span class="field-label">Накладний ₴</span>
             <input name="cod_amount" type="number" min="0" step="1" value="${escapeHtml(
               String(order.cod_amount || 0)
+            )}" />
+          </label>
+          <label class="field compact-field" data-edit-estimated-wrap>
+            <span class="field-label">Оціночна вартість ₴</span>
+            <input name="estimated_cost" type="number" min="1" step="1" value="${escapeHtml(
+              String(
+                (payload.shipment && payload.shipment.estimated_cost) ||
+                  order.total ||
+                  1
+              )
             )}" />
           </label>
           <label class="field compact-field">
@@ -2527,6 +2714,7 @@ ${
       payment_method: form.payment_method?.value || "cod",
       prepay: Number(form.prepay?.value || 0),
       cod_amount: Number(form.cod_amount?.value || 0),
+      estimated_cost: Number(form.estimated_cost?.value || 0),
       comment: form.comment?.value?.trim() || "",
       cart,
       total,
@@ -2534,6 +2722,21 @@ ${
       np_warehouse: delivery.np_warehouse || null,
       np_street: delivery.np_street || null,
     };
+  }
+
+  function syncOrderEditPaymentFields(form) {
+    if (!form) return;
+    const method = form.payment_method?.value || "cod";
+    const isCod = method === "cod";
+    form.querySelectorAll("[data-edit-prepay-wrap]").forEach((el) => {
+      el.classList.toggle("hidden", !isCod);
+    });
+    form.querySelectorAll("[data-edit-cod-wrap]").forEach((el) => {
+      el.classList.toggle("hidden", !isCod);
+    });
+    form.querySelectorAll("[data-edit-estimated-wrap]").forEach((el) => {
+      el.classList.toggle("hidden", isCod);
+    });
   }
 
   async function openOwnerOrderEdit(orderId, card, modeHint) {
@@ -2550,6 +2753,9 @@ ${
     panel._orderRef = hit.order;
     panel._boxRef = hit.box;
     panel._editMode = mode;
+    const form = panel.querySelector("[data-order-edit-form]");
+    syncOrderEditPaymentFields(form);
+    form?.payment_method?.addEventListener("change", () => syncOrderEditPaymentFields(form));
   }
 
   async function saveOwnerOrderEdit(form) {
@@ -3431,12 +3637,74 @@ ${
     if (event.target.name === "deliveryMethod") syncDeliveryFields();
     if (
       event.target.id === "ownTtn" ||
+      event.target.id === "generateTtnInOrder" ||
+      event.target.id === "clientCod" ||
       event.target.name === "paymentMethod" ||
       event.target.name === "ownTtnCarrier"
     ) {
+      if (event.target.id === "ownTtn" && event.target.checked && els.generateTtnInOrder) {
+        els.generateTtnInOrder.checked = false;
+        if (els.generatedTtnNumber) els.generatedTtnNumber.value = "";
+      }
+      if (event.target.id === "generateTtnInOrder" && event.target.checked && els.ownTtn) {
+        els.ownTtn.checked = false;
+      }
+      if (event.target.id === "generateTtnInOrder" && !event.target.checked) {
+        if (els.generatedTtnNumber) els.generatedTtnNumber.value = "";
+        if (els.generateTtnResult) {
+          els.generateTtnResult.classList.add("hidden");
+          els.generateTtnResult.textContent = "";
+        }
+      }
       syncPaymentAndTtn();
     }
   });
+
+  if (els.generateTtnBtn) {
+    els.generateTtnBtn.addEventListener("click", () => {
+      generateCheckoutTtn();
+    });
+  }
+
+  if (els.dropperNpKeyAdd) {
+    els.dropperNpKeyAdd.addEventListener("click", () => {
+      dropperNpKeysState = collectDropperNpKeysFromDom();
+      dropperNpKeysState.push(newDropperNpKeyRow());
+      renderDropperNpKeys();
+    });
+  }
+  if (els.dropperNpKeysSave) {
+    els.dropperNpKeysSave.addEventListener("click", () => saveDropperNpKeys());
+  }
+  if (els.dropperNpKeysList) {
+    els.dropperNpKeysList.addEventListener("click", (event) => {
+      const btn = event.target.closest("[data-dropper-np-remove]");
+      if (!btn) return;
+      const index = Number(btn.getAttribute("data-dropper-np-remove"));
+      dropperNpKeysState = collectDropperNpKeysFromDom();
+      dropperNpKeysState.splice(index, 1);
+      if (!dropperNpKeysState.length) dropperNpKeysState = [newDropperNpKeyRow()];
+      renderDropperNpKeys();
+    });
+    els.dropperNpKeysList.addEventListener("blur", async (event) => {
+      const input = event.target.closest('[data-dnp-field="api_key"]');
+      if (!input) return;
+      const row = input.closest("[data-dropper-np-index]");
+      if (!row) return;
+      const index = Number(row.getAttribute("data-dropper-np-index"));
+      const hint = row.querySelector("[data-dnp-fop]");
+      const fop = await probeDropperNpKey(input.value, hint);
+      dropperNpKeysState = collectDropperNpKeysFromDom();
+      if (dropperNpKeysState[index]) {
+        dropperNpKeysState[index].fop_name = fop || dropperNpKeysState[index].fop_name;
+        if (fop && !dropperNpKeysState[index].label) {
+          dropperNpKeysState[index].label = fop;
+          const labelInput = row.querySelector('[data-dnp-field="label"]');
+          if (labelInput && !labelInput.value.trim()) labelInput.value = fop;
+        }
+      }
+    }, true);
+  }
 
   els.checkoutForm.addEventListener("submit", (event) => {
     event.preventDefault();
@@ -3676,6 +3944,271 @@ ${
     await loadDropperSettings();
     if (els.notifyShippingEvents) {
       els.notifyShippingEvents.checked = Boolean(dropperSettings.notify_shipping_events);
+    }
+    dropperNpKeysState = (dropperSettings.np_api_keys || []).map((k) => ({
+      id: k.id || `k${Date.now().toString(36)}`,
+      label: k.label || "",
+      api_key: k.api_key || "",
+      fop_name: k.fop_name || "",
+    }));
+    if (!dropperNpKeysState.length) {
+      dropperNpKeysState = [newDropperNpKeyRow()];
+    }
+    renderDropperNpKeys();
+  }
+
+  function newDropperNpKeyRow(data = {}) {
+    return {
+      id: data.id || `k${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`,
+      label: data.label || "",
+      api_key: data.api_key || "",
+      fop_name: data.fop_name || "",
+    };
+  }
+
+  function renderDropperNpKeys() {
+    if (!els.dropperNpKeysList) return;
+    els.dropperNpKeysList.innerHTML = dropperNpKeysState
+      .map(
+        (row, index) => `
+      <div class="np-key-row" data-dropper-np-index="${index}">
+        <div class="np-key-fields">
+          <label class="field compact-field">
+            <span class="field-label">Назва / підпис</span>
+            <input type="text" data-dnp-field="label" placeholder="Напр. ФОП Іваненко" value="${escapeHtml(
+              row.label || ""
+            )}" autocomplete="off" />
+          </label>
+          <label class="field compact-field">
+            <span class="field-label">API-ключ</span>
+            <input type="password" data-dnp-field="api_key" placeholder="Ключ Нової Пошти" value="${escapeHtml(
+              row.api_key || ""
+            )}" autocomplete="off" />
+          </label>
+          <p class="hint" data-dnp-fop>${
+            row.fop_name
+              ? `Кабінет: <b>${escapeHtml(row.fop_name)}</b>`
+              : "Після введення ключа підтягнеться ФОП"
+          }</p>
+        </div>
+        <button type="button" class="btn danger" data-dropper-np-remove="${index}">Видалити</button>
+      </div>`
+      )
+      .join("");
+  }
+
+  function collectDropperNpKeysFromDom() {
+    if (!els.dropperNpKeysList) return dropperNpKeysState;
+    return [...els.dropperNpKeysList.querySelectorAll("[data-dropper-np-index]")].map(
+      (row) => {
+        const index = Number(row.getAttribute("data-dropper-np-index"));
+        const prev = dropperNpKeysState[index] || newDropperNpKeyRow();
+        return {
+          id: prev.id,
+          label: row.querySelector('[data-dnp-field="label"]')?.value?.trim() || "",
+          api_key: row.querySelector('[data-dnp-field="api_key"]')?.value?.trim() || "",
+          fop_name: prev.fop_name || "",
+        };
+      }
+    );
+  }
+
+  async function probeDropperNpKey(apiKey, hintEl) {
+    const key = String(apiKey || "").trim();
+    if (key.length < 8) return "";
+    const chatId = effectiveDropperChatId();
+    if (!chatId) return "";
+    try {
+      if (hintEl) hintEl.textContent = "Перевірка ключа…";
+      const response = await fetch("/api/dropper/np-keys/probe", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ chat_id: chatId, api_key: key }),
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(typeof data.detail === "string" ? data.detail : "Помилка ключа");
+      }
+      const fop = data.fop_name || data.label || "";
+      if (hintEl) {
+        hintEl.innerHTML = fop
+          ? `Кабінет: <b>${escapeHtml(fop)}</b>`
+          : "Ключ прийнято";
+      }
+      return fop;
+    } catch (error) {
+      if (hintEl) {
+        hintEl.textContent = error.message || "Не вдалося перевірити ключ";
+      }
+      return "";
+    }
+  }
+
+  async function saveDropperNpKeys() {
+    const chatId = effectiveDropperChatId();
+    if (!chatId) {
+      showToast("Немає chat_id дроппера");
+      return;
+    }
+    dropperNpKeysState = collectDropperNpKeysFromDom().filter((k) => k.api_key);
+    if (els.dropperSettingsStatus) {
+      els.dropperSettingsStatus.textContent = "Збереження ключів…";
+      els.dropperSettingsStatus.classList.remove("hidden");
+      els.dropperSettingsStatus.style.color = "";
+    }
+    try {
+      const response = await fetch("/api/dropper/settings", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          chat_id: chatId,
+          user_id: currentTelegramUser().user_id,
+          np_api_keys: dropperNpKeysState,
+        }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.detail || "Не вдалося зберегти");
+      const saved = (data.dropper && data.dropper.np_api_keys) || [];
+      dropperSettings.np_api_keys = saved;
+      dropperNpKeysState = saved.length ? saved.map((k) => newDropperNpKeyRow(k)) : [newDropperNpKeyRow()];
+      renderDropperNpKeys();
+      if (els.dropperSettingsStatus) {
+        els.dropperSettingsStatus.textContent = "Ключі збережено";
+        els.dropperSettingsStatus.style.color = "var(--ok)";
+      }
+      showToast("API-ключі збережено");
+      syncPaymentAndTtn();
+    } catch (error) {
+      if (els.dropperSettingsStatus) {
+        els.dropperSettingsStatus.textContent = error.message || "Помилка";
+        els.dropperSettingsStatus.style.color = "var(--danger)";
+      }
+      showToast(error.message || "Помилка збереження");
+    }
+  }
+
+  async function generateCheckoutTtn() {
+    if (isOwnerRolePreview()) {
+      showToast("Режим перегляду — ТТН не створюється");
+      return;
+    }
+    const chatId = effectiveDropperChatId();
+    if (!chatId) {
+      showToast("Немає chat_id");
+      return;
+    }
+    const form = els.checkoutForm;
+    const deliveryMethod =
+      form.querySelector('input[name="deliveryMethod"]:checked')?.value || "np_warehouse";
+    const npKeyId = els.checkoutNpKeyId?.value || "";
+    if (!npKeyId) {
+      showToast("Оберіть ФОП / кабінет");
+      return;
+    }
+    if (!form.firstName?.value?.trim() || !form.lastName?.value?.trim()) {
+      showToast("Вкажіть ПІБ отримувача");
+      return;
+    }
+    if (!isPhoneComplete()) {
+      showToast("Вкажіть повний телефон");
+      return;
+    }
+    if (!form.cityRef?.value || !npState.city) {
+      showToast("Оберіть населений пункт");
+      return;
+    }
+    if (deliveryMethod === "np_warehouse" && (!form.warehouseRef?.value || !npState.warehouse)) {
+      showToast("Оберіть відділення");
+      return;
+    }
+    if (deliveryMethod === "np_courier") {
+      if (!form.patronymic?.value?.trim()) {
+        showToast("Для курʼєра вкажіть по батькові");
+        return;
+      }
+      if (!form.streetRef?.value || !npState.street || !form.house?.value?.trim()) {
+        showToast("Вкажіть адресу курʼєра");
+        return;
+      }
+    }
+    let estimated = Number(els.estimatedCost?.value || 0);
+    if (!estimated || estimated < 1) {
+      estimated = Math.max(1, Math.round(cartMoneyTotal()));
+      if (els.estimatedCost) els.estimatedCost.value = String(estimated);
+    }
+    const clientCod = Boolean(els.clientCod?.checked);
+    let codAmount = 0;
+    if (clientCod) {
+      codAmount = Number(els.codAmount?.value || 0);
+      if (Number.isNaN(codAmount) || codAmount < 0) {
+        showToast("Вкажіть суму накладного платежу");
+        return;
+      }
+    }
+    const desc =
+      (els.cargoDescription?.value || "").trim() || buildCartDescription();
+    if (els.cargoDescription) els.cargoDescription.value = desc;
+
+    if (els.generateTtnBtn) els.generateTtnBtn.disabled = true;
+    if (els.generateTtnResult) {
+      els.generateTtnResult.classList.remove("hidden");
+      els.generateTtnResult.textContent = "Створення накладної…";
+    }
+    try {
+      const response = await fetch("/api/dropper/ttn/create", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          chat_id: chatId,
+          user_id: currentTelegramUser().user_id,
+          np_key_id: npKeyId,
+          first_name: form.firstName.value.trim(),
+          patronymic: form.patronymic.value.trim(),
+          last_name: form.lastName.value.trim(),
+          phone: form.phone.value.trim(),
+          delivery_method: deliveryMethod,
+          city: form.city.value.trim(),
+          city_ref: form.cityRef.value.trim(),
+          settlement_ref: form.settlementRef.value.trim(),
+          warehouse: form.warehouse.value.trim(),
+          warehouse_ref: form.warehouseRef.value.trim(),
+          street: form.street.value.trim(),
+          street_ref: form.streetRef.value.trim(),
+          house: form.house.value.trim(),
+          apartment: form.apartment.value.trim(),
+          payer_type: els.shipmentPayerType?.value || "Recipient",
+          estimated_cost: estimated,
+          cargo_description: desc,
+          client_cod: clientCod,
+          cod_amount: codAmount,
+          cart: loadCart(),
+          np_city: npState.city,
+          np_warehouse: npState.warehouse,
+          np_street: npState.street,
+        }),
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(typeof data.detail === "string" ? data.detail : "Помилка ТТН");
+      }
+      const ttn = String(data.ttn_number || "").replace(/\D/g, "");
+      if (els.generatedTtnNumber) els.generatedTtnNumber.value = ttn;
+      if (els.generateTtnResult) {
+        els.generateTtnResult.innerHTML = `Накладна створена: <b>${escapeHtml(
+          ttn
+        )}</b>${
+          data.fop_name ? `<br/>ФОП: ${escapeHtml(data.fop_name)}` : ""
+        }`;
+      }
+      showToast(`ТТН ${ttn} створено`);
+    } catch (error) {
+      if (els.generatedTtnNumber) els.generatedTtnNumber.value = "";
+      if (els.generateTtnResult) {
+        els.generateTtnResult.textContent = error.message || "Помилка створення ТТН";
+      }
+      showToast(error.message || "Помилка ТТН");
+    } finally {
+      if (els.generateTtnBtn) els.generateTtnBtn.disabled = false;
     }
   }
 

@@ -314,6 +314,7 @@ def build_payload_from_edit(
     own_ttn_carrier: str,
     ttn_number: str,
     ttn_pdf_name: str = "",
+    shipment: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Новий payload зі збереженням системних ключів (tracking, np_*, flags)."""
     keep_keys = (
@@ -360,6 +361,12 @@ def build_payload_from_edit(
             "edited_by_owner": True,
         }
     )
+    if shipment is not None:
+        old_ship = dict(old_payload.get("shipment") or {})
+        old_ship.update(shipment)
+        payload["shipment"] = old_ship
+    elif "shipment" in old_payload:
+        payload["shipment"] = old_payload["shipment"]
     return payload
 
 

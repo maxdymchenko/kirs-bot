@@ -431,6 +431,27 @@ class NovaPoshtaClient:
         )
         return [row for row in (data or []) if isinstance(row, dict)]
 
+    def resolve_cabinet_fop_name(self) -> str:
+        """Коротка назва ФОП/кабінету за поточним API-ключем."""
+        senders = self.get_counterparties("Sender")
+        if not senders:
+            return ""
+        row = senders[0]
+        for key in (
+            "CounterpartyFullName",
+            "Description",
+            "FullName",
+            "CompanyName",
+        ):
+            val = str(row.get(key) or "").strip()
+            if val:
+                return val[:200]
+        first = str(row.get("FirstName") or "").strip()
+        last = str(row.get("LastName") or "").strip()
+        mid = str(row.get("MiddleName") or "").strip()
+        name = " ".join(x for x in (last, first, mid) if x).strip()
+        return name[:200]
+
     def get_counterparty_contact_persons(self, counterparty_ref: str) -> list[dict[str, Any]]:
         ref = (counterparty_ref or "").strip()
         if not ref:

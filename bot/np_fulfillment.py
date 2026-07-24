@@ -213,20 +213,33 @@ def _build_save_props(
 
     weight = float(parcel.get("weight_kg") or 0.5) or 0.5
     seats = max(1, int(parcel.get("seats_amount") or 1))
-    description = str(parcel.get("description") or "Товар").strip() or "Товар"
+    shipment = payload.get("shipment") or {}
+    description = str(
+        shipment.get("description")
+        or parcel.get("description")
+        or "Товар"
+    ).strip() or "Товар"
     length = float(parcel.get("length_cm") or 30)
     width = float(parcel.get("width_cm") or 20)
     height = float(parcel.get("height_cm") or 10)
     volume = max(0.0001, (length * width * height) / 1_000_000.0)
 
-    cost = max(1.0, float(order.get("total") or 0))
+    try:
+        estimated = float(shipment.get("estimated_cost") or 0)
+    except (TypeError, ValueError):
+        estimated = 0.0
+    cost = max(1.0, estimated if estimated > 0 else float(order.get("total") or 0))
     phone = _digits_phone(recipient.get("phone") or "")
     if len(phone) < 12:
         raise NovaPoshtaError("Некоректний телефон отримувача для ТТН")
 
+    payer = str(shipment.get("payer_type") or "Recipient").strip()
+    if payer not in {"Sender", "Recipient"}:
+        payer = "Recipient"
+
     today = datetime.now().strftime("%d.%m.%Y")
     props: dict[str, Any] = {
-        "PayerType": "Recipient",
+        "PayerType": payer,
         "PaymentMethod": "Cash",
         "DateTime": today,
         "CargoType": "Parcel",
@@ -277,7 +290,12 @@ def _build_save_props(
         props["RecipientAddress"] = warehouse_ref
 
     cod_amount = max(0.0, float(order.get("cod_amount") or 0))
-    if str(order.get("payment_method") or "") == "cod" and cod_amount > 0:
+    # Наложка клієнта: payment_method=cod АБО явно в shipment (режим generate_ttn)
+    want_cod = (
+        str(order.get("payment_method") or "") == "cod"
+        or bool(shipment.get("client_cod"))
+    )
+    if want_cod and cod_amount > 0:
         props["BackwardDeliveryData"] = [
             {
                 "PayerType": "Recipient",
@@ -289,10 +307,76 @@ def _build_save_props(
     return props
 
 
+def build_cart_ttn_description(cart: list[dict] | None) -> str:
+    """Код + колір для коментаря/опису накладної."""
+    parts: list[str] = []
+    for item in cart or []:
+        if not isinstance(item, dict):
+            continue
+        code = str(item.get("code") or "").strip()
+        color = str(item.get("color") or "").strip()
+        qty = max(1, int(item.get("qty") or 1))
+        if not code:
+            continue
+        chunk = code
+        if color:
+            chunk = f"{code} {color}"
+        if qty > 1:
+            chunk = f"{chunk}×{qty}"
+        parts.append(chunk)
+    text = ", ".join(parts).strip() or "Товар"
+    return text[:100]
+
+
+def create_ttn_with_dropper_key(
+    storage: AppStorage,
+    order: dict[str, Any],
+    api_key: str,
+) -> dict[str, Any]:
+    """
+    Створити ТТН ключем дроппера.
+    Місто/відділення/габарити відправника — з налаштувань власника;
+    контрагент-відправник — з кабінету дроппера (його API-ключ).
+    """
+    key = str(api_key or "").strip()
+    if not key:
+        raise NovaPoshtaError("Немає API-ключа Нової Пошти дроппера")
+    client = NovaPoshtaClient(api_key=key)
+    if not client.configured():
+        raise NovaPoshtaError("API-ключ Нової Пошти недійсний")
+    settings = storage.get_general_settings()
+    sender = _pick_sender_bundle(client, settings)
+    recipient_ref, contact_ref = _ensure_recipient_refs(client, order)
+    props = _build_save_props(order, settings, sender, recipient_ref, contact_ref)
+    result = client.create_internet_document(props)
+    storage.update_order_flags(
+        order["id"],
+        ttn_number=result["ttn_number"],
+        ttn_status="created",
+    )
+    storage.merge_order_payload(
+        order["id"],
+        {
+            "ttn_number": result["ttn_number"],
+            "np_document_ref": result.get("ref") or "",
+            "np_recipient_ref": recipient_ref,
+            "np_contact_recipient_ref": contact_ref,
+            "np_cost_on_site": result.get("cost_on_site"),
+            "np_estimated_delivery_date": result.get("estimated_delivery_date"),
+            "np_created_by_dropper_key": True,
+            "np_error": "",
+        },
+    )
+    return storage.get_order(order["id"]) or order
+
+
 def create_ttn_for_order(
     storage: AppStorage, order: dict[str, Any]
 ) -> dict[str, Any]:
     if order.get("own_ttn"):
+        return order
+    payload = order.get("payload") or {}
+    if payload.get("generate_ttn_in_order") or payload.get("np_created_by_dropper_key"):
         return order
     status = str(order.get("ttn_status") or "")
     if status not in {"pending_create", "create_error", "none"}:
