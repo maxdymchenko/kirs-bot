@@ -2674,7 +2674,7 @@ ${
             <span class="field-label">Дроп ціна</span>
             <input type="number" min="0" step="1" data-edit-cart="drop_price" value="${escapeHtml(
               String(item.drop_price || 0)
-            )}" />
+            )}" ${editMode === "dropper" ? "readonly tabindex=\"-1\"" : ""} />
           </label>
           <button type="button" class="btn danger" data-edit-cart-remove="${index}">×</button>
         </div>

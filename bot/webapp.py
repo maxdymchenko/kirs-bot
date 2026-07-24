@@ -1827,6 +1827,47 @@ def create_web_app(
         old_payload = dict(order.get("payload") or {})
         old_cart = list(old_payload.get("cart") or [])
 
+        # Дроппер не може змінювати дроп-ціну — лишаємо з оригінального замовлення
+        if actor_role == "dropper":
+            old_by_pid: dict[str, dict] = {}
+            old_by_code: dict[str, dict] = {}
+            for row in old_cart:
+                if not isinstance(row, dict):
+                    continue
+                pid = str(row.get("product_id") or "").strip()
+                code = str(row.get("code") or "").strip()
+                color = str(row.get("color") or "").strip()
+                if pid:
+                    old_by_pid[pid] = row
+                if code:
+                    old_by_code[f"{code}|{color}"] = row
+            for row in safe_cart:
+                pid = str(row.get("product_id") or "").strip()
+                code = str(row.get("code") or "").strip()
+                color = str(row.get("color") or "").strip()
+                src = old_by_pid.get(pid) if pid else None
+                if not src:
+                    src = old_by_code.get(f"{code}|{color}")
+                if src:
+                    row["drop_price"] = src.get("drop_price") or row.get("drop_price") or ""
+                    row["drop_price_original"] = (
+                        src.get("drop_price_original") or row.get("drop_price_original") or ""
+                    )
+                    row["extra_discount_percent"] = src.get("extra_discount_percent") or 0
+            # Перерахунок total після фіксації цін
+            total = 0.0
+            for row in safe_cart:
+                try:
+                    price = float(str(row.get("drop_price") or "0").replace(",", "."))
+                except (TypeError, ValueError):
+                    price = 0.0
+                qty = max(1, int(row.get("qty") or 1))
+                total += max(0.0, price) * qty
+            total = round(total, 2)
+            if validate_payload.payment_method == "balance":
+                debit = round(total, 2)
+                prepay = 0.0
+
         recipient = {
             "first_name": validate_payload.first_name.strip(),
             "patronymic": validate_payload.patronymic.strip(),
