@@ -2638,13 +2638,24 @@ ${
     );
   }
 
-  function renderOwnerOrderEditForm(order) {
+  function renderOwnerOrderEditForm(order, options = {}) {
     const payload = order.payload || {};
     const recipient = payload.recipient || {};
     const delivery = payload.delivery || {};
     const payment = payload.payment || {};
     const cart = Array.isArray(payload.cart) ? payload.cart : [];
-    const method = order.payment_method || payment.method || "cod";
+    const editMode = options.editMode || "owner";
+    const allowCod =
+      editMode === "owner" ? true : dropperSettings.allow_cod !== false;
+    const allowBalance =
+      editMode === "owner" ? true : Boolean(dropperSettings.allow_balance_payment);
+    let method = order.payment_method || payment.method || "cod";
+    if (!allowCod && method === "cod") {
+      method = allowBalance ? "balance" : "requisites";
+    }
+    if (!allowBalance && method === "balance") {
+      method = allowCod ? "cod" : "requisites";
+    }
     const ownTtn = Boolean(order.own_ttn || payload.own_ttn);
     const deliveryMethod = order.delivery_method || delivery.method || "np_warehouse";
     const cartRows = cart
@@ -2678,8 +2689,22 @@ ${
       )
       .join("");
 
+    const paymentOptions = [
+      allowCod
+        ? `<option value="cod" ${method === "cod" ? "selected" : ""}>Накладний</option>`
+        : "",
+      `<option value="requisites" ${
+        method === "requisites" ? "selected" : ""
+      }>На реквізити</option>`,
+      allowBalance
+        ? `<option value="balance" ${method === "balance" ? "selected" : ""}>З балансу</option>`
+        : "",
+    ].join("");
+
     return `
-      <form class="order-edit-form" data-order-edit-form="${escapeHtml(String(order.id))}" novalidate>
+      <form class="order-edit-form" data-order-edit-form="${escapeHtml(
+        String(order.id)
+      )}" data-edit-mode="${escapeHtml(editMode)}" novalidate>
         <h3 class="section-title">Редагування ${escapeHtml(order.order_number || "")}</h3>
         <div class="order-edit-grid">
           <label class="field compact-field">
@@ -2733,11 +2758,7 @@ ${
           <label class="field compact-field">
             <span class="field-label">Оплата</span>
             <select name="payment_method">
-              <option value="cod" ${method === "cod" ? "selected" : ""}>Накладний</option>
-              <option value="requisites" ${
-                method === "requisites" ? "selected" : ""
-              }>На реквізити</option>
-              <option value="balance" ${method === "balance" ? "selected" : ""}>З балансу</option>
+              ${paymentOptions}
             </select>
           </label>
           <label class="field compact-field" data-edit-prepay-wrap>
@@ -2891,7 +2912,7 @@ ${
     const mode = modeHint || hit.mode || "owner";
     const panel = card.querySelector(`[data-order-edit-panel="${orderId}"]`);
     if (!panel) return;
-    panel.innerHTML = renderOwnerOrderEditForm(hit.order);
+    panel.innerHTML = renderOwnerOrderEditForm(hit.order, { editMode: mode });
     panel.classList.remove("hidden");
     panel._orderRef = hit.order;
     panel._boxRef = hit.box;
@@ -3042,8 +3063,15 @@ ${
         ttn_number: preserved.ttn_number,
         delivery_method: preserved.own_ttn ? "own_ttn" : preserved.delivery_method,
       };
-      panel.innerHTML = renderOwnerOrderEditForm(panel._orderRef);
+      panel.innerHTML = renderOwnerOrderEditForm(panel._orderRef, {
+        editMode: panel._editMode || "owner",
+      });
       if (input) input.value = "";
+      const formAfter = panel.querySelector("[data-order-edit-form]");
+      syncOrderEditPaymentFields(formAfter);
+      formAfter?.payment_method?.addEventListener("change", () =>
+        syncOrderEditPaymentFields(formAfter)
+      );
     } catch (error) {
       showToast(error.message || "Помилка пошуку");
     }

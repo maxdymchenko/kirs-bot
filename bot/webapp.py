@@ -2124,6 +2124,22 @@ def create_web_app(
                 status_code=400,
                 detail="Замовлення вже відправлено — редагування недоступне",
             )
+        if (
+            str(payload.payment_method or "").strip() == "cod"
+            and not getattr(dropper, "allow_cod", True)
+        ):
+            raise HTTPException(
+                status_code=403,
+                detail="Передачу замовлень наложкою для вас вимкнено",
+            )
+        if (
+            str(payload.payment_method or "").strip() == "balance"
+            and not getattr(dropper, "allow_balance_payment", False)
+        ):
+            raise HTTPException(
+                status_code=403,
+                detail="Оплата з балансу для вас вимкнена",
+            )
         return await _perform_order_edit(
             order_id=order_id,
             edit_data=payload.model_dump(),
