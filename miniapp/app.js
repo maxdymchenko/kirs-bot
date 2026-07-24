@@ -4341,6 +4341,15 @@ ${
       if (!btn) return;
       const index = Number(btn.getAttribute("data-dropper-np-remove"));
       dropperNpKeysState = collectDropperNpKeysFromDom();
+      const row = dropperNpKeysState[index];
+      const label = (row && (row.fop_name || row.label)) || "цей API-ключ";
+      if (
+        !window.confirm(
+          `Ви точно впевнені, що хочете видалити ключ «${label}»?\nПісля збереження відновити його буде неможливо без повторного введення.`
+        )
+      ) {
+        return;
+      }
       dropperNpKeysState.splice(index, 1);
       if (!dropperNpKeysState.length) dropperNpKeysState = [newDropperNpKeyRow()];
       renderDropperNpKeys();
@@ -6223,6 +6232,15 @@ ${
       if (!removeBtn) return;
       const index = Number(removeBtn.getAttribute("data-np-remove"));
       generalSettingsState.np_api_keys = collectNpApiKeysFromDom();
+      const row = generalSettingsState.np_api_keys[index];
+      const label = (row && row.label) || "цей API-ключ";
+      if (
+        !window.confirm(
+          `Ви точно впевнені, що хочете видалити ключ «${label}»?\nПісля збереження відновити його буде неможливо без повторного введення.`
+        )
+      ) {
+        return;
+      }
       generalSettingsState.np_api_keys.splice(index, 1);
       if (!generalSettingsState.np_api_keys.length) {
         generalSettingsState.np_api_keys = [newNpKeyRow({ label: "Кабінет 1" })];
