@@ -720,6 +720,109 @@ class CatalogService:
                 "items": len(items),
             }
 
+    def _restore_item(
+        self, variants: list[ProductVariant], item: dict
+    ) -> list[tuple[int, int]]:
+        """Повернути qty на склад (дзеркало _consume_item)."""
+        code = str(item.get("code") or "").strip().lstrip("'")
+        qty = max(1, int(item.get("qty") or 1))
+        color = str(item.get("color") or "").strip()
+        product_id = str(item.get("product_id") or "").strip()
+        if not code:
+            return []
+
+        updates: list[tuple[int, int]] = []
+        if _is_kit_code(code):
+            parts = _kit_components(code)
+            if parts:
+                for part in parts:
+                    rows = self._find_atomic_rows(
+                        variants, part, color=color, product_id=""
+                    )
+                    if not any(v.stock is not None for v in rows):
+                        rows = self._find_atomic_rows(variants, part, color="", product_id="")
+                    if any(v.stock is not None for v in rows):
+                        updates.extend(self._increment_rows(rows, qty))
+                return updates
+
+            rows = [
+                v
+                for v in variants
+                if self._codes_equal(v.code, code)
+                and (not color or _norm_text(v.color) == _norm_text(color))
+            ]
+            if product_id:
+                by_id = [v for v in rows if str(v.product_id or "").strip() == product_id]
+                if by_id:
+                    rows = by_id
+            if any(v.stock is not None for v in rows):
+                updates.extend(self._increment_rows(rows, qty))
+            return updates
+
+        rows = self._find_atomic_rows(
+            variants, code, color=color, product_id=product_id
+        )
+        if any(v.stock is not None for v in rows):
+            updates.extend(self._increment_rows(rows, qty))
+        return updates
+
+    def _increment_rows(
+        self, rows: list[ProductVariant], qty: int
+    ) -> list[tuple[int, int]]:
+        need = max(0, int(qty or 0))
+        if need <= 0:
+            return []
+        tracked = [v for v in rows if v.stock is not None]
+        if not tracked:
+            return []
+        # Повертаємо на рядок з найбільшим sheet_row / перший tracked
+        tracked.sort(key=lambda v: int(v.sheet_row or 0), reverse=True)
+        target = tracked[0]
+        new_stock = max(0, int(target.stock or 0)) + need
+        target.stock = new_stock
+        if target.sheet_row > 0:
+            return [(target.sheet_row, new_stock)]
+        return []
+
+    def restore_cart_stock(self, cart: list[dict]) -> dict:
+        """Повернути залишки після скасування/редагування замовлення."""
+        items = [x for x in (cart or []) if isinstance(x, dict)]
+        if not items:
+            return {"ok": True, "updated_rows": 0, "items": 0}
+
+        with self._lock:
+            client = self._build_client()
+            ws = client.open_by_key(self.spreadsheet_id).sheet1
+            variants = self._load_variants_from_sheet(ws, client)
+
+            sheet_updates: list[tuple[int, int]] = []
+            for item in items:
+                sheet_updates.extend(self._restore_item(variants, item))
+
+            variants, kit_updates = apply_component_stock_to_kits(variants)
+            sheet_updates.extend(kit_updates)
+
+            if sheet_updates:
+                self._write_stock_column(ws, sheet_updates)
+
+            self._variants = variants
+            self._loaded_at = time.time()
+            logger.info(
+                "Повернення наявності: items=%d sheet_rows=%d",
+                len(items),
+                len({r for r, _ in sheet_updates}),
+            )
+            return {
+                "ok": True,
+                "updated_rows": len({r for r, _ in sheet_updates}),
+                "items": len(items),
+            }
+
+    def replace_cart_stock(self, old_cart: list[dict], new_cart: list[dict]) -> dict:
+        """Спочатку повернути старий кошик, потім списати новий."""
+        self.restore_cart_stock(old_cart or [])
+        return self.consume_cart_stock(new_cart or [])
+
     def list_colors(self, query: str = "", limit: int = 40) -> list[str]:
         self.refresh()
         needle = _norm_text(query)

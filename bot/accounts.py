@@ -380,6 +380,28 @@ class AppStorage:
                 )
                 """
             )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS order_changes (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    order_id INTEGER NOT NULL,
+                    order_number TEXT NOT NULL DEFAULT '',
+                    actor_role TEXT NOT NULL DEFAULT '',
+                    actor_user_id TEXT NOT NULL DEFAULT '',
+                    actor_label TEXT NOT NULL DEFAULT '',
+                    change_type TEXT NOT NULL DEFAULT 'edit',
+                    summary TEXT NOT NULL DEFAULT '',
+                    diff_json TEXT NOT NULL DEFAULT '[]',
+                    created_at TEXT NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_order_changes_order
+                ON order_changes(order_id, id DESC)
+                """
+            )
             conn.commit()
 
     def _row_get(self, row: sqlite3.Row, key: str, default: Any = None) -> Any:
@@ -1322,6 +1344,284 @@ class AppStorage:
             )
             conn.commit()
         return self.get_order(order_id)
+
+    def replace_order(
+        self,
+        order_id: int,
+        *,
+        payment_method: str,
+        delivery_method: str,
+        own_ttn: bool,
+        total: float,
+        prepay: float,
+        prepay_balance_debit: float,
+        cod_amount: float,
+        ttn_number: str,
+        ttn_status: str,
+        payload: dict[str, Any],
+        status: str | None = None,
+        sheets_sync_status: str = "pending",
+    ) -> dict[str, Any] | None:
+        """Повна заміна даних замовлення (колонки + payload)."""
+        import json
+
+        order = self.get_order(order_id)
+        if not order:
+            return None
+        now = _now()
+        total = max(0.0, float(total or 0))
+        prepay = max(0.0, float(prepay or 0))
+        debit = max(0.0, float(prepay_balance_debit or 0))
+        cod_amount = max(0.0, float(cod_amount or 0))
+        new_status = str(status if status is not None else order.get("status") or "accepted")
+        with self._connect() as conn:
+            conn.execute(
+                """
+                UPDATE orders SET
+                    status = ?,
+                    payment_method = ?,
+                    delivery_method = ?,
+                    own_ttn = ?,
+                    total = ?,
+                    prepay = ?,
+                    prepay_balance_debit = ?,
+                    cod_amount = ?,
+                    ttn_number = ?,
+                    ttn_status = ?,
+                    sheets_sync_status = ?,
+                    payload_json = ?,
+                    updated_at = ?
+                WHERE id = ?
+                """,
+                (
+                    new_status,
+                    str(payment_method or "").strip(),
+                    str(delivery_method or "").strip(),
+                    1 if own_ttn else 0,
+                    total,
+                    prepay,
+                    debit,
+                    cod_amount,
+                    str(ttn_number or "").strip(),
+                    str(ttn_status or "none").strip(),
+                    str(sheets_sync_status or "pending").strip(),
+                    json.dumps(payload or {}, ensure_ascii=False),
+                    now,
+                    int(order_id),
+                ),
+            )
+            conn.commit()
+        return self.get_order(order_id)
+
+    def _row_order_change(self, row: sqlite3.Row) -> dict[str, Any]:
+        import json
+
+        try:
+            diff = json.loads(row["diff_json"] or "[]")
+        except json.JSONDecodeError:
+            diff = []
+        if not isinstance(diff, list):
+            diff = []
+        return {
+            "id": row["id"],
+            "order_id": row["order_id"],
+            "order_number": row["order_number"] or "",
+            "actor_role": row["actor_role"] or "",
+            "actor_user_id": row["actor_user_id"] or "",
+            "actor_label": row["actor_label"] or "",
+            "change_type": row["change_type"] or "edit",
+            "summary": row["summary"] or "",
+            "diff": diff,
+            "created_at": row["created_at"],
+        }
+
+    def add_order_change(
+        self,
+        *,
+        order_id: int,
+        order_number: str = "",
+        actor_role: str = "",
+        actor_user_id: str = "",
+        actor_label: str = "",
+        change_type: str = "edit",
+        summary: str = "",
+        diff: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        import json
+
+        now = _now()
+        with self._connect() as conn:
+            cur = conn.execute(
+                """
+                INSERT INTO order_changes (
+                    order_id, order_number, actor_role, actor_user_id, actor_label,
+                    change_type, summary, diff_json, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    int(order_id),
+                    str(order_number or "").strip(),
+                    str(actor_role or "").strip()[:40],
+                    str(actor_user_id or "").strip()[:64],
+                    str(actor_label or "").strip()[:120],
+                    str(change_type or "edit").strip()[:40],
+                    str(summary or "").strip()[:1000],
+                    json.dumps(diff or [], ensure_ascii=False),
+                    now,
+                ),
+            )
+            cid = int(cur.lastrowid)
+            conn.commit()
+            row = conn.execute(
+                "SELECT * FROM order_changes WHERE id = ?", (cid,)
+            ).fetchone()
+        return self._row_order_change(row)
+
+    def list_order_changes(
+        self, order_id: int, limit: int = 100
+    ) -> list[dict[str, Any]]:
+        limit = max(1, min(int(limit or 100), 500))
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT * FROM order_changes
+                WHERE order_id = ?
+                ORDER BY id DESC
+                LIMIT ?
+                """,
+                (int(order_id), limit),
+            ).fetchall()
+        return [self._row_order_change(r) for r in rows]
+
+    def list_order_changes_for_orders(
+        self, order_ids: list[int], limit_per_order: int = 30
+    ) -> dict[int, list[dict[str, Any]]]:
+        """Зміни для списку замовлень (для історії в UI)."""
+        ids = [int(x) for x in order_ids if x]
+        if not ids:
+            return {}
+        limit_per_order = max(1, min(int(limit_per_order or 30), 100))
+        placeholders = ",".join("?" for _ in ids)
+        with self._connect() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT * FROM order_changes
+                WHERE order_id IN ({placeholders})
+                ORDER BY id DESC
+                """,
+                ids,
+            ).fetchall()
+        out: dict[int, list[dict[str, Any]]] = {i: [] for i in ids}
+        for row in rows:
+            oid = int(row["order_id"])
+            bucket = out.setdefault(oid, [])
+            if len(bucket) >= limit_per_order:
+                continue
+            bucket.append(self._row_order_change(row))
+        return out
+
+    def upsert_ledger_entry(
+        self,
+        *,
+        dropper_id: int,
+        amount: float,
+        entry_type: str,
+        title: str = "",
+        note: str = "",
+        related_order_id: str = "",
+        related_dropper_id: int | None = None,
+        meta_json: str = "",
+    ) -> dict[str, Any] | None:
+        """
+        Оновити або створити запис ledger за (dropper, type, order).
+        amount == 0 → видалити існуючий запис.
+        """
+        amount = float(amount)
+        entry_type = str(entry_type or "").strip()
+        related_order_id = str(related_order_id or "").strip()
+        if not entry_type or not related_order_id:
+            raise ValueError("entry_type and related_order_id required")
+        now = _now()
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT * FROM balance_ledger
+                WHERE dropper_id = ? AND entry_type = ? AND related_order_id = ?
+                """,
+                (int(dropper_id), entry_type, related_order_id),
+            ).fetchone()
+            if abs(amount) < 1e-9:
+                if row:
+                    conn.execute(
+                        "DELETE FROM balance_ledger WHERE id = ?", (int(row["id"]),)
+                    )
+                    conn.commit()
+                return None
+            if row:
+                conn.execute(
+                    """
+                    UPDATE balance_ledger SET
+                        amount = ?, title = ?, note = ?,
+                        related_dropper_id = ?, meta_json = ?
+                    WHERE id = ?
+                    """,
+                    (
+                        amount,
+                        (title or "").strip(),
+                        (note or "").strip(),
+                        related_dropper_id,
+                        meta_json or "",
+                        int(row["id"]),
+                    ),
+                )
+                conn.commit()
+                updated = conn.execute(
+                    "SELECT * FROM balance_ledger WHERE id = ?", (int(row["id"]),)
+                ).fetchone()
+                return self._row_ledger(updated)
+            cur = conn.execute(
+                """
+                INSERT INTO balance_ledger (
+                    dropper_id, amount, entry_type, title, note,
+                    related_order_id, related_dropper_id, meta_json, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    int(dropper_id),
+                    amount,
+                    entry_type,
+                    (title or "").strip(),
+                    (note or "").strip(),
+                    related_order_id,
+                    related_dropper_id,
+                    meta_json or "",
+                    now,
+                ),
+            )
+            entry_id = int(cur.lastrowid)
+            conn.commit()
+            inserted = conn.execute(
+                "SELECT * FROM balance_ledger WHERE id = ?", (entry_id,)
+            ).fetchone()
+        return self._row_ledger(inserted)
+
+    def delete_ledger_entry_for_order(
+        self, *, dropper_id: int, entry_type: str, related_order_id: str
+    ) -> bool:
+        with self._connect() as conn:
+            cur = conn.execute(
+                """
+                DELETE FROM balance_ledger
+                WHERE dropper_id = ? AND entry_type = ? AND related_order_id = ?
+                """,
+                (
+                    int(dropper_id),
+                    str(entry_type or "").strip(),
+                    str(related_order_id or "").strip(),
+                ),
+            )
+            conn.commit()
+            return cur.rowcount > 0
 
     def list_orders_pending_ttn_create(self, limit: int = 50) -> list[dict[str, Any]]:
         limit = max(1, min(int(limit or 50), 200))

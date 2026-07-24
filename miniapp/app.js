@@ -1894,7 +1894,7 @@ ${
     return { kind: "other", label: String(order.status || "—"), sub: "" };
   }
 
-  function renderOrderDetailsHtml(order) {
+  function renderOrderDetailsHtml(order, options = {}) {
     const payload = order.payload || {};
     const recipient = payload.recipient || {};
     const delivery = payload.delivery || {};
@@ -1994,8 +1994,139 @@ ${
               )}</div></div>`
             : ""
         }
+        ${renderOrderTrackingTimelineHtml(order)}
+        ${renderOrderChangesTimelineHtml(order)}
+        ${
+          options.editable
+            ? `<div class="order-edit-actions">
+                <p class="hint">ТТН буде перестворено лише якщо ще очікує відправки.</p>
+                <button type="button" class="btn primary" data-order-edit-open="${escapeHtml(
+                  String(order.id || "")
+                )}">Редагувати</button>
+                <div class="order-edit-panel hidden" data-order-edit-panel="${escapeHtml(
+                  String(order.id || "")
+                )}"></div>
+              </div>`
+            : ""
+        }
       </div>
     `;
+  }
+
+  function formatChangeFieldLabel(field) {
+    const map = {
+      payment_method: "Оплата",
+      delivery_method: "Доставка",
+      own_ttn: "Власна ТТН",
+      total: "Дроп ціна",
+      prepay: "Передплата",
+      prepay_balance_debit: "Списання з балансу",
+      cod_amount: "Накладний платіж",
+      ttn_number: "ТТН",
+      ttn_status: "Статус ТТН",
+      comment: "Коментар",
+      cart: "Склад замовлення",
+      "recipient.phone": "Телефон",
+      "recipient.first_name": "Імʼя",
+      "recipient.last_name": "Прізвище",
+      "recipient.patronymic": "По батькові",
+      "delivery.city": "Місто",
+      "delivery.warehouse": "Відділення",
+      "delivery.street": "Вулиця",
+      "delivery.house": "Будинок",
+      "delivery.apartment": "Квартира",
+    };
+    return map[field] || field;
+  }
+
+  function renderOrderTrackingTimelineHtml(order) {
+    const payload = order.payload || {};
+    const events = Array.isArray(payload.tracking_events) ? payload.tracking_events : [];
+    let rows = events.slice().reverse();
+    if (!rows.length && (payload.np_status_text || order.ttn_status)) {
+      rows = [
+        {
+          at: payload.np_tracked_at || order.updated_at || "",
+          status_text: payload.np_status_text || "",
+          ttn_status: order.ttn_status || "",
+          status_code: payload.np_status_code || "",
+        },
+      ];
+    }
+    if (!rows.length) {
+      return `<div class="confirm-block">
+        <div class="confirm-label">Історія доставки</div>
+        <div class="confirm-value hint">Поки немає подій відстеження</div>
+      </div>`;
+    }
+    const statusMap = {
+      created: "створено / очікує відправки",
+      in_transit: "в дорозі",
+      at_warehouse: "у відділенні",
+      received: "отримано",
+      refused: "відмова",
+      returned: "повернено",
+      return_at_warehouse: "повернення на складі",
+      failed: "помилка",
+      pending_create: "створюється",
+    };
+    const items = rows
+      .map((ev) => {
+        const st = ev.ttn_status || "";
+        const label =
+          (ev.status_text || "").trim() ||
+          statusMap[st] ||
+          st ||
+          "статус";
+        const when = ev.at ? formatOrderDate(ev.at) : "—";
+        return `<li class="order-timeline-item">
+          <div class="order-timeline-time">${escapeHtml(when)}</div>
+          <div class="order-timeline-body">${escapeHtml(label)}${
+          ev.status_code ? ` <span class="meta">(код ${escapeHtml(String(ev.status_code))})</span>` : ""
+        }</div>
+        </li>`;
+      })
+      .join("");
+    return `<div class="confirm-block">
+      <div class="confirm-label">Історія доставки</div>
+      <ul class="order-timeline">${items}</ul>
+    </div>`;
+  }
+
+  function renderOrderChangesTimelineHtml(order) {
+    const changes = Array.isArray(order.changes) ? order.changes : [];
+    if (!changes.length) {
+      return `<div class="confirm-block">
+        <div class="confirm-label">Історія змін</div>
+        <div class="confirm-value hint">Змін ще не було</div>
+      </div>`;
+    }
+    const items = changes
+      .map((ch) => {
+        const who = ch.actor_label || ch.actor_role || "система";
+        const when = ch.created_at ? formatOrderDate(ch.created_at) : "—";
+        const diff = Array.isArray(ch.diff) ? ch.diff : [];
+        const detail =
+          ch.summary ||
+          diff
+            .slice(0, 6)
+            .map((d) => {
+              if (d.field === "cart") return "Склад замовлення: змінено";
+              return `${formatChangeFieldLabel(d.field)}: ${d.old || "—"} → ${d.new || "—"}`;
+            })
+            .join("\n");
+        return `<li class="order-timeline-item">
+          <div class="order-timeline-time">${escapeHtml(when)}</div>
+          <div class="order-timeline-body"><b>${escapeHtml(who)}</b>
+            <div class="order-timeline-diff">${escapeHtml(detail)}</div>
+          </div>
+        </li>`;
+      })
+      .join("");
+    return `<div class="confirm-block">
+      <div class="confirm-label">Історія змін</div>
+      <ul class="order-timeline">${items}</ul>
+    </div>`;
   }
 
   function ttnStatusLabel(order) {
@@ -2022,7 +2153,7 @@ ${
     return "ТТН: —";
   }
 
-  function renderOrderCard(order, { compact = false } = {}) {
+  function renderOrderCard(order, { compact = false, editable = false } = {}) {
     const payload = order.payload || {};
     const recipient = payload.recipient || {};
     const delivery = payload.delivery || {};
@@ -2074,7 +2205,7 @@ ${
           </div>
         </button>
         <div class="order-card-details hidden">
-          ${renderOrderDetailsHtml(order)}
+          ${renderOrderDetailsHtml(order, { editable })}
         </div>
       </article>
     `;
@@ -2084,6 +2215,9 @@ ${
     if (!root || root.dataset.orderClicksBound === "1") return;
     root.dataset.orderClicksBound = "1";
     root.addEventListener("click", (event) => {
+      if (event.target.closest("[data-order-edit-open], [data-order-edit-panel], .order-edit-panel")) {
+        return;
+      }
       const toggle = event.target.closest(".order-card-toggle");
       if (!toggle || !root.contains(toggle)) return;
       const card = toggle.closest(".order-card");
@@ -2095,6 +2229,427 @@ ${
       toggle.setAttribute("aria-expanded", open ? "true" : "false");
     });
   }
+
+  function findOrderInOwnerCaches(orderId) {
+    const id = String(orderId || "");
+    const boxes = document.querySelectorAll("[data-owner-orders]");
+    for (const box of boxes) {
+      const items = box._ordersCache || [];
+      const found = items.find((o) => String(o.id) === id);
+      if (found) return { order: found, box };
+    }
+    return null;
+  }
+
+  function calcEditCartTotal(cart) {
+    return roundMoney(
+      (cart || []).reduce((sum, item) => {
+        const price = Number(String(item.drop_price || "0").replace(",", ".")) || 0;
+        const qty = Math.max(1, Number(item.qty) || 1);
+        return sum + price * qty;
+      }, 0)
+    );
+  }
+
+  function renderOwnerOrderEditForm(order) {
+    const payload = order.payload || {};
+    const recipient = payload.recipient || {};
+    const delivery = payload.delivery || {};
+    const payment = payload.payment || {};
+    const cart = Array.isArray(payload.cart) ? payload.cart : [];
+    const method = order.payment_method || payment.method || "cod";
+    const ownTtn = Boolean(order.own_ttn || payload.own_ttn);
+    const deliveryMethod = order.delivery_method || delivery.method || "np_warehouse";
+    const cartRows = cart
+      .map(
+        (item, index) => `
+      <div class="order-edit-cart-row" data-edit-cart-index="${index}">
+        <div class="meta"><b>${escapeHtml(item.code || "")}</b> · ${escapeHtml(item.name || "")}</div>
+        <div class="order-edit-cart-fields">
+          <label class="field compact-field">
+            <span class="field-label">К-сть</span>
+            <input type="number" min="1" step="1" data-edit-cart="qty" value="${escapeHtml(
+              String(item.qty || 1)
+            )}" />
+          </label>
+          <label class="field compact-field">
+            <span class="field-label">Дроп ціна</span>
+            <input type="number" min="0" step="1" data-edit-cart="drop_price" value="${escapeHtml(
+              String(item.drop_price || 0)
+            )}" />
+          </label>
+          <button type="button" class="btn danger" data-edit-cart-remove="${index}">×</button>
+        </div>
+        <input type="hidden" data-edit-cart="code" value="${escapeHtml(item.code || "")}" />
+        <input type="hidden" data-edit-cart="name" value="${escapeHtml(item.name || "")}" />
+        <input type="hidden" data-edit-cart="color" value="${escapeHtml(item.color || "")}" />
+        <input type="hidden" data-edit-cart="product_id" value="${escapeHtml(item.product_id || "")}" />
+        <input type="hidden" data-edit-cart="drop_price_original" value="${escapeHtml(
+          String(item.drop_price_original || "")
+        )}" />
+      </div>`
+      )
+      .join("");
+
+    return `
+      <form class="order-edit-form" data-order-edit-form="${escapeHtml(String(order.id))}" novalidate>
+        <h3 class="section-title">Редагування ${escapeHtml(order.order_number || "")}</h3>
+        <div class="order-edit-grid">
+          <label class="field compact-field">
+            <span class="field-label">Прізвище</span>
+            <input name="last_name" type="text" value="${escapeHtml(recipient.last_name || "")}" />
+          </label>
+          <label class="field compact-field">
+            <span class="field-label">Імʼя</span>
+            <input name="first_name" type="text" value="${escapeHtml(recipient.first_name || "")}" />
+          </label>
+          <label class="field compact-field">
+            <span class="field-label">По батькові</span>
+            <input name="patronymic" type="text" value="${escapeHtml(recipient.patronymic || "")}" />
+          </label>
+          <label class="field compact-field">
+            <span class="field-label">Телефон</span>
+            <input name="phone" type="tel" required value="${escapeHtml(recipient.phone || "")}" />
+          </label>
+          <label class="field compact-field">
+            <span class="field-label">Місто</span>
+            <input name="city" type="text" value="${escapeHtml(delivery.city || "")}" />
+          </label>
+          <label class="field compact-field">
+            <span class="field-label">Відділення</span>
+            <input name="warehouse" type="text" value="${escapeHtml(delivery.warehouse || "")}" />
+          </label>
+          <label class="field compact-field">
+            <span class="field-label">Вулиця (курʼєр)</span>
+            <input name="street" type="text" value="${escapeHtml(delivery.street || "")}" />
+          </label>
+          <label class="field compact-field">
+            <span class="field-label">Будинок</span>
+            <input name="house" type="text" value="${escapeHtml(delivery.house || "")}" />
+          </label>
+          <label class="field compact-field">
+            <span class="field-label">Квартира</span>
+            <input name="apartment" type="text" value="${escapeHtml(delivery.apartment || "")}" />
+          </label>
+          <label class="field compact-field">
+            <span class="field-label">Доставка</span>
+            <select name="delivery_method">
+              <option value="np_warehouse" ${
+                deliveryMethod === "np_warehouse" ? "selected" : ""
+              }>НП відділення</option>
+              <option value="np_courier" ${
+                deliveryMethod === "np_courier" ? "selected" : ""
+              }>НП курʼєр</option>
+              <option value="own_ttn" ${ownTtn ? "selected" : ""}>Власна ТТН</option>
+            </select>
+          </label>
+          <label class="field compact-field">
+            <span class="field-label">Оплата</span>
+            <select name="payment_method">
+              <option value="cod" ${method === "cod" ? "selected" : ""}>Накладний</option>
+              <option value="requisites" ${
+                method === "requisites" ? "selected" : ""
+              }>На реквізити</option>
+              <option value="balance" ${method === "balance" ? "selected" : ""}>З балансу</option>
+            </select>
+          </label>
+          <label class="field compact-field">
+            <span class="field-label">Передплата ₴</span>
+            <input name="prepay" type="number" min="0" step="1" value="${escapeHtml(
+              String(order.prepay || 0)
+            )}" />
+          </label>
+          <label class="field compact-field">
+            <span class="field-label">Накладний ₴</span>
+            <input name="cod_amount" type="number" min="0" step="1" value="${escapeHtml(
+              String(order.cod_amount || 0)
+            )}" />
+          </label>
+          <label class="field compact-field">
+            <span class="field-label">Власна ТТН / RMP</span>
+            <input name="ttn_number" type="text" value="${escapeHtml(
+              order.ttn_number || payload.ttn_number || ""
+            )}" />
+          </label>
+          <label class="field compact-field">
+            <span class="field-label">Перевізник власної ТТН</span>
+            <select name="own_ttn_carrier">
+              <option value="nova_poshta" ${
+                (payload.own_ttn_carrier || "nova_poshta") === "nova_poshta" ? "selected" : ""
+              }>Нова Пошта</option>
+              <option value="rozetka" ${
+                payload.own_ttn_carrier === "rozetka" ? "selected" : ""
+              }>Rozetka</option>
+            </select>
+          </label>
+        </div>
+        <input type="hidden" name="city_ref" value="${escapeHtml(delivery.city_ref || "")}" />
+        <input type="hidden" name="settlement_ref" value="${escapeHtml(
+          delivery.settlement_ref || ""
+        )}" />
+        <input type="hidden" name="warehouse_ref" value="${escapeHtml(
+          delivery.warehouse_ref || ""
+        )}" />
+        <input type="hidden" name="street_ref" value="${escapeHtml(delivery.street_ref || "")}" />
+
+        <h3 class="section-title" style="margin-top:12px">Товари</h3>
+        <div class="order-edit-cart" data-edit-cart-list>${cartRows || "<p class='hint'>Порожньо</p>"}</div>
+        <div class="order-edit-add-row">
+          <input type="text" data-edit-add-code placeholder="Код товару для додавання" />
+          <button type="button" class="btn" data-edit-add-product>Додати</button>
+        </div>
+        <label class="field">
+          <span class="field-label">Коментар</span>
+          <textarea name="comment" rows="2">${escapeHtml(payload.comment || "")}</textarea>
+        </label>
+        <p class="form-error hidden" data-edit-error></p>
+        <div class="order-edit-actions-row">
+          <button type="submit" class="btn primary">Зберегти зміни</button>
+          <button type="button" class="btn" data-edit-cancel>Скасувати</button>
+        </div>
+      </form>
+    `;
+  }
+
+  function collectEditFormCart(form) {
+    return [...form.querySelectorAll(".order-edit-cart-row")].map((row) => ({
+      product_id: row.querySelector('[data-edit-cart="product_id"]')?.value || "",
+      code: row.querySelector('[data-edit-cart="code"]')?.value || "",
+      name: row.querySelector('[data-edit-cart="name"]')?.value || "",
+      color: row.querySelector('[data-edit-cart="color"]')?.value || "",
+      qty: Math.max(1, Number(row.querySelector('[data-edit-cart="qty"]')?.value) || 1),
+      drop_price: String(row.querySelector('[data-edit-cart="drop_price"]')?.value || "0"),
+      drop_price_original:
+        row.querySelector('[data-edit-cart="drop_price_original"]')?.value || "",
+    }));
+  }
+
+  function collectOwnerOrderEditPayload(form, order) {
+    const payload = order.payload || {};
+    const delivery = payload.delivery || {};
+    const deliveryMethod = form.delivery_method?.value || "np_warehouse";
+    const ownTtn = deliveryMethod === "own_ttn";
+    const cart = collectEditFormCart(form);
+    const total = calcEditCartTotal(cart);
+    return {
+      ...ownerAuthBody(),
+      first_name: form.first_name?.value?.trim() || "",
+      last_name: form.last_name?.value?.trim() || "",
+      patronymic: form.patronymic?.value?.trim() || "",
+      phone: form.phone?.value?.trim() || "",
+      delivery_method: ownTtn ? "np_warehouse" : deliveryMethod,
+      city: form.city?.value?.trim() || "",
+      city_ref: form.city_ref?.value?.trim() || delivery.city_ref || "",
+      settlement_ref: form.settlement_ref?.value?.trim() || delivery.settlement_ref || "",
+      warehouse: form.warehouse?.value?.trim() || "",
+      warehouse_ref: form.warehouse_ref?.value?.trim() || delivery.warehouse_ref || "",
+      street: form.street?.value?.trim() || "",
+      street_ref: form.street_ref?.value?.trim() || delivery.street_ref || "",
+      house: form.house?.value?.trim() || "",
+      apartment: form.apartment?.value?.trim() || "",
+      own_ttn: ownTtn,
+      own_ttn_carrier: form.own_ttn_carrier?.value || "nova_poshta",
+      ttn_number: form.ttn_number?.value?.trim() || "",
+      payment_method: form.payment_method?.value || "cod",
+      prepay: Number(form.prepay?.value || 0),
+      cod_amount: Number(form.cod_amount?.value || 0),
+      comment: form.comment?.value?.trim() || "",
+      cart,
+      total,
+      np_city: delivery.np_city || null,
+      np_warehouse: delivery.np_warehouse || null,
+      np_street: delivery.np_street || null,
+    };
+  }
+
+  async function openOwnerOrderEdit(orderId, card) {
+    const hit = findOrderInOwnerCaches(orderId);
+    if (!hit) {
+      showToast("Замовлення не знайдено в кеші");
+      return;
+    }
+    const panel = card.querySelector(`[data-order-edit-panel="${orderId}"]`);
+    if (!panel) return;
+    panel.innerHTML = renderOwnerOrderEditForm(hit.order);
+    panel.classList.remove("hidden");
+    panel._orderRef = hit.order;
+    panel._boxRef = hit.box;
+  }
+
+  async function saveOwnerOrderEdit(form) {
+    const orderId = form.getAttribute("data-order-edit-form");
+    const panel = form.closest("[data-order-edit-panel]");
+    const order = panel?._orderRef;
+    const errEl = form.querySelector("[data-edit-error]");
+    if (errEl) {
+      errEl.classList.add("hidden");
+      errEl.textContent = "";
+    }
+    if (!order) return;
+    const body = collectOwnerOrderEditPayload(form, order);
+    if (!body.cart.length) {
+      if (errEl) {
+        errEl.textContent = "Додайте хоча б один товар";
+        errEl.classList.remove("hidden");
+      }
+      return;
+    }
+    const submitBtn = form.querySelector('button[type="submit"]');
+    if (submitBtn) submitBtn.disabled = true;
+    try {
+      const response = await fetch(`/api/owner/orders/${encodeURIComponent(orderId)}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(typeof data.detail === "string" ? data.detail : "Помилка збереження");
+      }
+      const updated = data.order;
+      const box = panel._boxRef;
+      if (box && Array.isArray(box._ordersCache) && updated) {
+        box._ordersCache = box._ordersCache.map((o) =>
+          String(o.id) === String(updated.id) ? updated : o
+        );
+        renderOwnerDropperOrdersPanel(box);
+      }
+      let msg = "Замовлення збережено";
+      if (data.ttn_recreated) msg += ` · нова ТТН ${updated?.ttn_number || ""}`;
+      if (data.ttn_error) msg += ` · ТТН: ${data.ttn_error}`;
+      showToast(msg);
+    } catch (error) {
+      if (errEl) {
+        errEl.textContent = error.message || "Помилка";
+        errEl.classList.remove("hidden");
+      } else {
+        showToast(error.message || "Помилка");
+      }
+    } finally {
+      if (submitBtn) submitBtn.disabled = false;
+    }
+  }
+
+  async function addProductToEditForm(form) {
+    const input = form.querySelector("[data-edit-add-code]");
+    const code = input?.value?.trim() || "";
+    if (!code) return;
+    const list = form.querySelector("[data-edit-cart-list]");
+    if (!list) return;
+    try {
+      const params = new URLSearchParams({ q: code, limit: "5" });
+      const response = await fetch(`/api/products/search?${params.toString()}`);
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(typeof data.detail === "string" ? data.detail : "Пошук не вдався");
+      }
+      const item = (data.items || data.results || [])[0];
+      if (!item) {
+        showToast("Товар не знайдено");
+        return;
+      }
+      const cart = collectEditFormCart(form);
+      cart.push({
+        product_id: item.product_id || "",
+        code: item.code || code,
+        name: item.name || "",
+        color: item.color || "",
+        qty: 1,
+        drop_price: String(item.drop_price || item.price || 0),
+        drop_price_original: item.drop_price_original || "",
+      });
+      // re-render cart only via temporary order stub
+      const stub = {
+        id: form.getAttribute("data-order-edit-form"),
+        order_number: "",
+        payload: {
+          ...(form.closest("[data-order-edit-panel]")?._orderRef?.payload || {}),
+          cart,
+        },
+        payment_method: form.payment_method?.value,
+        own_ttn: form.delivery_method?.value === "own_ttn",
+        prepay: form.prepay?.value,
+        cod_amount: form.cod_amount?.value,
+        ttn_number: form.ttn_number?.value,
+      };
+      // preserve filled fields: rebuild form
+      const panel = form.closest("[data-order-edit-panel]");
+      const preserved = collectOwnerOrderEditPayload(form, panel._orderRef || stub);
+      panel._orderRef = {
+        ...panel._orderRef,
+        payload: {
+          ...(panel._orderRef.payload || {}),
+          recipient: {
+            first_name: preserved.first_name,
+            last_name: preserved.last_name,
+            patronymic: preserved.patronymic,
+            phone: preserved.phone,
+          },
+          delivery: {
+            ...(panel._orderRef.payload?.delivery || {}),
+            city: preserved.city,
+            warehouse: preserved.warehouse,
+            street: preserved.street,
+            house: preserved.house,
+            apartment: preserved.apartment,
+            method: preserved.own_ttn ? "own_ttn" : preserved.delivery_method,
+          },
+          comment: preserved.comment,
+          cart,
+          own_ttn_carrier: preserved.own_ttn_carrier,
+          ttn_number: preserved.ttn_number,
+        },
+        payment_method: preserved.payment_method,
+        own_ttn: preserved.own_ttn,
+        prepay: preserved.prepay,
+        cod_amount: preserved.cod_amount,
+        ttn_number: preserved.ttn_number,
+        delivery_method: preserved.own_ttn ? "own_ttn" : preserved.delivery_method,
+      };
+      panel.innerHTML = renderOwnerOrderEditForm(panel._orderRef);
+      if (input) input.value = "";
+    } catch (error) {
+      showToast(error.message || "Помилка пошуку");
+    }
+  }
+
+  document.addEventListener("click", (event) => {
+    const openBtn = event.target.closest("[data-order-edit-open]");
+    if (openBtn) {
+      event.preventDefault();
+      const orderId = openBtn.getAttribute("data-order-edit-open");
+      const card = openBtn.closest(".order-card");
+      if (orderId && card) openOwnerOrderEdit(orderId, card);
+      return;
+    }
+    const cancelBtn = event.target.closest("[data-edit-cancel]");
+    if (cancelBtn) {
+      const panel = cancelBtn.closest("[data-order-edit-panel]");
+      if (panel) {
+        panel.classList.add("hidden");
+        panel.innerHTML = "";
+      }
+      return;
+    }
+    const removeBtn = event.target.closest("[data-edit-cart-remove]");
+    if (removeBtn) {
+      const row = removeBtn.closest(".order-edit-cart-row");
+      if (row) row.remove();
+      return;
+    }
+    const addBtn = event.target.closest("[data-edit-add-product]");
+    if (addBtn) {
+      const form = addBtn.closest("[data-order-edit-form]");
+      if (form) addProductToEditForm(form);
+    }
+  });
+
+  document.addEventListener("submit", (event) => {
+    const form = event.target.closest("[data-order-edit-form]");
+    if (!form) return;
+    event.preventDefault();
+    saveOwnerOrderEdit(form);
+  });
 
   async function renderOrdersHistory() {
     if (!els.ordersHistory) return;
@@ -2320,7 +2875,7 @@ ${
     }
     if (listEl) {
       listEl.innerHTML = filtered.length
-        ? filtered.map((o) => renderOrderCard(o, { compact: true })).join("")
+        ? filtered.map((o) => renderOrderCard(o, { compact: true, editable: true })).join("")
         : `<div class="empty">${
             all.length ? "Нічого не знайдено за фільтрами" : "Замовлень ще немає"
           }</div>`;

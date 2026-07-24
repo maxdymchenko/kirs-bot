@@ -197,6 +197,16 @@ class OrderCreateRequest(BaseModel):
     np_street: dict | None = None
 
 
+class OrderOwnerUpdateRequest(OrderCreateRequest):
+    """Редагування замовлення власником (chat_id дроппера береться з існуючого замовлення)."""
+
+    owner_chat_id: str = Field("", max_length=64)
+    owner_user_id: str = Field("", max_length=64)
+    chat_id: str = Field("", max_length=64)
+    phone: str = Field("", min_length=0, max_length=32)
+    payment_method: str = Field("", max_length=32)
+
+
 class GeneralSettingsUpdateRequest(BaseModel):
     owner_chat_id: str = Field("", max_length=64)
     owner_user_id: str = Field("", max_length=64)
@@ -1043,11 +1053,11 @@ def create_web_app(
         return max(0.0, balance - floor)
 
     def _validate_order_payload(
-        payload: OrderCreateRequest, dropper
+        payload: OrderCreateRequest, dropper, *, for_owner_edit: bool = False
     ) -> tuple[float, float, float, float]:
-        if dropper.orders_disabled:
+        if not for_owner_edit and dropper.orders_disabled:
             raise HTTPException(status_code=403, detail="Передачу замовлень заблоковано")
-        if dropper.credit_holidays_blocked:
+        if not for_owner_edit and dropper.credit_holidays_blocked:
             raise HTTPException(
                 status_code=403,
                 detail="Передачу заблоковано: вичерпано кредитні канікули. Погасіть борг повністю.",
@@ -1065,12 +1075,14 @@ def create_web_app(
             cart_sum += price * qty
         if abs(cart_sum - total) > 1.0 and total <= 0:
             total = round(cart_sum, 2)
+        if total <= 0 and cart_sum > 0:
+            total = round(cart_sum, 2)
         prepay = max(0.0, float(payload.prepay or 0))
         cod_amount = max(0.0, float(payload.cod_amount or 0))
         debit = 0.0
         if not str(payload.phone or "").strip():
             raise HTTPException(status_code=400, detail="Вкажіть номер телефону клієнта")
-        if storage.is_phone_blacklisted(payload.phone):
+        if not for_owner_edit and storage.is_phone_blacklisted(payload.phone):
             raise HTTPException(
                 status_code=400,
                 detail=(
@@ -1083,7 +1095,7 @@ def create_web_app(
         from bot.buyout import compute_buyout
 
         buyout = compute_buyout(storage.list_orders_for_dropper(dropper.id, limit=500))
-        if buyout.get("force_full_payment"):
+        if not for_owner_edit and buyout.get("force_full_payment"):
             if payload.payment_method == "cod":
                 raise HTTPException(
                     status_code=403,
@@ -1120,33 +1132,35 @@ def create_web_app(
                 ttn = re.sub(r"\D", "", raw_ttn)
                 if len(ttn) < 10:
                     raise HTTPException(status_code=400, detail="Вкажіть повний номер ТТН")
-            if not str(payload.ttn_pdf_name or "").strip():
-                raise HTTPException(
-                    status_code=400,
-                    detail="Прикріпіть файл PDF 100×100",
-                )
-            pdf_name = str(payload.ttn_pdf_name or "").strip().lower()
-            if not pdf_name.endswith(".pdf"):
-                raise HTTPException(
-                    status_code=400,
-                    detail="Файл 100×100 має бути у форматі PDF",
-                )
+            if not for_owner_edit:
+                if not str(payload.ttn_pdf_name or "").strip():
+                    raise HTTPException(
+                        status_code=400,
+                        detail="Прикріпіть файл PDF 100×100",
+                    )
+                pdf_name = str(payload.ttn_pdf_name or "").strip().lower()
+                if not pdf_name.endswith(".pdf"):
+                    raise HTTPException(
+                        status_code=400,
+                        detail="Файл 100×100 має бути у форматі PDF",
+                    )
 
         if payload.payment_method == "balance":
-            if not dropper.allow_balance_payment:
+            if not for_owner_edit and not dropper.allow_balance_payment:
                 raise HTTPException(
                     status_code=403,
                     detail="Оплата з балансу для вас вимкнена",
                 )
-            room = _balance_spend_room(dropper)
-            if total > room + 0.01:
-                raise HTTPException(
-                    status_code=400,
-                    detail=(
-                        f"Недостатньо доступного балансу "
-                        f"(потрібно {round(total)} грн, доступно {round(room)} грн)"
-                    ),
-                )
+            if not for_owner_edit:
+                room = _balance_spend_room(dropper)
+                if total > room + 0.01:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=(
+                            f"Недостатньо доступного балансу "
+                            f"(потрібно {round(total)} грн, доступно {round(room)} грн)"
+                        ),
+                    )
             debit = round(total, 2)
             prepay = 0.0
             cod_amount = 0.0
@@ -1154,7 +1168,7 @@ def create_web_app(
             cod_amount = 0.0
             prepay = 0.0
         elif payload.payment_method == "cod":
-            if not getattr(dropper, "allow_cod", True):
+            if not for_owner_edit and not getattr(dropper, "allow_cod", True):
                 raise HTTPException(
                     status_code=403,
                     detail="Передачу замовлень наложкою для вас вимкнено",
@@ -1166,13 +1180,14 @@ def create_web_app(
                     status_code=400,
                     detail="Передплата не може перевищувати суму накладного платежу",
                 )
-            room = _balance_spend_room(dropper)
-            max_prepay = total + room
-            if prepay > max_prepay + 0.01:
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Передплата не може перевищувати {round(max_prepay)} грн",
-                )
+            if not for_owner_edit:
+                room = _balance_spend_room(dropper)
+                max_prepay = total + room
+                if prepay > max_prepay + 0.01:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Передплата не може перевищувати {round(max_prepay)} грн",
+                    )
             debit = max(0.0, round(prepay - total, 2))
         else:
             cod_amount = 0.0
@@ -1180,6 +1195,10 @@ def create_web_app(
         if payload.own_ttn:
             # Доставка й ПІБ вже в етикетці ТТН — перевіряємо лише телефон вище.
             pass
+        elif for_owner_edit:
+            # Власник може правити текст без повторного вибору з автокомпліту НП
+            if not payload.first_name.strip() or not payload.last_name.strip():
+                raise HTTPException(status_code=400, detail="Вкажіть ім'я та прізвище отримувача")
         else:
             if not payload.first_name.strip() or not payload.last_name.strip():
                 raise HTTPException(status_code=400, detail="Вкажіть ім'я та прізвище отримувача")
@@ -1194,7 +1213,8 @@ def create_web_app(
                     raise HTTPException(status_code=400, detail="Вкажіть адресу для курʼєра")
 
         if (
-            payload.payment_method == "requisites"
+            not for_owner_edit
+            and payload.payment_method == "requisites"
             and dropper.require_full_payment
             and not payload.receipt_name.strip()
         ):
@@ -1417,10 +1437,13 @@ def create_web_app(
         chat_id: str = Query(..., max_length=64),
         limit: int = Query(50, ge=1, le=200),
     ) -> dict:
+        from bot.order_edit import enrich_orders_with_changes
+
         dropper = storage.get_dropper_by_chat(chat_id)
         if not dropper:
             raise HTTPException(status_code=404, detail="Дроппера не знайдено")
         items = storage.list_orders_for_dropper(dropper.id, limit=limit)
+        items = enrich_orders_with_changes(storage, items)
         return {"count": len(items), "items": items}
 
     @app.get("/api/owner/droppers/{chat_id}/orders")
@@ -1430,15 +1453,318 @@ def create_web_app(
         owner_user_id: str = Query("", max_length=64),
         limit: int = Query(50, ge=1, le=200),
     ) -> dict:
+        from bot.order_edit import enrich_orders_with_changes
+
         _require_owner(owner_chat_id, owner_user_id)
         dropper = storage.get_dropper_by_chat(chat_id)
         if not dropper:
             raise HTTPException(status_code=404, detail="Дроппера не знайдено")
         items = storage.list_orders_for_dropper(dropper.id, limit=limit)
+        items = enrich_orders_with_changes(storage, items)
         return {
             "dropper": dropper.to_dict(),
             "count": len(items),
             "items": items,
+        }
+
+    @app.get("/api/owner/orders/{order_id}")
+    async def owner_get_order(
+        order_id: int,
+        owner_chat_id: str = Query("", max_length=64),
+        owner_user_id: str = Query("", max_length=64),
+    ) -> dict:
+        _require_owner(owner_chat_id, owner_user_id)
+        order = storage.get_order(order_id)
+        if not order:
+            raise HTTPException(status_code=404, detail="Замовлення не знайдено")
+        changes = storage.list_order_changes(order_id, limit=100)
+        payload = order.get("payload") or {}
+        return {
+            "order": {**order, "changes": changes},
+            "tracking_events": payload.get("tracking_events") or [],
+            "changes": changes,
+        }
+
+    @app.patch("/api/owner/orders/{order_id}")
+    async def owner_update_order(
+        order_id: int,
+        payload: OrderOwnerUpdateRequest,
+    ) -> dict:
+        from bot.catalog import InsufficientStockError
+        from bot.np_fulfillment import can_recreate_ttn, recreate_ttn_for_order
+        from bot.novaposhta import NovaPoshtaError
+        from bot.order_edit import (
+            build_payload_from_edit,
+            compute_order_diff,
+            summarize_diffs,
+            sync_ledger_for_edited_order,
+        )
+
+        _require_owner(payload.owner_chat_id, payload.owner_user_id)
+        order = storage.get_order(order_id)
+        if not order:
+            raise HTTPException(status_code=404, detail="Замовлення не знайдено")
+
+        dropper = storage.get_dropper_by_id(int(order["dropper_id"]))
+        if not dropper:
+            raise HTTPException(status_code=404, detail="Дроппера не знайдено")
+
+        # Підставляємо chat_id дроппера для валідації
+        edit_data = payload.model_dump()
+        edit_data["chat_id"] = dropper.chat_id
+        if not str(edit_data.get("phone") or "").strip():
+            edit_data["phone"] = ((order.get("payload") or {}).get("recipient") or {}).get(
+                "phone"
+            ) or ""
+        if not str(edit_data.get("payment_method") or "").strip():
+            edit_data["payment_method"] = order.get("payment_method") or "cod"
+        try:
+            validate_payload = OrderCreateRequest(**edit_data)
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+        total, prepay, debit, cod_amount = _validate_order_payload(
+            validate_payload, dropper, for_owner_edit=True
+        )
+
+        own_ttn = bool(validate_payload.own_ttn)
+        carrier = (
+            (validate_payload.own_ttn_carrier or "nova_poshta").strip().lower()
+            if own_ttn
+            else ""
+        )
+        if own_ttn and carrier == "rozetka":
+            ttn_number = re.sub(r"\s+", "", validate_payload.ttn_number or "").upper()
+        elif own_ttn:
+            ttn_number = re.sub(r"\D", "", validate_payload.ttn_number or "")
+        else:
+            # Зберігаємо поточну ТТН до можливого recreate
+            ttn_number = str(order.get("ttn_number") or "").strip()
+
+        safe_cart = []
+        for item in validate_payload.cart:
+            safe_cart.append(
+                {
+                    "product_id": item.get("product_id") or "",
+                    "code": item.get("code") or "",
+                    "name": item.get("name") or "",
+                    "color": item.get("color") or "",
+                    "qty": max(1, int(item.get("qty") or 1)),
+                    "drop_price": item.get("drop_price") or "",
+                    "drop_price_original": item.get("drop_price_original") or "",
+                    "extra_discount_percent": item.get("extra_discount_percent") or 0,
+                    "stock": item.get("stock"),
+                    "photo_url": item.get("photo_url") or "",
+                }
+            )
+
+        old_payload = dict(order.get("payload") or {})
+        old_cart = list(old_payload.get("cart") or [])
+
+        recipient = {
+            "first_name": validate_payload.first_name.strip(),
+            "patronymic": validate_payload.patronymic.strip(),
+            "last_name": validate_payload.last_name.strip(),
+            "phone": validate_payload.phone.strip(),
+        }
+        delivery_method = "own_ttn" if own_ttn else validate_payload.delivery_method
+        delivery = {
+            "method": delivery_method,
+            "city": validate_payload.city,
+            "city_ref": validate_payload.city_ref,
+            "settlement_ref": validate_payload.settlement_ref,
+            "warehouse": validate_payload.warehouse,
+            "warehouse_ref": validate_payload.warehouse_ref,
+            "street": validate_payload.street,
+            "street_ref": validate_payload.street_ref,
+            "house": validate_payload.house,
+            "apartment": validate_payload.apartment,
+            "np_city": validate_payload.np_city,
+            "np_warehouse": validate_payload.np_warehouse,
+            "np_street": validate_payload.np_street,
+        }
+        payment_block = {
+            "method": validate_payload.payment_method,
+            "prepay": prepay,
+            "cod_amount": cod_amount,
+            "prepay_balance_debit": debit,
+            "receipt_name": validate_payload.receipt_name,
+        }
+
+        new_snap = {
+            "payment_method": validate_payload.payment_method,
+            "delivery_method": delivery_method,
+            "own_ttn": own_ttn,
+            "total": total,
+            "prepay": prepay,
+            "prepay_balance_debit": debit,
+            "cod_amount": cod_amount,
+            "ttn_number": ttn_number if own_ttn else (order.get("ttn_number") or ""),
+            "comment": validate_payload.comment.strip(),
+            "own_ttn_carrier": carrier,
+            "recipient": recipient,
+            "delivery": delivery,
+            "cart": safe_cart,
+        }
+        diffs = compute_order_diff(order, new_snap)
+        if not diffs:
+            changes = storage.list_order_changes(order_id, limit=100)
+            return {
+                "ok": True,
+                "order": {**order, "changes": changes},
+                "changed": False,
+                "ttn_recreated": False,
+                "ttn_error": "",
+                "diff": [],
+            }
+
+        # Склад: повернути старий кошик, списати новий
+        try:
+            catalog.replace_cart_stock(old_cart, safe_cart)
+        except InsufficientStockError as exc:
+            raise HTTPException(status_code=400, detail=str(exc) or "Немає в наявності") from exc
+        except Exception:
+            logger.exception("Stock replace failed on order edit %s", order.get("order_number"))
+            raise HTTPException(
+                status_code=503,
+                detail="Не вдалося оновити наявність у таблиці. Спробуйте ще раз.",
+            )
+
+        new_payload = build_payload_from_edit(
+            old_payload=old_payload,
+            recipient=recipient,
+            delivery=delivery,
+            payment=payment_block,
+            cart=safe_cart,
+            comment=validate_payload.comment.strip(),
+            own_ttn=own_ttn,
+            own_ttn_carrier=carrier,
+            ttn_number=ttn_number if own_ttn else str(order.get("ttn_number") or ""),
+            ttn_pdf_name=validate_payload.ttn_pdf_name,
+        )
+
+        ttn_status = str(order.get("ttn_status") or "none")
+        if own_ttn:
+            ttn_status = "provided"
+            new_payload["ttn_number"] = ttn_number
+        elif order.get("own_ttn") and not own_ttn:
+            # Була власна → тепер API НП
+            ttn_status = "pending_create"
+            ttn_number = ""
+            new_payload["ttn_number"] = ""
+
+        saved = storage.replace_order(
+            order_id,
+            payment_method=validate_payload.payment_method,
+            delivery_method=delivery_method,
+            own_ttn=own_ttn,
+            total=total,
+            prepay=prepay,
+            prepay_balance_debit=debit,
+            cod_amount=cod_amount,
+            ttn_number=ttn_number if own_ttn else str(order.get("ttn_number") or ""),
+            ttn_status=ttn_status,
+            payload=new_payload,
+            sheets_sync_status="pending",
+        )
+        if not saved:
+            raise HTTPException(status_code=500, detail="Не вдалося зберегти замовлення")
+
+        try:
+            sync_ledger_for_edited_order(storage, saved)
+            from bot.credit_holidays import evaluate_credit_holidays
+
+            evaluate_credit_holidays(storage, dropper)
+        except Exception:
+            logger.exception("Ledger sync failed for order edit %s", saved.get("order_number"))
+
+        summary = summarize_diffs(diffs)
+        storage.add_order_change(
+            order_id=order_id,
+            order_number=str(saved.get("order_number") or ""),
+            actor_role="owner",
+            actor_user_id=str(payload.owner_user_id or "").strip(),
+            actor_label="Власник",
+            change_type="edit",
+            summary=summary or "Замовлення відредаговано",
+            diff=diffs,
+        )
+
+        ttn_recreated = False
+        ttn_error = ""
+        if not own_ttn and can_recreate_ttn(saved):
+            try:
+                saved = recreate_ttn_for_order(storage, saved)
+                ttn_recreated = bool(saved.get("ttn_number"))
+                storage.add_order_change(
+                    order_id=order_id,
+                    order_number=str(saved.get("order_number") or ""),
+                    actor_role="system",
+                    actor_label="Нова Пошта",
+                    change_type="ttn",
+                    summary=(
+                        f"ТТН перестворено: {saved.get('ttn_number')}"
+                        if ttn_recreated
+                        else "Спроба перестворити ТТН"
+                    ),
+                    diff=[
+                        {
+                            "field": "ttn_number",
+                            "old": str(order.get("ttn_number") or ""),
+                            "new": str(saved.get("ttn_number") or ""),
+                        }
+                    ],
+                )
+            except NovaPoshtaError as exc:
+                ttn_error = str(exc)
+                storage.add_order_change(
+                    order_id=order_id,
+                    order_number=str(saved.get("order_number") or ""),
+                    actor_role="system",
+                    actor_label="Нова Пошта",
+                    change_type="ttn",
+                    summary=f"Помилка перестворення ТТН: {ttn_error}",
+                    diff=[],
+                )
+            except Exception as exc:
+                ttn_error = str(exc)
+                logger.exception("TTN recreate failed for %s", saved.get("order_number"))
+
+        saved = storage.get_order(order_id) or saved
+
+        notify_lines = [
+            "✏️ Замовлення відредаговано власником",
+            "",
+            f"Номер: {saved.get('order_number')}",
+            "",
+            "Що змінилось:",
+            summary or "—",
+        ]
+        if ttn_recreated and saved.get("ttn_number"):
+            notify_lines.append("")
+            notify_lines.append(f"Нова ТТН: {saved.get('ttn_number')}")
+        elif ttn_error:
+            notify_lines.append("")
+            notify_lines.append(f"ТТН: помилка перестворення ({ttn_error[:200]})")
+        notify_lines.append("")
+        notify_lines.append("Деталі — у вкладці «Історія замовлень» Mini App.")
+        try:
+            await _notify(str(saved.get("chat_id") or dropper.chat_id), "\n".join(notify_lines))
+        except Exception:
+            logger.exception(
+                "Не вдалося повідомити дроппера про редагування %s",
+                saved.get("order_number"),
+            )
+
+        changes = storage.list_order_changes(order_id, limit=100)
+        return {
+            "ok": True,
+            "order": {**saved, "changes": changes},
+            "changed": True,
+            "ttn_recreated": ttn_recreated,
+            "ttn_error": ttn_error,
+            "diff": diffs,
+            "can_recreate_ttn": can_recreate_ttn(saved),
         }
 
     @app.get("/api/owner/settings")

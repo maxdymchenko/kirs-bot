@@ -370,6 +370,134 @@ def create_ttn_for_order(
     storage.merge_order_payload(order["id"], {"np_error": msg[:500]})
     raise NovaPoshtaError(msg) from last_exc
 
+
+AWAITING_SHIPMENT_STATUSES = frozenset(
+    {"none", "pending_create", "create_error", "created"}
+)
+SHIPPED_OR_FINAL_STATUSES = frozenset(
+    {
+        "in_transit",
+        "at_warehouse",
+        "received",
+        "refused",
+        "returned",
+        "return_at_warehouse",
+        "failed",
+    }
+)
+
+
+def can_recreate_ttn(order: dict[str, Any]) -> bool:
+    """
+    Пересоздати ТТН можна лише поки накладна ще «чекає відправки»
+    (не власна ТТН, статус created/pending або NP StatusCode=1).
+    """
+    if order.get("own_ttn"):
+        return False
+    status = str(order.get("ttn_status") or "none").strip() or "none"
+    if status in SHIPPED_OR_FINAL_STATUSES:
+        return False
+    if status in AWAITING_SHIPMENT_STATUSES:
+        return True
+    code = str((order.get("payload") or {}).get("np_status_code") or "").strip()
+    return code == "1"
+
+
+def recreate_ttn_for_order(
+    storage: AppStorage, order: dict[str, Any]
+) -> dict[str, Any]:
+    """
+    Видалити стару ТТН в кабінеті НП (якщо є Ref) і створити нову.
+    Викликати лише коли can_recreate_ttn(order) == True.
+    """
+    if order.get("own_ttn"):
+        return order
+    if not can_recreate_ttn(order):
+        return order
+
+    payload = dict(order.get("payload") or {})
+    doc_ref = str(payload.get("np_document_ref") or "").strip()
+    old_ttn = str(order.get("ttn_number") or payload.get("ttn_number") or "").strip()
+
+    delete_error = ""
+    if doc_ref:
+        clients = list_np_clients(storage)
+        deleted = False
+        for label, client, _is_primary in clients:
+            try:
+                client.delete_internet_document(doc_ref)
+                deleted = True
+                logger.info(
+                    "Deleted TTN ref %s via «%s» for order %s",
+                    doc_ref,
+                    label,
+                    order.get("order_number"),
+                )
+                break
+            except NovaPoshtaError as exc:
+                delete_error = str(exc)
+                logger.warning(
+                    "TTN delete failed via «%s» for %s: %s",
+                    label,
+                    order.get("order_number"),
+                    exc,
+                )
+            except Exception as exc:
+                delete_error = str(exc)
+                logger.exception(
+                    "TTN delete unexpected via «%s» for %s",
+                    label,
+                    order.get("order_number"),
+                )
+        if not deleted and old_ttn:
+            # Без успішного delete не створюємо другу накладну «всліпу»
+            storage.update_order_flags(order["id"], ttn_status="create_error")
+            storage.merge_order_payload(
+                order["id"],
+                {
+                    "np_error": (
+                        f"Не вдалося видалити стару ТТН {old_ttn}: "
+                        f"{delete_error or 'помилка НП'}"
+                    )[:500],
+                },
+            )
+            raise NovaPoshtaError(
+                f"Не вдалося видалити стару ТТН {old_ttn}: {delete_error or 'помилка НП'}"
+            )
+    elif old_ttn:
+        logger.warning(
+            "Recreating TTN for %s without np_document_ref (old=%s)",
+            order.get("order_number"),
+            old_ttn,
+        )
+
+    # Скидаємо номер — create_ttn_for_order вимагає порожній ttn_number
+    storage.update_order_flags(
+        order["id"],
+        ttn_number="",
+        ttn_status="pending_create",
+    )
+    storage.merge_order_payload(
+        order["id"],
+        {
+            "ttn_number": "",
+            "np_document_ref": "",
+            "np_error": "",
+            "np_status_code": "",
+            "np_status_text": "",
+            "np_tracked_at": "",
+            "np_cost_on_site": None,
+            "np_estimated_delivery_date": "",
+            "np_api_key_label": "",
+            "np_used_backup_key": False,
+            "np_backup_owner_notified": False,
+            "old_ttn_before_recreate": old_ttn,
+        },
+    )
+    order = storage.get_order(order["id"]) or order
+    return create_ttn_for_order(storage, order)
+
+
 def order_cod_profit(order: dict[str, Any]) -> float:
     if str(order.get("payment_method") or "") != "cod":
         return 0.0
@@ -623,12 +751,54 @@ async def apply_tracking_event(
     if mapped == "returned" and ever_received:
         patch["return_after_received"] = True
 
+    # Історія руху посилки (без дублів підряд з тим самим status_code)
+    events = list(payload_prev.get("tracking_events") or [])
+    if not isinstance(events, list):
+        events = []
+    code_s = str(status_code or "").strip()
+    text_s = str(status_text or "").strip()
+    last = events[-1] if events else None
+    last_code = str((last or {}).get("status_code") or "") if isinstance(last, dict) else ""
+    last_mapped = str((last or {}).get("ttn_status") or "") if isinstance(last, dict) else ""
+    if code_s or text_s or mapped:
+        if last_code != code_s or last_mapped != mapped:
+            events.append(
+                {
+                    "at": datetime.now().isoformat(timespec="seconds"),
+                    "status_code": code_s,
+                    "status_text": text_s,
+                    "ttn_status": mapped,
+                }
+            )
+            # тримаємо розумний ліміт
+            patch["tracking_events"] = events[-80:]
+
     if mapped != prev or status_text or delivery_cost > 0 or len(patch) > 3:
         storage.update_order_flags(order["id"], ttn_status=mapped)
         storage.merge_order_payload(order["id"], patch)
         result["updated"] = True
         order = storage.get_order(order["id"]) or order
         result["order"] = order
+        if mapped != prev:
+            try:
+                storage.add_order_change(
+                    order_id=int(order["id"]),
+                    order_number=str(order.get("order_number") or ""),
+                    actor_role="system",
+                    actor_label="Нова Пошта",
+                    change_type="tracking",
+                    summary=f"Статус доставки: {prev or '—'} → {mapped}"
+                    + (f" ({text_s})" if text_s else ""),
+                    diff=[
+                        {
+                            "field": "ttn_status",
+                            "old": prev,
+                            "new": mapped,
+                        }
+                    ],
+                )
+            except Exception:
+                logger.exception("order_change tracking failed")
 
     if mapped == "received" and prev != "received":
         entry = credit_cod_profit_if_needed(storage, order)

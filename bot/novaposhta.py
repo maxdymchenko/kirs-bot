@@ -474,6 +474,19 @@ class NovaPoshtaClient:
             "raw": row,
         }
 
+    def delete_internet_document(self, document_ref: str) -> bool:
+        """Видалити накладну в кабінеті НП за Ref документа."""
+        ref = str(document_ref or "").strip()
+        if not ref:
+            raise NovaPoshtaError("Немає Ref документа для видалення ТТН")
+        # NP приймає DocumentRefs як рядок або масив
+        self._request(
+            "InternetDocument",
+            "delete",
+            {"DocumentRefs": [ref]},
+        )
+        return True
+
     def get_status_documents(
         self, documents: list[dict[str, str]]
     ) -> list[dict[str, Any]]:
