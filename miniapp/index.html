@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
   <title>Kirs — Замовлення</title>
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
-  <link rel="stylesheet" href="/static/styles.css?v=20260724ret5" />
+  <link rel="stylesheet" href="/static/styles.css?v=20260724ttn5" />
 </head>
 <body>
   <div class="app">
@@ -406,8 +406,26 @@
               </label>
               <p class="hint" id="paymentControlHint">
                 Увімкніть, щоб клієнт сплатив суму при отриманні (гроші на ваш кабінет НП).
+                Працює навіть якщо власник вимкнув «передачу наложкою» — це стосується лише ТТН від постачальника.
               </p>
-              <div id="generateEstimatedSlot"></div>
+              <div id="generateEstimatedCostBlock">
+                <label class="field">
+                  <span class="field-label">Оціночна вартість</span>
+                  <div class="input-with-prefix">
+                    <span class="input-prefix">₴</span>
+                    <input
+                      id="generateEstimatedCost"
+                      name="generateEstimatedCost"
+                      type="number"
+                      min="1"
+                      step="1"
+                      inputmode="numeric"
+                      placeholder="Оголошена цінність посилки"
+                    />
+                  </div>
+                  <p class="field-hint">Оголошена цінність для накладної Нової Пошти</p>
+                </label>
+              </div>
               <div id="generateCodSlot" class="hidden">
                 <label class="field" id="generateCodField">
                   <span class="field-label">Сума накладного платежу</span>
@@ -813,6 +831,6 @@
   </div>
 
   <button type="button" id="photoZoomBackdrop" class="photo-zoom-backdrop hidden" aria-label="Закрити фото"></button>
-  <script src="/static/app.js?v=20260724ttn4"></script>
+  <script src="/static/app.js?v=20260724ttn5"></script>
 </body>
 </html>

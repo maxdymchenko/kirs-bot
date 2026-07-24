@@ -162,7 +162,8 @@
     generateTtnResult: document.getElementById("generateTtnResult"),
     generatedTtnNumber: document.getElementById("generatedTtnNumber"),
     generateTtnActions: document.getElementById("generateTtnActions"),
-    generateEstimatedSlot: document.getElementById("generateEstimatedSlot"),
+    generateEstimatedCostBlock: document.getElementById("generateEstimatedCostBlock"),
+    generateEstimatedCost: document.getElementById("generateEstimatedCost"),
     generateCodSlot: document.getElementById("generateCodSlot"),
     generateCodAmount: document.getElementById("generateCodAmount"),
     paymentEstimatedSlot: document.getElementById("paymentEstimatedSlot"),
@@ -1216,13 +1217,8 @@
     if (els.ownTtn?.checked && els.generateTtnInOrder?.checked) {
       els.generateTtnInOrder.checked = false;
     }
-
-    if (!allowCod && els.ownTtn && !els.ownTtn.checked && !els.generateTtnInOrder?.checked) {
-      els.ownTtn.checked = true;
-    }
-    if (els.ownTtnToggleRow) {
-      els.ownTtnToggleRow.classList.toggle("hidden", !allowCod);
-    }
+    // allow_cod вимикає лише класичну «наложку» (ТТН від постачальника),
+    // а не власну ТТН і не генерацію ТТН дропером.
 
     const ownTtn = Boolean(els.ownTtn?.checked);
     const generateTtn = Boolean(els.generateTtnInOrder?.checked) && !ownTtn;
@@ -1265,26 +1261,15 @@
     const showBalance = payment === "balance";
     const clientCodOn = Boolean(els.clientCod?.checked);
     const showPrepay = !ownTtn && !generateTtn && allowCod && payment === "cod";
-    // Оціночна: завжди при generate ТТН; інакше — коли не класична наложка
-    const showEstimated =
-      !ownTtn && (generateTtn || payment !== "cod");
-    // Наложка клієнта в режимі generate — окреме поле при «Контроль оплати»
+    // Оціночна в секції оплати (без generate): реквізити / баланс
+    const showPaymentEstimated = !ownTtn && !generateTtn && payment !== "cod";
+    // У режимі generate ТТН поля завжди свої (не залежать від allow_cod власника)
+    const showGenerateEstimated = generateTtn;
     const showGenerateCod = generateTtn && clientCodOn;
     const showReceipt = showRequisites && dropperSettings.require_full_payment;
 
     if (els.generateTtnActions) {
       els.generateTtnActions.classList.toggle("hidden", !generateTtn);
-    }
-
-    // Перемістити блок оціночної вартості поруч із контролем оплати / у секцію оплати
-    if (els.estimatedCostBlock) {
-      const slot =
-        generateTtn && els.generateEstimatedSlot
-          ? els.generateEstimatedSlot
-          : els.paymentEstimatedSlot;
-      if (slot && els.estimatedCostBlock.parentElement !== slot) {
-        slot.appendChild(els.estimatedCostBlock);
-      }
     }
 
     els.prepayBlock.classList.toggle("hidden", !showPrepay);
@@ -1293,8 +1278,9 @@
       els.codAmountField.classList.toggle("hidden", !showPrepay);
     }
     if (els.prepayHint) els.prepayHint.classList.toggle("hidden", !showPrepay);
+
     if (els.estimatedCostBlock) {
-      els.estimatedCostBlock.classList.toggle("hidden", !showEstimated);
+      els.estimatedCostBlock.classList.toggle("hidden", !showPaymentEstimated);
     }
     if (els.estimatedCostLabel) {
       els.estimatedCostLabel.textContent = "Оціночна вартість";
@@ -1305,6 +1291,10 @@
     if (els.estimatedCostHint) {
       els.estimatedCostHint.textContent =
         "Для накладної Нової Пошти (оголошена вартість)";
+    }
+
+    if (els.generateEstimatedCostBlock) {
+      els.generateEstimatedCostBlock.classList.toggle("hidden", !showGenerateEstimated);
     }
     if (els.generateCodSlot) {
       els.generateCodSlot.classList.toggle("hidden", !showGenerateCod);
@@ -1317,11 +1307,15 @@
     if (els.balancePayHint) els.balancePayHint.classList.toggle("hidden", !showBalance);
 
     const total = cartMoneyTotal();
-    if (els.estimatedCost && showEstimated && !els.estimatedCost.value) {
+    if (els.estimatedCost && showPaymentEstimated && !els.estimatedCost.value) {
       els.estimatedCost.value = String(Math.max(1, Math.round(total)));
     }
+    if (els.generateEstimatedCost && showGenerateEstimated && !els.generateEstimatedCost.value) {
+      els.generateEstimatedCost.value = String(Math.max(1, Math.round(total)));
+    }
     if (els.generateCodAmount && showGenerateCod && !els.generateCodAmount.value) {
-      els.generateCodAmount.value = String(Math.max(1, Math.round(total)));
+      const est = Number(els.generateEstimatedCost?.value || total) || total;
+      els.generateCodAmount.value = String(Math.max(1, Math.round(est)));
     }
     updatePrepayUi(total);
     updateRequisitesIntro(total);
@@ -1579,7 +1573,9 @@
         ? (els.cargoDescription?.value || "").trim() || buildCartDescription()
         : "",
       clientCod: generateTtn && Boolean(els.clientCod?.checked),
-      estimatedCost: form.estimatedCost?.value?.trim() || "",
+      estimatedCost: generateTtn
+        ? els.generateEstimatedCost?.value?.trim() || ""
+        : form.estimatedCost?.value?.trim() || "",
       ttnNumber: generateTtn ? generatedTtn : ownTtnNumber,
       rmpNumber: normalizeRmpNumber(form.rmpNumber?.value || ""),
       paymentMethod,
@@ -4338,10 +4334,19 @@ ${
           els.generateTtnResult.classList.add("hidden");
           els.generateTtnResult.textContent = "";
         }
+        if (els.clientCod) els.clientCod.checked = false;
       }
       syncPaymentAndTtn();
     }
   });
+
+  // Тумблер «Контроль оплати» — додатково на input (надійніше в Telegram WebView)
+  if (els.clientCod) {
+    els.clientCod.addEventListener("input", () => syncPaymentAndTtn());
+    els.clientCod.addEventListener("click", () => {
+      setTimeout(() => syncPaymentAndTtn(), 0);
+    });
+  }
 
   if (els.generateTtnBtn) {
     els.generateTtnBtn.addEventListener("click", () => {
@@ -4837,10 +4842,10 @@ ${
         return;
       }
     }
-    let estimated = Number(els.estimatedCost?.value || 0);
+    let estimated = Number(els.generateEstimatedCost?.value || els.estimatedCost?.value || 0);
     if (!estimated || estimated < 1) {
       estimated = Math.max(1, Math.round(cartMoneyTotal()));
-      if (els.estimatedCost) els.estimatedCost.value = String(estimated);
+      if (els.generateEstimatedCost) els.generateEstimatedCost.value = String(estimated);
     }
     const clientCod = Boolean(els.clientCod?.checked);
     let codAmount = 0;
