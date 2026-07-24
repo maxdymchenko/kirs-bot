@@ -159,6 +159,9 @@
     generatedTtnNumber: document.getElementById("generatedTtnNumber"),
     estimatedCostBlock: document.getElementById("estimatedCostBlock"),
     estimatedCost: document.getElementById("estimatedCost"),
+    estimatedCostLabel: document.getElementById("estimatedCostLabel"),
+    estimatedCostHint: document.getElementById("estimatedCostHint"),
+    paymentControlHint: document.getElementById("paymentControlHint"),
     prepayField: document.getElementById("prepayField"),
     codAmountField: document.getElementById("codAmountField"),
     dropperNpKeysList: document.getElementById("dropperNpKeysList"),
@@ -1255,14 +1258,35 @@
       !ownTtn && (generateTtn || payment !== "cod");
     const showReceipt = showRequisites && dropperSettings.require_full_payment;
 
-    els.prepayBlock.classList.toggle("hidden", !(showPrepay || (generateTtn && clientCodOn)));
+    // Класична наложка (не generate): передплата + сума наложки
+    // Generate + контроль оплати: сума береться з поля оціночної (перейменованого)
+    els.prepayBlock.classList.toggle("hidden", !showPrepay);
     if (els.prepayField) els.prepayField.classList.toggle("hidden", !showPrepay);
     if (els.codAmountField) {
-      els.codAmountField.classList.toggle("hidden", !(showPrepay || (generateTtn && clientCodOn)));
+      els.codAmountField.classList.toggle("hidden", !showPrepay);
     }
     if (els.prepayHint) els.prepayHint.classList.toggle("hidden", !showPrepay);
     if (els.estimatedCostBlock) {
       els.estimatedCostBlock.classList.toggle("hidden", !showEstimated);
+    }
+    if (els.estimatedCostLabel) {
+      els.estimatedCostLabel.textContent =
+        generateTtn && clientCodOn ? "Сума накладного платежу" : "Оціночна вартість";
+    }
+    if (els.estimatedCost) {
+      els.estimatedCost.placeholder =
+        generateTtn && clientCodOn
+          ? "Сума накладного платежу"
+          : "Оціночна вартість посилки";
+    }
+    if (els.estimatedCostHint) {
+      els.estimatedCostHint.textContent =
+        generateTtn && clientCodOn
+          ? "Клієнт сплатить цю суму при отриманні (контроль оплати НП)"
+          : "Для накладної Нової Пошти (оголошена вартість)";
+    }
+    if (els.paymentControlHint) {
+      els.paymentControlHint.classList.toggle("hidden", !generateTtn);
     }
     els.requisitesBlock.classList.toggle("hidden", !showRequisites);
     els.receiptField.classList.toggle("hidden", !showReceipt);
@@ -1633,15 +1657,14 @@
       }
       const estRaw = data.estimatedCost === "" ? null : Number(data.estimatedCost);
       if (estRaw === null || Number.isNaN(estRaw) || estRaw < 1) {
-        return "Вкажіть оціночну вартість (мін. 1 ₴)";
+        return data.clientCod
+          ? "Вкажіть суму накладного платежу (мін. 1 ₴)"
+          : "Вкажіть оціночну вартість (мін. 1 ₴)";
       }
       data.estimatedCost = Math.round(estRaw);
       if (data.clientCod) {
-        const codRaw = data.codAmount === "" ? null : Number(data.codAmount);
-        if (codRaw === null || Number.isNaN(codRaw) || codRaw < 0) {
-          return "Вкажіть суму накладного платежу клієнту";
-        }
-        data.codAmount = Math.round(codRaw);
+        // Контроль оплати: сума з перейменованого поля = наложка клієнту
+        data.codAmount = data.estimatedCost;
       } else {
         data.codAmount = 0;
       }
@@ -1822,12 +1845,11 @@ ${escapeHtml(deliveryExtra)}</div>
     const paymentExtra = showClassicCod
       ? `Накладений платіж: ${escapeHtml(formatMoneyAmount(codExact))} ₴\nПередплата: ${escapeHtml(formatMoneyAmount(prepayExact))} ₴\nПрибуток дроппера: ${escapeHtml(formatMoneyAmount(dropperProfit))} ₴`
       : [
-          estExact > 0
-            ? `Оціночна вартість: ${escapeHtml(formatMoneyAmount(estExact))} ₴`
-            : "",
-          clientCod
-            ? `Накладений платіж клієнту: ${escapeHtml(formatMoneyAmount(codExact))} ₴`
-            : "",
+          data.generateTtnInOrder && data.clientCod
+            ? `Контроль оплати: ${escapeHtml(formatMoneyAmount(codExact || estExact))} ₴`
+            : estExact > 0
+              ? `Оціночна вартість: ${escapeHtml(formatMoneyAmount(estExact))} ₴`
+              : "",
         ]
           .filter(Boolean)
           .join("\n");
@@ -4137,13 +4159,11 @@ ${
       if (els.estimatedCost) els.estimatedCost.value = String(estimated);
     }
     const clientCod = Boolean(els.clientCod?.checked);
-    let codAmount = 0;
-    if (clientCod) {
-      codAmount = Number(els.codAmount?.value || 0);
-      if (Number.isNaN(codAmount) || codAmount < 0) {
-        showToast("Вкажіть суму накладного платежу");
-        return;
-      }
+    // Контроль оплати: сума накладного = значення поля (перейменована оціночна)
+    const codAmount = clientCod ? estimated : 0;
+    if (clientCod && codAmount < 1) {
+      showToast("Вкажіть суму накладного платежу");
+      return;
     }
     const desc =
       (els.cargoDescription?.value || "").trim() || buildCartDescription();

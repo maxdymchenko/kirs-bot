@@ -384,10 +384,14 @@
                 <span class="field-label">Опис вантажу (код + колір)</span>
                 <input id="cargoDescription" name="cargoDescription" type="text" maxlength="100" />
               </label>
-              <label class="check-row">
-                <input type="checkbox" id="clientCod" name="clientCod" />
-                <span>Накладний платіж клієнту (гроші на ваш кабінет НП)</span>
+              <label class="toggle-row" id="paymentControlToggleRow">
+                <span class="toggle-text">Контроль оплати</span>
+                <input type="checkbox" id="clientCod" name="clientCod" class="toggle-input" />
+                <span class="toggle-ui" aria-hidden="true"></span>
               </label>
+              <p class="hint" id="paymentControlHint">
+                Увімкніть, щоб клієнт сплатив суму при отриманні (гроші на ваш кабінет НП).
+              </p>
               <div id="generateTtnResult" class="info-box hidden"></div>
               <button type="button" class="btn primary block" id="generateTtnBtn">
                 Згенерувати накладну
@@ -639,7 +643,7 @@
 
             <div id="estimatedCostBlock" class="hidden">
               <label class="field">
-                <span class="field-label">Оціночна вартість</span>
+                <span class="field-label" id="estimatedCostLabel">Оціночна вартість</span>
                 <div class="input-with-prefix">
                   <span class="input-prefix">₴</span>
                   <input
@@ -652,7 +656,7 @@
                     placeholder="Оціночна вартість посилки"
                   />
                 </div>
-                <p class="field-hint">Для накладної Нової Пошти (оголошена вартість)</p>
+                <p class="field-hint" id="estimatedCostHint">Для накладної Нової Пошти (оголошена вартість)</p>
               </label>
             </div>
 
@@ -764,6 +768,6 @@
   </div>
 
   <button type="button" id="photoZoomBackdrop" class="photo-zoom-backdrop hidden" aria-label="Закрити фото"></button>
-  <script src="/static/app.js?v=20260724ttn2"></script>
+  <script src="/static/app.js?v=20260724ttn3"></script>
 </body>
 </html>
