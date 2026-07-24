@@ -1683,7 +1683,45 @@ input[type="file"] {
 .order-card-status.status-refused { color: #dc2626; } /* червоний — відмова */
 .order-card-status.status-returned { color: #ca8a04; } /* жовтий/гірчичний — повернено */
 .order-card-status.status-return_warehouse { color: #7c3aed; } /* фіолетовий — повернення на склад */
+.order-card-status.status-return_pending { color: #ea580c; } /* помаранчевий — очікує обробки */
+.order-card-status.status-return_accepted { color: #15803d; } /* темно-зелений — прийнято */
 .order-card-status.status-other { color: var(--muted); } /* сірий — інше */
+
+.history-buckets {
+  margin: 0 0 12px;
+  flex-wrap: wrap;
+}
+
+.order-return-form {
+  margin-top: 10px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: #f8fafc;
+  display: grid;
+  gap: 10px;
+}
+
+.owner-return-card {
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 14px 16px;
+  background: #fff;
+  display: grid;
+  gap: 8px;
+}
+
+.owner-return-card-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  align-items: flex-start;
+}
+
+.owner-returns {
+  display: grid;
+  gap: 10px;
+}
 
 .owner-orders {
   border-top: 1px solid var(--line);

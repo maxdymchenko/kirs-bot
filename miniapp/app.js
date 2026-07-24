@@ -47,9 +47,13 @@
     ownerTabDroppers: document.getElementById("ownerTabDroppers"),
     ownerTabStaff: document.getElementById("ownerTabStaff"),
     ownerTabBalances: document.getElementById("ownerTabBalances"),
+    ownerTabReturns: document.getElementById("ownerTabReturns"),
+    ownerReturnsList: document.getElementById("ownerReturnsList"),
+    ownerReturnsDropperFilter: document.getElementById("ownerReturnsDropperFilter"),
     ownerTabSettings: document.getElementById("ownerTabSettings"),
     ownerTabOrder: document.getElementById("ownerTabOrder"),
     ownerTabBlacklist: document.getElementById("ownerTabBlacklist"),
+    historyBuckets: document.getElementById("historyBuckets"),
     ownerBlacklist: document.getElementById("ownerBlacklist"),
     blacklistForm: document.getElementById("blacklistForm"),
     blacklistPhone: document.getElementById("blacklistPhone"),
@@ -2052,11 +2056,53 @@ ${ttnLine}</div>
   }
 
   /** Статус для бейджа в історії замовлень (українською). */
+  function orderHistoryBucket(order) {
+    const payload = order.payload || {};
+    const ret = payload.dropper_return;
+    const ttn = String(order.ttn_status || "");
+    if (ret && typeof ret === "object") return "returns";
+    if (
+      ttn === "returned" ||
+      ttn === "refused" ||
+      ttn === "return_at_warehouse" ||
+      payload.return_at_warehouse
+    ) {
+      return "returns";
+    }
+    if (ttn === "received") return "received";
+    return "transit";
+  }
+
+  function dropperReturnTypeLabel(type) {
+    return String(type || "") === "easy" ? "Легке повернення" : "Звичайне повернення";
+  }
+
+  function dropperReturnStatusLabel(status) {
+    if (String(status || "") === "accepted") return "Повернення прийнято";
+    return "Очікує обробки";
+  }
+
   function orderHistoryStatus(order) {
     const payload = order.payload || {};
     const ttn = String(order.ttn_status || "");
     const hasTtn = Boolean(order.ttn_number || payload.ttn_number);
+    const ret = payload.dropper_return;
 
+    if (ret && typeof ret === "object") {
+      const st = String(ret.status || "pending");
+      if (st === "accepted") {
+        return {
+          kind: "return_accepted",
+          label: "Повернення прийнято",
+          sub: dropperReturnTypeLabel(ret.type),
+        };
+      }
+      return {
+        kind: "return_pending",
+        label: "Очікує обробки",
+        sub: dropperReturnTypeLabel(ret.type),
+      };
+    }
     if (payload.return_at_warehouse || ttn === "return_at_warehouse") {
       return { kind: "return_warehouse", label: "Отримано повернення на склад", sub: "" };
     }
@@ -2064,7 +2110,6 @@ ${ttnLine}</div>
       return { kind: "refused", label: "Скасовано", sub: "" };
     }
     if (
-      payload.dropper_return ||
       payload.return_after_received ||
       (ttn === "returned" && (payload.ever_received || payload.profit_reversed))
     ) {
@@ -2206,6 +2251,7 @@ ${
         }
         ${renderOrderTrackingTimelineHtml(order)}
         ${renderOrderChangesTimelineHtml(order)}
+        ${renderOrderReturnBlockHtml(order, options)}
         ${renderOrderDropperActionsHtml(order, options)}
         ${
           options.editable
@@ -2222,6 +2268,79 @@ ${
         }
       </div>
     `;
+  }
+
+  function renderOrderReturnBlockHtml(order, options = {}) {
+    const payload = order.payload || {};
+    const ret = payload.dropper_return;
+    const ttn = String(order.ttn_status || "");
+    const canRequest =
+      Boolean(options.dropperActions) &&
+      ttn === "received" &&
+      !(ret && typeof ret === "object");
+
+    let infoHtml = "";
+    if (ret && typeof ret === "object") {
+      infoHtml = `
+        <div class="confirm-block">
+          <div class="confirm-label">Заявка на повернення</div>
+          <div class="confirm-value">${escapeHtml(dropperReturnTypeLabel(ret.type))}
+Статус: ${escapeHtml(dropperReturnStatusLabel(ret.status))}
+ТТН повернення: ${escapeHtml(ret.ttn_number || "—")}
+${ret.created_at ? `Створено: ${escapeHtml(formatOrderDate(ret.created_at) || ret.created_at)}` : ""}
+${
+  ret.accepted_at
+    ? `Прийнято: ${escapeHtml(formatOrderDate(ret.accepted_at) || ret.accepted_at)}`
+    : ""
+}</div>
+        </div>`;
+    }
+
+    if (!canRequest) return infoHtml;
+
+    return `
+      ${infoHtml}
+      <div class="order-edit-actions">
+        <button type="button" class="btn primary" data-order-return-open="${escapeHtml(
+          String(order.id || "")
+        )}">Оформити повернення</button>
+        <div class="order-return-form hidden" data-order-return-form="${escapeHtml(
+          String(order.id || "")
+        )}">
+          <p class="hint" style="margin:0">
+            Звичайне — повернення на дані постачальника. Легке — без заміни даних постачальника.
+          </p>
+          <label class="field">
+            <span class="field-label">ТТН повернення</span>
+            <input type="text" data-return-ttn inputmode="numeric" placeholder="Номер зворотної ТТН" autocomplete="off" />
+          </label>
+          <div class="choice-list" role="radiogroup" aria-label="Тип повернення">
+            <label class="choice-card">
+              <input type="radio" name="returnType-${escapeHtml(String(order.id || ""))}" value="regular" checked />
+              <span class="choice-body">
+                <span class="choice-title">Звичайне повернення</span>
+                <span class="choice-sub">На дані постачальника</span>
+              </span>
+            </label>
+            <label class="choice-card">
+              <input type="radio" name="returnType-${escapeHtml(String(order.id || ""))}" value="easy" />
+              <span class="choice-body">
+                <span class="choice-title">Легке повернення</span>
+                <span class="choice-sub">Без заміни даних постачальника</span>
+              </span>
+            </label>
+          </div>
+          <p class="form-error hidden" data-return-error></p>
+          <div class="order-edit-actions-row">
+            <button type="button" class="btn primary" data-order-return-submit="${escapeHtml(
+              String(order.id || "")
+            )}">Надіслати заявку</button>
+            <button type="button" class="btn secondary" data-order-return-cancel="${escapeHtml(
+              String(order.id || "")
+            )}">Скасувати</button>
+          </div>
+        </div>
+      </div>`;
   }
 
   function renderOrderDropperActionsHtml(order, options = {}) {
@@ -2478,7 +2597,7 @@ ${
     root.dataset.orderClicksBound = "1";
     root.addEventListener("click", (event) => {
       if (event.target.closest(
-        "[data-order-edit-open], [data-order-edit-panel], .order-edit-panel, [data-order-cancel], [data-order-correction-request], [data-correction-text]"
+        "[data-order-edit-open], [data-order-edit-panel], .order-edit-panel, [data-order-cancel], [data-order-correction-request], [data-correction-text], [data-order-return-open], [data-order-return-form], .order-return-form, [data-order-return-submit], [data-order-return-cancel], [data-return-ttn], [data-return-error]"
       )) {
         return;
       }
@@ -2954,6 +3073,36 @@ ${
       if (orderId) requestOrderCorrection(orderId, text);
       return;
     }
+    const returnOpenBtn = event.target.closest("[data-order-return-open]");
+    if (returnOpenBtn) {
+      event.preventDefault();
+      const orderId = returnOpenBtn.getAttribute("data-order-return-open");
+      const form = document.querySelector(`[data-order-return-form="${orderId}"]`);
+      if (form) form.classList.toggle("hidden");
+      return;
+    }
+    const returnCancelBtn = event.target.closest("[data-order-return-cancel]");
+    if (returnCancelBtn) {
+      event.preventDefault();
+      const orderId = returnCancelBtn.getAttribute("data-order-return-cancel");
+      const form = document.querySelector(`[data-order-return-form="${orderId}"]`);
+      if (form) {
+        form.classList.add("hidden");
+        const err = form.querySelector("[data-return-error]");
+        if (err) {
+          err.classList.add("hidden");
+          err.textContent = "";
+        }
+      }
+      return;
+    }
+    const returnSubmitBtn = event.target.closest("[data-order-return-submit]");
+    if (returnSubmitBtn) {
+      event.preventDefault();
+      const orderId = returnSubmitBtn.getAttribute("data-order-return-submit");
+      if (orderId) submitDropperReturn(orderId);
+      return;
+    }
     const cancelBtn = event.target.closest("[data-edit-cancel]");
     if (cancelBtn) {
       const panel = cancelBtn.closest("[data-order-edit-panel]");
@@ -3025,6 +3174,62 @@ ${
     }
   }
 
+  async function submitDropperReturn(orderId) {
+    const form = document.querySelector(`[data-order-return-form="${orderId}"]`);
+    const errEl = form?.querySelector("[data-return-error]");
+    const ttn = form?.querySelector("[data-return-ttn]")?.value?.trim() || "";
+    const type =
+      form?.querySelector(`input[name="returnType-${orderId}"]:checked`)?.value ||
+      "regular";
+    if (errEl) {
+      errEl.classList.add("hidden");
+      errEl.textContent = "";
+    }
+    if (!ttn) {
+      if (errEl) {
+        errEl.textContent = "Вкажіть ТТН повернення";
+        errEl.classList.remove("hidden");
+      } else {
+        showToast("Вкажіть ТТН повернення");
+      }
+      return;
+    }
+    const submitBtn = form?.querySelector("[data-order-return-submit]");
+    if (submitBtn) submitBtn.disabled = true;
+    try {
+      const response = await fetch(
+        `/api/dropper/orders/${encodeURIComponent(orderId)}/return`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            chat_id: effectiveDropperChatId(),
+            user_id: currentTelegramUser().user_id || "",
+            ttn_number: ttn,
+            return_type: type,
+          }),
+        }
+      );
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(typeof data.detail === "string" ? data.detail : "Помилка");
+      }
+      showToast("Заявку на повернення надіслано");
+      historyBucket = "returns";
+      syncHistoryBucketTabs();
+      await renderOrdersHistory();
+    } catch (error) {
+      if (errEl) {
+        errEl.textContent = error.message || "Помилка";
+        errEl.classList.remove("hidden");
+      } else {
+        showToast(error.message || "Помилка");
+      }
+    } finally {
+      if (submitBtn) submitBtn.disabled = false;
+    }
+  }
+
   document.addEventListener("submit", (event) => {
     const form = event.target.closest("[data-order-edit-form]");
     if (!form) return;
@@ -3034,47 +3239,72 @@ ${
 
   let dropperOrdersEditWindow = null;
   let dropperOrdersCache = [];
+  let historyBucket = "transit";
+
+  function syncHistoryBucketTabs() {
+    if (!els.historyBuckets) return;
+    els.historyBuckets.querySelectorAll("[data-history-bucket]").forEach((btn) => {
+      btn.classList.toggle(
+        "active",
+        btn.getAttribute("data-history-bucket") === historyBucket
+      );
+    });
+  }
+
+  function paintOrdersHistoryList() {
+    if (!els.ordersHistory) return;
+    const items = dropperOrdersCache || [];
+    const filtered = items.filter((o) => orderHistoryBucket(o) === historyBucket);
+    const lockedHint =
+      dropperOrdersEditWindow?.locked
+        ? `<div class="hint order-window-banner">${escapeHtml(
+            dropperOrdersEditWindow.message ||
+              "13:30–14:30 — редагування закрите, можна лише запит власнику."
+          )}</div>`
+        : dropperOrdersEditWindow
+          ? `<div class="hint order-window-banner">${escapeHtml(
+              dropperOrdersEditWindow.message || ""
+            )}</div>`
+          : "";
+    const emptyByBucket = {
+      transit: "Немає замовлень у дорозі",
+      received: "Немає отриманих замовлень",
+      returns: "Немає повернень",
+    };
+    els.ordersHistory.innerHTML =
+      lockedHint +
+      (filtered.length
+        ? filtered
+            .map((o) =>
+              renderOrderCard(o, {
+                dropperActions: true,
+                editWindow: dropperOrdersEditWindow,
+                editMode: "dropper",
+              })
+            )
+            .join("")
+        : `<div class="empty">${escapeHtml(
+            emptyByBucket[historyBucket] || "Порожньо"
+          )}</div>`);
+    bindOrderCardClicks(els.ordersHistory);
+  }
 
   async function renderOrdersHistory() {
     if (!els.ordersHistory) return;
     const chatId = effectiveDropperChatId();
+    syncHistoryBucketTabs();
     els.ordersHistory.innerHTML = `<div class="ac-loading">Завантаження історії...</div>`;
     try {
       const response = await fetch(
-        `/api/dropper/orders?chat_id=${encodeURIComponent(chatId)}&limit=50`
+        `/api/dropper/orders?chat_id=${encodeURIComponent(chatId)}&limit=100`
       );
       const data = await response.json();
       if (!response.ok) {
         throw new Error(typeof data.detail === "string" ? data.detail : "Помилка");
       }
-      const items = data.items || [];
-      dropperOrdersCache = items;
+      dropperOrdersCache = data.items || [];
       dropperOrdersEditWindow = data.edit_window || null;
-      const lockedHint =
-        dropperOrdersEditWindow?.locked
-          ? `<div class="hint order-window-banner">${escapeHtml(
-              dropperOrdersEditWindow.message ||
-                "13:30–14:30 — редагування закрите, можна лише запит власнику."
-            )}</div>`
-          : dropperOrdersEditWindow
-            ? `<div class="hint order-window-banner">${escapeHtml(
-                dropperOrdersEditWindow.message || ""
-              )}</div>`
-            : "";
-      els.ordersHistory.innerHTML =
-        lockedHint +
-        (items.length
-          ? items
-              .map((o) =>
-                renderOrderCard(o, {
-                  dropperActions: true,
-                  editWindow: dropperOrdersEditWindow,
-                  editMode: "dropper",
-                })
-              )
-              .join("")
-          : `<div class="empty">Поки немає переданих замовлень</div>`);
-      bindOrderCardClicks(els.ordersHistory);
+      paintOrdersHistoryList();
     } catch (error) {
       els.ordersHistory.innerHTML = `<div class="form-error">${escapeHtml(
         error.message || "Помилка"
@@ -3781,7 +4011,15 @@ ${
   }
 
   function setOwnerTab(tabName) {
-    const allowed = new Set(["droppers", "staff", "balances", "settings", "order", "blacklist"]);
+    const allowed = new Set([
+      "droppers",
+      "staff",
+      "balances",
+      "returns",
+      "settings",
+      "order",
+      "blacklist",
+    ]);
     const name = allowed.has(tabName) ? tabName : "droppers";
     if (els.ownerTabs) {
       els.ownerTabs.querySelectorAll("[data-owner-tab]").forEach((btn) => {
@@ -3796,6 +4034,9 @@ ${
     }
     if (els.ownerTabBalances) {
       els.ownerTabBalances.classList.toggle("hidden", name !== "balances");
+    }
+    if (els.ownerTabReturns) {
+      els.ownerTabReturns.classList.toggle("hidden", name !== "returns");
     }
     if (els.ownerTabSettings) {
       els.ownerTabSettings.classList.toggle("hidden", name !== "settings");
@@ -3814,6 +4055,9 @@ ${
 
     if (name === "balances") {
       renderOwnerBalances();
+    }
+    if (name === "returns") {
+      renderOwnerReturns();
     }
     if (name === "blacklist") {
       renderOwnerBlacklist();
@@ -4674,6 +4918,119 @@ ${
     )}</span></span>`;
   }
 
+  async function renderOwnerReturns() {
+    if (!els.ownerReturnsList) return;
+    els.ownerReturnsList.innerHTML = `<div class="ac-loading">Завантаження...</div>`;
+    try {
+      await fillOwnerReturnsDropperFilter();
+      const dropperChat = els.ownerReturnsDropperFilter?.value || "";
+      const params = new URLSearchParams(ownerAuthParams());
+      if (dropperChat) params.set("dropper_chat_id", dropperChat);
+      params.set("limit", "200");
+      const response = await fetch(`/api/owner/returns?${params.toString()}`);
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(typeof data.detail === "string" ? data.detail : "Помилка");
+      }
+      const items = data.items || [];
+      if (!items.length) {
+        els.ownerReturnsList.innerHTML = `<div class="empty">Немає заявок на повернення</div>`;
+        return;
+      }
+      els.ownerReturnsList.className = "results owner-returns";
+      els.ownerReturnsList.innerHTML = items
+        .map((row) => {
+          const ret = row.dropper_return || (row.payload && row.payload.dropper_return) || {};
+          const pending = String(ret.status || "") === "pending";
+          const statusKind =
+            String(ret.status || "") === "accepted" ? "return_accepted" : "return_pending";
+          return `
+          <article class="owner-return-card" data-return-order-id="${escapeHtml(
+            String(row.id || "")
+          )}">
+            <div class="owner-return-card-head">
+              <div>
+                <div class="owner-card-title">${escapeHtml(row.order_number || "")}</div>
+                <div class="meta">${escapeHtml(row.dropper_name || "—")}</div>
+                <div class="meta-soft">${escapeHtml(
+                  formatOrderDate(ret.created_at || row.created_at) || ""
+                )}</div>
+              </div>
+              <div class="order-card-status status-${escapeHtml(statusKind)}">${escapeHtml(
+                dropperReturnStatusLabel(ret.status)
+              )}</div>
+            </div>
+            <div class="meta">Тип: <b>${escapeHtml(dropperReturnTypeLabel(ret.type))}</b></div>
+            <div class="meta">ТТН повернення: <b>${escapeHtml(ret.ttn_number || "—")}</b></div>
+            <div class="meta">Оригінальна ТТН: ${escapeHtml(row.ttn_number || "—")}</div>
+            ${
+              pending
+                ? `<button type="button" class="btn primary" data-owner-return-accept="${escapeHtml(
+                    String(row.id || "")
+                  )}">Повернення прийнято</button>`
+                : ret.accepted_at
+                  ? `<div class="meta-soft">Прийнято: ${escapeHtml(
+                      formatOrderDate(ret.accepted_at) || ret.accepted_at
+                    )}</div>`
+                  : ""
+            }
+          </article>`;
+        })
+        .join("");
+    } catch (error) {
+      els.ownerReturnsList.innerHTML = `<div class="form-error">${escapeHtml(
+        error.message || "Помилка"
+      )}</div>`;
+    }
+  }
+
+  async function fillOwnerReturnsDropperFilter() {
+    if (!els.ownerReturnsDropperFilter) return;
+    const prev = els.ownerReturnsDropperFilter.value;
+    try {
+      const response = await fetch(`/api/owner/droppers?${ownerAuthParams()}`);
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.detail || "Помилка");
+      const items = data.items || [];
+      els.ownerReturnsDropperFilter.innerHTML =
+        `<option value="">Усі дроппери</option>` +
+        items
+          .map(
+            (d) =>
+              `<option value="${escapeHtml(d.chat_id)}">${escapeHtml(
+                d.company_name || d.chat_id
+              )}</option>`
+          )
+          .join("");
+      if (prev && items.some((d) => String(d.chat_id) === String(prev))) {
+        els.ownerReturnsDropperFilter.value = prev;
+      }
+    } catch (error) {
+      console.warn("owner returns droppers", error);
+    }
+  }
+
+  async function acceptOwnerReturn(orderId) {
+    try {
+      const response = await fetch(
+        `/api/owner/returns/${encodeURIComponent(orderId)}/accept`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(ownerAuthBody()),
+        }
+      );
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(typeof data.detail === "string" ? data.detail : "Помилка");
+      }
+      showToast("Повернення прийнято");
+      await renderOwnerReturns();
+    } catch (error) {
+      showToast(error.message || "Помилка");
+    }
+  }
+
   async function renderOwnerBalances() {
     if (!els.ownerBalances) return;
     els.ownerBalances.innerHTML = `<div class="ac-loading">Завантаження...</div>`;
@@ -5384,6 +5741,32 @@ ${
       setOwnerTab(btn.getAttribute("data-owner-tab"));
     });
   }
+
+  if (els.historyBuckets) {
+    els.historyBuckets.addEventListener("click", (event) => {
+      const btn = event.target.closest("[data-history-bucket]");
+      if (!btn) return;
+      const bucket = btn.getAttribute("data-history-bucket");
+      if (!bucket || bucket === historyBucket) return;
+      historyBucket = bucket;
+      syncHistoryBucketTabs();
+      paintOrdersHistoryList();
+    });
+  }
+
+  if (els.ownerReturnsDropperFilter) {
+    els.ownerReturnsDropperFilter.addEventListener("change", () => {
+      renderOwnerReturns();
+    });
+  }
+
+  document.addEventListener("click", (event) => {
+    const acceptBtn = event.target.closest("[data-owner-return-accept]");
+    if (!acceptBtn) return;
+    event.preventDefault();
+    const orderId = acceptBtn.getAttribute("data-owner-return-accept");
+    if (orderId) acceptOwnerReturn(orderId);
+  });
 
   if (els.previewRoleSelect) {
     els.previewRoleSelect.addEventListener("change", async () => {

@@ -263,6 +263,18 @@ class OrderDropperActionRequest(BaseModel):
     message: str = Field("", max_length=1000)
 
 
+class OrderDropperReturnRequest(BaseModel):
+    chat_id: str = Field(..., min_length=2, max_length=64)
+    user_id: str = Field("", max_length=64)
+    ttn_number: str = Field(..., min_length=5, max_length=64)
+    return_type: str = Field("regular", max_length=32)
+
+
+class OwnerReturnAcceptRequest(BaseModel):
+    owner_chat_id: str = Field("", max_length=64)
+    owner_user_id: str = Field("", max_length=64)
+
+
 class GeneralSettingsUpdateRequest(BaseModel):
     owner_chat_id: str = Field("", max_length=64)
     owner_user_id: str = Field("", max_length=64)
@@ -2294,6 +2306,180 @@ def create_web_app(
 
         changes = storage.list_order_changes(order_id, limit=100)
         return {"ok": True, "order": {**order, "changes": changes}}
+
+    @app.post("/api/dropper/orders/{order_id}/return")
+    async def dropper_create_return(
+        order_id: int,
+        payload: OrderDropperReturnRequest,
+    ) -> dict:
+        from datetime import datetime
+
+        dropper = storage.get_dropper_by_chat(payload.chat_id)
+        if not dropper:
+            raise HTTPException(status_code=404, detail="Дроппера не знайдено")
+        order = storage.get_order(order_id)
+        if not order or int(order.get("dropper_id") or 0) != int(dropper.id):
+            raise HTTPException(status_code=404, detail="Замовлення не знайдено")
+        if str(order.get("status") or "") == "cancelled":
+            raise HTTPException(status_code=400, detail="Замовлення скасовано")
+        ttn_status = str(order.get("ttn_status") or "")
+        if ttn_status != "received":
+            raise HTTPException(
+                status_code=400,
+                detail="Повернення можна оформити лише після отримання клієнтом",
+            )
+        existing = (order.get("payload") or {}).get("dropper_return")
+        if isinstance(existing, dict) and existing.get("status"):
+            raise HTTPException(
+                status_code=400,
+                detail="Заявка на повернення вже створена",
+            )
+        return_type = str(payload.return_type or "regular").strip().lower()
+        if return_type not in {"regular", "easy"}:
+            raise HTTPException(
+                status_code=400,
+                detail="Оберіть тип: звичайне або легке повернення",
+            )
+        ttn_raw = str(payload.ttn_number or "").strip().upper()
+        ttn_digits = re.sub(r"\D", "", ttn_raw)
+        if len(ttn_digits) < 10 and not re.match(r"^RMP-\d{6,20}$", ttn_raw, re.I):
+            raise HTTPException(
+                status_code=400,
+                detail="Вкажіть коректний номер зворотної ТТН",
+            )
+        return_ttn = ttn_raw if ttn_raw.startswith("RMP-") else ttn_digits
+        type_label = "Легке повернення" if return_type == "easy" else "Звичайне повернення"
+        now_iso = datetime.now().isoformat(timespec="seconds")
+        dropper_return = {
+            "type": return_type,
+            "ttn_number": return_ttn,
+            "status": "pending",
+            "created_at": now_iso,
+            "accepted_at": "",
+            "accepted_by": "",
+        }
+        saved = storage.merge_order_payload(order_id, {"dropper_return": dropper_return})
+        storage.add_order_change(
+            order_id=order_id,
+            order_number=str(order.get("order_number") or ""),
+            actor_role="dropper",
+            actor_user_id=str(payload.user_id or "").strip(),
+            actor_label=dropper.company_name or "Дроппер",
+            change_type="system",
+            summary=f"Заявка на повернення ({type_label}), ТТН {return_ttn}",
+            diff=[
+                {"field": "dropper_return.type", "old": "", "new": return_type},
+                {"field": "dropper_return.ttn_number", "old": "", "new": return_ttn},
+                {"field": "dropper_return.status", "old": "", "new": "pending"},
+            ],
+        )
+        owner_text = (
+            "↩️ Нова заявка на повернення\n"
+            f"Замовлення: {order.get('order_number')}\n"
+            f"Дроппер: {dropper.company_name}\n"
+            f"Тип: {type_label}\n"
+            f"ТТН повернення: {return_ttn}\n"
+            "Статус: очікує обробки\n"
+            "\n"
+            "Підтвердіть у кабінеті власника → вкладка «Повернення»."
+        )
+        await _notify_owners(owner_text)
+        try:
+            await _notify(
+                dropper.chat_id,
+                (
+                    f"↩️ Заявку на повернення {order.get('order_number')} прийнято.\n"
+                    f"Тип: {type_label}\n"
+                    f"ТТН: {return_ttn}\n"
+                    "Статус: очікує обробки."
+                ),
+            )
+        except Exception:
+            logger.exception("dropper return ack failed")
+        changes = storage.list_order_changes(order_id, limit=100)
+        return {"ok": True, "order": {**(saved or order), "changes": changes}}
+
+    @app.get("/api/owner/returns")
+    async def owner_list_returns(
+        owner_chat_id: str = Query("", max_length=64),
+        owner_user_id: str = Query("", max_length=64),
+        dropper_chat_id: str = Query("", max_length=64),
+        limit: int = Query(200, ge=1, le=500),
+    ) -> dict:
+        _require_owner(owner_chat_id, owner_user_id)
+        dropper_id = None
+        if dropper_chat_id.strip():
+            dropper = storage.get_dropper_by_chat(dropper_chat_id.strip())
+            if not dropper:
+                raise HTTPException(status_code=404, detail="Дроппера не знайдено")
+            dropper_id = dropper.id
+        items = storage.list_dropper_return_requests(
+            dropper_id=dropper_id, limit=limit
+        )
+        return {"items": items, "count": len(items)}
+
+    @app.post("/api/owner/returns/{order_id}/accept")
+    async def owner_accept_return(
+        order_id: int,
+        payload: OwnerReturnAcceptRequest,
+    ) -> dict:
+        from datetime import datetime
+
+        _require_owner(payload.owner_chat_id, payload.owner_user_id)
+        order = storage.get_order(order_id)
+        if not order:
+            raise HTTPException(status_code=404, detail="Замовлення не знайдено")
+        ret = (order.get("payload") or {}).get("dropper_return")
+        if not isinstance(ret, dict) or not ret.get("status"):
+            raise HTTPException(status_code=400, detail="Немає заявки на повернення")
+        if str(ret.get("status") or "") == "accepted":
+            changes = storage.list_order_changes(order_id, limit=100)
+            return {"ok": True, "order": {**order, "changes": changes}, "already": True}
+        if str(ret.get("status") or "") != "pending":
+            raise HTTPException(status_code=400, detail="Заявку не можна прийняти")
+        now_iso = datetime.now().isoformat(timespec="seconds")
+        updated_ret = dict(ret)
+        updated_ret["status"] = "accepted"
+        updated_ret["accepted_at"] = now_iso
+        updated_ret["accepted_by"] = str(payload.owner_user_id or "").strip()
+        saved = storage.merge_order_payload(order_id, {"dropper_return": updated_ret})
+        storage.add_order_change(
+            order_id=order_id,
+            order_number=str(order.get("order_number") or ""),
+            actor_role="owner",
+            actor_user_id=str(payload.owner_user_id or "").strip(),
+            actor_label="Власник",
+            change_type="status",
+            summary="Повернення прийнято",
+            diff=[
+                {
+                    "field": "dropper_return.status",
+                    "old": "pending",
+                    "new": "accepted",
+                }
+            ],
+        )
+        dropper = storage.get_dropper_by_id(int(order.get("dropper_id") or 0))
+        if dropper:
+            type_label = (
+                "Легке повернення"
+                if str(updated_ret.get("type") or "") == "easy"
+                else "Звичайне повернення"
+            )
+            try:
+                await _notify(
+                    dropper.chat_id,
+                    (
+                        f"✅ Повернення прийнято\n"
+                        f"Замовлення: {order.get('order_number')}\n"
+                        f"Тип: {type_label}\n"
+                        f"ТТН повернення: {updated_ret.get('ttn_number') or '—'}"
+                    ),
+                )
+            except Exception:
+                logger.exception("owner accept return notify failed")
+        changes = storage.list_order_changes(order_id, limit=100)
+        return {"ok": True, "order": {**(saved or order), "changes": changes}}
 
     @app.get("/api/owner/settings")
     async def get_owner_settings(

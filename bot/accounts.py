@@ -1793,6 +1793,43 @@ class AppStorage:
             ).fetchall()
         return [self._row_order(r) for r in rows]
 
+    def list_dropper_return_requests(
+        self,
+        *,
+        dropper_id: int | None = None,
+        limit: int = 200,
+    ) -> list[dict[str, Any]]:
+        """Замовлення з заявкою payload.dropper_return (новіші спочатку)."""
+        limit = max(1, min(int(limit or 200), 500))
+        sql = """
+            SELECT o.*
+            FROM orders o
+            WHERE o.payload_json LIKE '%"dropper_return"%'
+        """
+        params: list[Any] = []
+        if dropper_id is not None:
+            sql += " AND o.dropper_id = ?"
+            params.append(int(dropper_id))
+        sql += " ORDER BY o.id DESC LIMIT ?"
+        params.append(limit)
+        with self._connect() as conn:
+            rows = conn.execute(sql, tuple(params)).fetchall()
+        out: list[dict[str, Any]] = []
+        for row in rows:
+            order = self._row_order(row)
+            ret = (order.get("payload") or {}).get("dropper_return")
+            if not isinstance(ret, dict) or not ret:
+                continue
+            dropper = self.get_dropper_by_id(int(order.get("dropper_id") or 0))
+            item = dict(order)
+            item["dropper_return"] = ret
+            item["dropper_chat_id"] = dropper.chat_id if dropper else ""
+            item["dropper_name"] = (
+                (dropper.company_name if dropper else "") or ""
+            )
+            out.append(item)
+        return out
+
     @staticmethod
     def normalize_client_phone(raw: str) -> str:
         """Нормалізація телефону клієнта → 380XXXXXXXXX (12 цифр) або ''."""
