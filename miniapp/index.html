@@ -555,8 +555,9 @@
           <div class="form-section">
             <h2 class="section-title">Спосіб оплати</h2>
             <div class="info-box" id="codPaymentHint">
-              При виборі «Оплата при отриманні», поштовій компанії буде вказано Оголошену вартість
-              та Суму зворотної доставки згідно суми «Дроп ціна» (з врахуванням передплати) на замовлення.
+              При виборі «Оплата при отриманні» вкажіть суму накладного платежу —
+              вона ж піде в Нову Пошту як оголошена вартість і як наложка.
+              Передплату (якщо була) вкажіть окремо нижче.
             </div>
 
             <div class="choice-list" role="radiogroup" aria-label="Спосіб оплати">
@@ -609,7 +610,17 @@
             </div>
 
             <div id="prepayBlock" class="hidden">
-              <label class="field" id="codAmountField">
+              <div class="info-box" id="prepayHint">
+                Якщо отримувач вніс передплату, вкажіть суму для вирахування з накладеного платежу
+              </div>
+              <label class="field" id="prepayField">
+                <span class="field-label">Сума передплати</span>
+                <div class="input-with-prefix">
+                  <span class="input-prefix">₴</span>
+                  <input id="prepay" name="prepay" type="number" min="0" step="1" inputmode="numeric" placeholder="Сума передплати" />
+                </div>
+              </label>
+              <label class="field hidden" id="codAmountField">
                 <span class="field-label">Сума накладного платежу</span>
                 <div class="input-with-prefix">
                   <span class="input-prefix">₴</span>
@@ -622,16 +633,6 @@
                     inputmode="numeric"
                     placeholder="Сума накладного платежу"
                   />
-                </div>
-              </label>
-              <div class="info-box" id="prepayHint">
-                Якщо отримувач вніс передплату, вкажіть суму для вирахування з накладеного платежу
-              </div>
-              <label class="field" id="prepayField">
-                <span class="field-label">Сума передплати</span>
-                <div class="input-with-prefix">
-                  <span class="input-prefix">₴</span>
-                  <input id="prepay" name="prepay" type="number" min="0" step="1" inputmode="numeric" placeholder="Сума передплати" />
                 </div>
               </label>
             </div>
@@ -736,6 +737,6 @@
   </div>
 
   <button type="button" id="photoZoomBackdrop" class="photo-zoom-backdrop hidden" aria-label="Закрити фото"></button>
-  <script src="/static/app.js?v=20260725own1"></script>
+  <script src="/static/app.js?v=20260725cod2"></script>
 </body>
 </html>
