@@ -454,12 +454,13 @@
     }, 280);
   }
 
-  function showToast(text) {
+  function showToast(text, durationMs = 2200) {
     const node = document.createElement("div");
     node.className = "toast";
     node.textContent = text;
     document.body.appendChild(node);
-    setTimeout(() => node.remove(), 2200);
+    const ms = Math.max(800, Number(durationMs) || 2200);
+    setTimeout(() => node.remove(), ms);
   }
 
   function setCheckoutError(message) {
@@ -1160,6 +1161,11 @@
     const allowCod = isFlagEnabled(dropperSettings.allow_cod, true);
     const allowBalance = Boolean(dropperSettings.allow_balance_payment);
 
+    // Без наложенки від постачальника — лише власна ТТН
+    if (!allowCod && els.ownTtn && !els.ownTtn.checked) {
+      els.ownTtn.checked = true;
+    }
+
     const ownTtn = Boolean(els.ownTtn?.checked);
     syncOwnTtnCarrierUi();
 
@@ -1203,16 +1209,10 @@
 
     const showRequisites = payment === "requisites";
     const showBalance = payment === "balance";
-    const showPrepay = !ownTtn && allowCod && payment === "cod";
-    const showPaymentEstimated = !ownTtn && payment !== "cod";
+    // Класична форма (не власна ТТН): оціночна завжди; наложка — лише при «Оплата при отриманні»
+    const showPaymentEstimated = !ownTtn;
+    const showCodFields = !ownTtn && allowCod && payment === "cod";
     const showReceipt = showRequisites && dropperSettings.require_full_payment;
-
-    if (els.prepayBlock) els.prepayBlock.classList.toggle("hidden", !showPrepay);
-    if (els.prepayField) els.prepayField.classList.toggle("hidden", !showPrepay);
-    if (els.codAmountField) {
-      els.codAmountField.classList.toggle("hidden", !showPrepay);
-    }
-    if (els.prepayHint) els.prepayHint.classList.toggle("hidden", !showPrepay);
 
     if (els.estimatedCostBlock) {
       els.estimatedCostBlock.classList.toggle("hidden", !showPaymentEstimated);
@@ -1228,6 +1228,13 @@
         "Для накладної Нової Пошти (оголошена вартість)";
     }
 
+    if (els.prepayBlock) els.prepayBlock.classList.toggle("hidden", !showCodFields);
+    if (els.prepayField) els.prepayField.classList.toggle("hidden", !showCodFields);
+    if (els.codAmountField) {
+      els.codAmountField.classList.toggle("hidden", !showCodFields);
+    }
+    if (els.prepayHint) els.prepayHint.classList.toggle("hidden", !showCodFields);
+
     els.requisitesBlock.classList.toggle("hidden", !showRequisites);
     els.receiptField.classList.toggle("hidden", !showReceipt);
     if (els.balancePayHint) els.balancePayHint.classList.toggle("hidden", !showBalance);
@@ -1235,6 +1242,10 @@
     const total = cartMoneyTotal();
     if (els.estimatedCost && showPaymentEstimated && !els.estimatedCost.value) {
       els.estimatedCost.value = String(Math.max(1, Math.round(total)));
+    }
+    if (els.codAmount && showCodFields && !els.codAmount.value) {
+      const est = Number(els.estimatedCost?.value || total) || total;
+      els.codAmount.value = String(Math.max(0, Math.round(est)));
     }
     updatePrepayUi(total);
     updateRequisitesIntro(total);
@@ -1577,13 +1588,14 @@
         }
         if (!data.house) return "Вкажіть номер будинку";
       }
-      if (data.paymentMethod !== "cod") {
-        const estRaw = data.estimatedCost === "" ? null : Number(data.estimatedCost);
-        if (estRaw === null || Number.isNaN(estRaw) || estRaw < 1) {
-          return "Вкажіть оціночну вартість (мін. 1 ₴)";
-        }
-        data.estimatedCost = Math.round(estRaw);
+      if (!isFlagEnabled(dropperSettings.allow_cod, true)) {
+        return "Відправлення накладним платежем заблоковано постачальником";
       }
+      const estRaw = data.estimatedCost === "" ? null : Number(data.estimatedCost);
+      if (estRaw === null || Number.isNaN(estRaw) || estRaw < 1) {
+        return "Вкажіть оціночну вартість (мін. 1 ₴)";
+      }
+      data.estimatedCost = Math.round(estRaw);
     }
 
     if (
@@ -1595,6 +1607,10 @@
     }
     if (!data.rulesAccepted) {
       return "Підтвердіть ознайомлення з правилами";
+    }
+
+    if (!data.ownTtn && !isFlagEnabled(dropperSettings.allow_cod, true)) {
+      return "Відправлення накладним платежем заблоковано постачальником";
     }
 
     if (data.paymentMethod === "cod" && !isFlagEnabled(dropperSettings.allow_cod, true)) {
@@ -1709,10 +1725,7 @@
     const dropperProfit = showClassicCod
       ? roundMoney(codExact - prepayExact - totalExact)
       : null;
-    const estExact =
-      !data.ownTtn && data.paymentMethod !== "cod"
-        ? roundMoney(data.estimatedCost || 0)
-        : 0;
+    const estExact = !data.ownTtn ? roundMoney(data.estimatedCost || 0) : 0;
     const recipientBlock = data.ownTtn
       ? `<div class="confirm-block">
         <div class="confirm-label">Клієнт</div>
@@ -1731,7 +1744,7 @@ ${escapeHtml(data.city || "")}
 ${escapeHtml(deliveryExtra)}</div>
       </div>`;
     const paymentExtra = showClassicCod
-      ? `Накладений платіж: ${escapeHtml(formatMoneyAmount(codExact))} ₴\nПередплата: ${escapeHtml(formatMoneyAmount(prepayExact))} ₴\nПрибуток дроппера: ${escapeHtml(formatMoneyAmount(dropperProfit))} ₴`
+      ? `Оціночна вартість: ${escapeHtml(formatMoneyAmount(estExact))} ₴\nНакладений платіж: ${escapeHtml(formatMoneyAmount(codExact))} ₴\nПередплата: ${escapeHtml(formatMoneyAmount(prepayExact))} ₴\nПрибуток дроппера: ${escapeHtml(formatMoneyAmount(dropperProfit))} ₴`
       : estExact > 0
         ? `Оціночна вартість: ${escapeHtml(formatMoneyAmount(estExact))} ₴`
         : "";
@@ -4163,14 +4176,34 @@ ${
 
   els.checkoutForm.addEventListener("change", (event) => {
     if (event.target.name === "deliveryMethod") syncDeliveryFields();
+    if (event.target.id === "ownTtn") {
+      if (!isFlagEnabled(dropperSettings.allow_cod, true) && !event.target.checked) {
+        event.target.checked = true;
+        showToast("Відправлення накладним платежем заблоковано постачальником", 5000);
+      }
+      syncPaymentAndTtn();
+      return;
+    }
     if (
-      event.target.id === "ownTtn" ||
       event.target.name === "paymentMethod" ||
       event.target.name === "ownTtnCarrier"
     ) {
       syncPaymentAndTtn();
     }
   });
+
+  if (els.ownTtn) {
+    els.ownTtn.addEventListener("click", (event) => {
+      if (!isFlagEnabled(dropperSettings.allow_cod, true) && els.ownTtn.checked) {
+        // Клік намагається вимкнути (буде unchecked після click) — блокуємо
+        // На click checked ще старий стан: якщо зараз true і клікають — стане false
+        // Тому якщо allow_cod off і тумблер увімкнений — не даємо вимкнути
+        event.preventDefault();
+        els.ownTtn.checked = true;
+        showToast("Відправлення накладним платежем заблоковано постачальником", 5000);
+      }
+    });
+  }
 
   els.checkoutForm.addEventListener("submit", (event) => {
     event.preventDefault();

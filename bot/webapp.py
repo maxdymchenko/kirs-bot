@@ -1173,6 +1173,12 @@ def create_web_app(
                         status_code=400,
                         detail="Файл 100×100 має бути у форматі PDF",
                     )
+        elif not for_owner_edit and not getattr(dropper, "allow_cod", True):
+            # Без наложенки від постачальника дроппер може передавати лише за власною ТТН
+            raise HTTPException(
+                status_code=403,
+                detail="Відправлення накладним платежем заблоковано постачальником",
+            )
 
         if payload.payment_method == "balance":
             if not for_owner_edit and not dropper.allow_balance_payment:

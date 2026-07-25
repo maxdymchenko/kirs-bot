@@ -587,34 +587,6 @@
               Суму «Дроп ціна» буде списано з балансу дроппера. Якщо коштів не вистачає — підете в мінус у межах дозволеного ліміту.
             </div>
 
-            <div id="prepayBlock" class="hidden">
-              <div class="info-box" id="prepayHint">
-                Якщо отримувач вніс передплату, вкажіть суму для вирахування з накладеного платежу
-              </div>
-              <label class="field" id="codAmountField">
-                <span class="field-label">Сума накладного платежу</span>
-                <div class="input-with-prefix">
-                  <span class="input-prefix">₴</span>
-                  <input
-                    id="codAmount"
-                    name="codAmount"
-                    type="number"
-                    min="0"
-                    step="1"
-                    inputmode="numeric"
-                    placeholder="Сума накладного платежу"
-                  />
-                </div>
-              </label>
-              <label class="field" id="prepayField">
-                <span class="field-label">Сума передплати</span>
-                <div class="input-with-prefix">
-                  <span class="input-prefix">₴</span>
-                  <input id="prepay" name="prepay" type="number" min="0" step="1" inputmode="numeric" placeholder="Сума передплати" />
-                </div>
-              </label>
-            </div>
-
             <div id="paymentEstimatedSlot">
               <div id="estimatedCostBlock" class="hidden">
                 <label class="field">
@@ -634,6 +606,34 @@
                   <p class="field-hint" id="estimatedCostHint">Для накладної Нової Пошти (оголошена вартість)</p>
                 </label>
               </div>
+            </div>
+
+            <div id="prepayBlock" class="hidden">
+              <label class="field" id="codAmountField">
+                <span class="field-label">Сума накладного платежу</span>
+                <div class="input-with-prefix">
+                  <span class="input-prefix">₴</span>
+                  <input
+                    id="codAmount"
+                    name="codAmount"
+                    type="number"
+                    min="0"
+                    step="1"
+                    inputmode="numeric"
+                    placeholder="Сума накладного платежу"
+                  />
+                </div>
+              </label>
+              <div class="info-box" id="prepayHint">
+                Якщо отримувач вніс передплату, вкажіть суму для вирахування з накладеного платежу
+              </div>
+              <label class="field" id="prepayField">
+                <span class="field-label">Сума передплати</span>
+                <div class="input-with-prefix">
+                  <span class="input-prefix">₴</span>
+                  <input id="prepay" name="prepay" type="number" min="0" step="1" inputmode="numeric" placeholder="Сума передплати" />
+                </div>
+              </label>
             </div>
 
             <div id="requisitesBlock" class="hidden">
@@ -736,6 +736,6 @@
   </div>
 
   <button type="button" id="photoZoomBackdrop" class="photo-zoom-backdrop hidden" aria-label="Закрити фото"></button>
-  <script src="/static/app.js?v=20260724cod1"></script>
+  <script src="/static/app.js?v=20260725own1"></script>
 </body>
 </html>
