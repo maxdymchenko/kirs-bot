@@ -144,7 +144,6 @@ class DropperBroadcastRequest(BaseModel):
 class DropperSettingsUpdateRequest(BaseModel):
     owner_chat_id: str = Field("", max_length=64)
     owner_user_id: str = Field("", max_length=64)
-    require_full_payment: bool | None = None
     allow_cod: bool | None = None
     allow_balance_payment: bool | None = None
     allow_negative_balance: bool | None = None
@@ -428,7 +427,6 @@ def create_web_app(
         return {
             "chat_id": str(chat_id or "").strip(),
             "name": "",
-            "require_full_payment": False,
             "allow_cod": True,
             "allow_balance_payment": False,
             "allow_negative_balance": False,
@@ -865,19 +863,6 @@ def create_web_app(
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         return {"ok": True, "staff": member.to_dict()}
 
-    @app.post("/api/owner/droppers/{chat_id}/payment-flag")
-    async def owner_set_payment_flag(
-        chat_id: str,
-        payload: DropperPaymentFlagRequest,
-    ) -> dict:
-        _require_owner(payload.owner_chat_id, payload.owner_user_id)
-        dropper = storage.set_dropper_require_full_payment(
-            chat_id, payload.require_full_payment
-        )
-        if not dropper:
-            raise HTTPException(status_code=404, detail="Дроппера не знайдено")
-        return {"ok": True, "dropper": dropper.to_dict()}
-
     @app.post("/api/owner/droppers/{chat_id}/settings")
     async def owner_update_dropper_settings(
         chat_id: str,
@@ -886,7 +871,6 @@ def create_web_app(
         _require_owner(payload.owner_chat_id, payload.owner_user_id)
         dropper = storage.update_dropper_settings(
             chat_id,
-            require_full_payment=payload.require_full_payment,
             allow_cod=payload.allow_cod,
             allow_balance_payment=payload.allow_balance_payment,
             allow_negative_balance=payload.allow_negative_balance,
@@ -1133,14 +1117,6 @@ def create_web_app(
                         "(без наложки). Зверніться до постачальника за деталями."
                     ),
                 )
-            if (
-                payload.payment_method == "requisites"
-                and not payload.receipt_name.strip()
-            ):
-                raise HTTPException(
-                    status_code=400,
-                    detail="При рейтингу викупу ≤50% потрібна квитанція про повну оплату",
-                )
 
         if payload.own_ttn:
             if payload.payment_method not in ("requisites", "balance"):
@@ -1248,13 +1224,6 @@ def create_web_app(
                 if not payload.street_ref or not payload.house.strip():
                     raise HTTPException(status_code=400, detail="Вкажіть адресу для курʼєра")
 
-        if (
-            not for_owner_edit
-            and payload.payment_method == "requisites"
-            and dropper.require_full_payment
-            and not payload.receipt_name.strip()
-        ):
-            raise HTTPException(status_code=400, detail="Потрібна квитанція про оплату")
         return total, prepay, debit, cod_amount
 
     def _format_dropper_accept_message(order: dict, dropper) -> str:

@@ -186,13 +186,10 @@
     requisitesBlock: document.getElementById("requisitesBlock"),
     requisitesDetails: document.getElementById("requisitesDetails"),
     payAmountLabel: document.getElementById("payAmountLabel"),
-    paymentReceipt: document.getElementById("paymentReceipt"),
-    receiptField: document.getElementById("receiptField"),
     requisitesIntro: document.getElementById("requisitesIntro"),
     ttnPdfField: document.getElementById("ttnPdfField"),
     ttnPdf: document.getElementById("ttnPdf"),
     ttnPdfName: document.getElementById("ttnPdfName"),
-    paymentReceiptName: document.getElementById("paymentReceiptName"),
     phone: document.getElementById("phone"),
     phoneGhost: document.getElementById("phoneGhost"),
     city: document.getElementById("city"),
@@ -212,7 +209,6 @@
 
   const dropperSettings = {
     chat_id: "",
-    require_full_payment: false,
     allow_cod: true,
     allow_balance_payment: false,
     allow_negative_balance: false,
@@ -969,7 +965,6 @@
       if (!response.ok) {
         throw new Error(data.detail || "settings error");
       }
-      dropperSettings.require_full_payment = Boolean(data.require_full_payment);
       // Явно false/0 з API = вимкнено; відсутнє поле → увімкнено (сумісність)
       dropperSettings.allow_cod = isFlagEnabled(data.allow_cod, true);
       dropperSettings.allow_balance_payment = Boolean(data.allow_balance_payment);
@@ -988,7 +983,6 @@
       renderRequisitesDetails();
     } catch (error) {
       console.warn("dropper settings", error);
-      dropperSettings.require_full_payment = false;
       // При помилці налаштувань не показуємо наложку «на всяк випадок»
       dropperSettings.allow_cod = false;
       dropperSettings.allow_balance_payment = false;
@@ -1092,15 +1086,8 @@
   function updateRequisitesIntro(total) {
     if (!els.requisitesIntro) return;
     const amount = `${formatMoneyAmount(total)} грн`;
-    if (dropperSettings.require_full_payment) {
-      els.requisitesIntro.innerHTML =
-        `Виконайте оплату в розмірі <strong id="payAmountLabel">${amount}</strong> за реквізитами ` +
-        `та завантажте фото/скрін квитанції про оплату.`;
-    } else {
-      els.requisitesIntro.innerHTML =
-        `Виконайте оплату в розмірі <strong id="payAmountLabel">${amount}</strong> за реквізитами.`;
-    }
-    // payAmountLabel був перезаписаний innerHTML — оновимо посилання
+    els.requisitesIntro.innerHTML =
+      `Виконайте оплату в розмірі <strong id="payAmountLabel">${amount}</strong> за реквізитами.`;
     els.payAmountLabel = document.getElementById("payAmountLabel");
   }
 
@@ -1213,7 +1200,6 @@
     // Одне поле: для реквізитів/балансу — оціночна; для наложенки — сума НП (= Cost + COD)
     const showPaymentValue = !ownTtn;
     const showPrepayOnly = isCodPayment;
-    const showReceipt = showRequisites && dropperSettings.require_full_payment;
 
     if (els.estimatedCostBlock) {
       els.estimatedCostBlock.classList.toggle("hidden", !showPaymentValue);
@@ -1251,7 +1237,6 @@
     if (els.prepayHint) els.prepayHint.classList.toggle("hidden", !showPrepayOnly);
 
     els.requisitesBlock.classList.toggle("hidden", !showRequisites);
-    els.receiptField.classList.toggle("hidden", !showReceipt);
     if (els.balancePayHint) els.balancePayHint.classList.toggle("hidden", !showBalance);
 
     const total = cartMoneyTotal();
@@ -1479,7 +1464,6 @@
       form.querySelector('input[name="deliveryMethod"]:checked')?.value || "";
     const paymentMethod =
       form.querySelector('input[name="paymentMethod"]:checked')?.value || "";
-    const receiptFile = els.paymentReceipt?.files?.[0] || null;
     const ttnPdfFile = els.ttnPdf?.files?.[0] || null;
     const ownTtnNumber =
       selectedOwnTtnCarrier() === "rozetka"
@@ -1513,8 +1497,8 @@
       prepay: form.prepay.value.trim(),
       comment: form.comment.value.trim(),
       rulesAccepted: Boolean(form.rulesAccepted.checked),
-      receiptName: receiptFile ? receiptFile.name : "",
-      receiptFile,
+      receiptName: "",
+      receiptFile: null,
       ttnPdfName: ttnPdfFile ? ttnPdfFile.name : "",
       ttnPdfFile,
       cart: loadCart(),
@@ -1615,13 +1599,6 @@
       }
     }
 
-    if (
-      data.paymentMethod === "requisites" &&
-      dropperSettings.require_full_payment &&
-      !data.receiptFile
-    ) {
-      return "Завантажте фото/скрін квитанції про оплату";
-    }
     if (!data.rulesAccepted) {
       return "Підтвердіть ознайомлення з правилами";
     }
@@ -4194,7 +4171,6 @@ ${
   }
 
   bindFilePicker(els.ttnPdf, els.ttnPdfName);
-  bindFilePicker(els.paymentReceipt, els.paymentReceiptName);
 
   els.checkoutForm.addEventListener("change", (event) => {
     if (event.target.name === "deliveryMethod") syncDeliveryFields();
@@ -5255,22 +5231,8 @@ ${
               </label>
               <label class="setting-row">
                 <span class="setting-copy">
-                  <span class="setting-label">Лише після повної оплати</span>
-                  <span class="setting-hint">Потрібна квитанція до замовлення</span>
-                </span>
-                <span class="setting-control">
-                  <span class="toggle">
-                    <input type="checkbox" data-rule="require_full_payment" ${
-                      d.require_full_payment ? "checked" : ""
-                    } />
-                    <span class="toggle-ui"></span>
-                  </span>
-                </span>
-              </label>
-              <label class="setting-row">
-                <span class="setting-copy">
                   <span class="setting-label">В рахунок балансу</span>
-                  <span class="setting-hint">Списання з балансу замість оплати</span>
+                  <span class="setting-hint">Списання з балансу замість оплати (реквізити + баланс)</span>
                 </span>
                 <span class="setting-control">
                   <span class="toggle">
