@@ -55,17 +55,7 @@ _REPLY_BUTTON_TEXTS = frozenset(
     }
 )
 
-_STOCK_LINE_RE = re.compile(
-    # 010 | Розовое золото = 5   або   010 / Золотой = -3
-    r"^\s*(?P<code>[^\s|/;=]+)\s*[|/;]\s*(?P<color>.+?)\s*[=:]\s*(?P<delta>[+-]?\d+)\s*$",
-    re.UNICODE,
-)
-# Без кольору — лише якщо в таблиці один варіант цього коду
-_STOCK_LINE_NO_COLOR_RE = re.compile(
-    r"^\s*(?P<code>[^\s=:|/;]+)\s*[=:]\s*(?P<delta>[+-]?\d+)\s*$",
-    re.UNICODE,
-)
-
+# Рядки наявності: 010=розовое золото=-2  |  010 = 4  |  010 | Золотой = 5
 _AWAITING_STOCK_KEY = "awaiting_stock_adjust"
 
 
@@ -175,28 +165,40 @@ def _can_adjust_stock(role: str | None) -> bool:
 
 
 def parse_stock_adjust_text(text: str) -> tuple[list[dict], list[str]]:
-    """Розбір рядків `010 | Розовое золото = 5`. Повертає (adjustments, parse_errors)."""
+    """
+    Розбір рядків наявності. Колір опційний. Приклади:
+      010=розовое золото=-2
+      010 = золото = 5
+      010 = Розовое золото=-3
+      010=Розовое золото =4
+      010=-5
+      010 =4
+      010 = 3
+      010 | Розовое золото = 5
+    """
     adjustments: list[dict] = []
     errors: list[str] = []
     for raw_line in str(text or "").splitlines():
         line = raw_line.strip()
         if not line or line.startswith("#"):
             continue
-        match = _STOCK_LINE_RE.match(line)
-        color = ""
-        if match:
-            color = str(match.group("color") or "").strip()
-        else:
-            match = _STOCK_LINE_NO_COLOR_RE.match(line)
-            if not match:
-                errors.append(f"не розпізнано: {line}")
-                continue
-        code = match.group("code").strip().lstrip("'")
+        # | або ; між кодом і кольором → той самий роздільник, що =
+        normalized = re.sub(r"\s*[|;]\s*", "=", line)
+        parts = [p.strip() for p in normalized.split("=") if p.strip()]
+        if len(parts) < 2:
+            errors.append(f"не розпізнано: {line}")
+            continue
+        delta_raw = parts[-1].replace(" ", "")
         try:
-            delta = int(match.group("delta"))
+            delta = int(delta_raw)
         except ValueError:
             errors.append(f"некоректна кількість: {line}")
             continue
+        code = parts[0].strip().lstrip("'")
+        if not code:
+            errors.append(f"порожній код: {line}")
+            continue
+        color = " ".join(parts[1:-1]).strip() if len(parts) > 2 else ""
         adjustments.append({"code": code, "color": color, "delta": delta})
     return adjustments, errors
 
@@ -237,11 +239,17 @@ async def stock_adjust_start(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     _set_awaiting_stock(context, True)
     await update.message.reply_text(
-        "Надішліть список змін наявності (один рядок = код + колір):\n\n"
-        "`010 | Розовое золото = 5` — прибуло 5 шт\n"
-        "`010 | Золотой = -3` — списано 3 шт\n\n"
-        "Формат: `код | колір = кількість`\n"
-        "Якщо у коду лише один колір — можна без кольору: `012 = 2`\n\n"
+        "Надішліть список змін наявності (по одному в рядку).\n"
+        "Колір — за бажанням.\n\n"
+        "З кольором:\n"
+        "`010=розовое золото=-2`\n"
+        "`010 = золото = 5`\n"
+        "`010 = Розовое золото=-3`\n"
+        "`010=Розовое золото =4`\n\n"
+        "Без кольору (якщо варіант один, або уточнить бот):\n"
+        "`010=-5`\n"
+        "`010 =4`\n"
+        "`010 = 3`\n\n"
         f"Або натисніть «{BTN_STOCK_CANCEL}».",
         parse_mode=ParseMode.MARKDOWN,
         reply_markup=build_reply_keyboard(role, need_registration=need_reg, stock_mode=True),
@@ -284,7 +292,7 @@ async def stock_adjust_text_handler(
     if not adjustments and parse_errors:
         await update.message.reply_text(
             "Не вдалося розпізнати список.\n"
-            "Формат: `010 | Розовое золото = 5` (по одному в рядку).\n\n"
+            "Приклади: `010=розовое золото=-2` або `010 = 4`\n\n"
             + "\n".join(f"• {e}" for e in parse_errors[:10]),
             parse_mode=ParseMode.MARKDOWN,
             reply_markup=build_reply_keyboard(
@@ -294,7 +302,7 @@ async def stock_adjust_text_handler(
         return
     if not adjustments:
         await update.message.reply_text(
-            "Порожнє повідомлення. Надішліть рядки на кшталт `010 | Золотой = 5`.",
+            "Порожнє повідомлення. Надішліть, наприклад: `010 = Розовое золото = 5`",
             parse_mode=ParseMode.MARKDOWN,
             reply_markup=build_reply_keyboard(
                 role, need_registration=need_reg, stock_mode=True
