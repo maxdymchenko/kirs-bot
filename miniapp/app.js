@@ -1938,7 +1938,7 @@ ${ttnLine}</div>
     return Math.max(0, Math.floor((Date.now() - start) / 86400000));
   }
 
-  /** Статус для бейджа в історії замовлень (українською). */
+  /** Вкладка історії: awaiting | transit | received | returns */
   function orderHistoryBucket(order) {
     const payload = order.payload || {};
     const ret = payload.dropper_return;
@@ -1948,12 +1948,18 @@ ${ttnLine}</div>
       ttn === "returned" ||
       ttn === "refused" ||
       ttn === "return_at_warehouse" ||
-      payload.return_at_warehouse
+      ttn === "cancelled" ||
+      payload.return_at_warehouse ||
+      String(order.status || "") === "cancelled"
     ) {
       return "returns";
     }
     if (ttn === "received") return "received";
-    return "transit";
+    if (ttn === "in_transit" || ttn === "at_warehouse" || ttn === "provided") {
+      return "transit";
+    }
+    // pending_create / created / create_error / none / ще без руху НП
+    return "awaiting";
   }
 
   function dropperReturnTypeLabel(type) {
@@ -3527,7 +3533,7 @@ ${
 
   let dropperOrdersEditWindow = null;
   let dropperOrdersCache = [];
-  let historyBucket = "transit";
+  let historyBucket = "awaiting";
 
   function syncHistoryBucketTabs() {
     if (!els.historyBuckets) return;
@@ -3555,6 +3561,7 @@ ${
             )}</div>`
           : "";
     const emptyByBucket = {
+      awaiting: "Немає замовлень, що очікують відправлення",
       transit: "Немає замовлень у дорозі",
       received: "Немає отриманих замовлень",
       returns: "Немає повернень",
