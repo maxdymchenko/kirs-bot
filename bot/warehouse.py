@@ -138,6 +138,89 @@ def mark_order_back_to_packing(
     return storage.get_order(int(order_id)) or order
 
 
+def order_has_ttn_pdf(order: dict[str, Any]) -> bool:
+    payload = order.get("payload") or {}
+    return bool(
+        payload.get("ttn_pdf_local_path")
+        or payload.get("ttn_pdf_local_abs")
+        or payload.get("ttn_pdf_drive_file_id")
+    )
+
+
+def ensure_order_ttn_pdf(storage: AppStorage, order: dict[str, Any]) -> dict[str, Any]:
+    """
+    Якщо локального PDF немає — спробувати завантажити етикетку з НП
+    (для замовлень, створених ключем власника).
+    """
+    from bot.ttn_drive import persist_order_ttn_pdf
+    from bot.ttn_store import read_pdf_bytes
+
+    payload = order.get("payload") or {}
+    local = str(
+        payload.get("ttn_pdf_local_path") or payload.get("ttn_pdf_local_abs") or ""
+    ).strip()
+    if local:
+        try:
+            read_pdf_bytes(local)
+            return order
+        except Exception:
+            logger.info(
+                "TTN local PDF missing for %s — try NP re-download",
+                order.get("order_number"),
+            )
+
+    if payload.get("ttn_pdf_drive_file_id"):
+        return order
+
+    if order.get("own_ttn"):
+        raise ValueError(
+            f"{order.get('order_number')}: власна ТТН без завантаженого PDF"
+        )
+
+    doc_ref = str(payload.get("np_document_ref") or "").strip()
+    ttn = str(order.get("ttn_number") or payload.get("ttn_number") or "").strip()
+    if not doc_ref and not ttn:
+        raise ValueError(f"{order.get('order_number')}: немає Ref/ТТН для друку")
+
+    from bot.np_fulfillment import list_np_clients
+    from bot.novaposhta import NovaPoshtaError
+
+    clients = list_np_clients(storage)
+    if not clients:
+        raise ValueError("Немає API-ключа Нової Пошти для друку етикетки")
+
+    last_err: Exception | None = None
+    pdf_bytes: bytes | None = None
+    for label, client, _is_primary in clients:
+        try:
+            # Спочатку Ref документа; якщо немає — НП print інколи приймає номер у URL
+            key = doc_ref or ttn
+            pdf_bytes = client.download_marking_pdf(key)
+            break
+        except Exception as exc:
+            last_err = exc
+            logger.warning(
+                "NP label download via «%s» failed order=%s: %s",
+                label,
+                order.get("order_number"),
+                exc,
+            )
+    if not pdf_bytes:
+        raise ValueError(
+            f"{order.get('order_number')}: не вдалося завантажити PDF з НП"
+            + (f" ({last_err})" if last_err else "")
+        ) from last_err
+
+    saved = persist_order_ttn_pdf(
+        storage,
+        order,
+        pdf_bytes=pdf_bytes,
+        source="np_print_backfill",
+        filename=f"{order.get('order_number')}_{ttn or 'label'}.pdf",
+    )
+    return saved or storage.get_order(int(order["id"])) or order
+
+
 def merge_ready_ttn_pdfs(storage: AppStorage, orders: list[dict[str, Any]]) -> bytes:
     """Злити PDF накладних: 1 файл = 1+ листів, кожна накладна з нової сторінки."""
     from pypdf import PdfReader, PdfWriter
@@ -149,6 +232,11 @@ def merge_ready_ttn_pdfs(storage: AppStorage, orders: list[dict[str, Any]]) -> b
     used = 0
     errors: list[str] = []
     for order in orders:
+        try:
+            order = ensure_order_ttn_pdf(storage, order)
+        except Exception as exc:
+            errors.append(str(exc))
+            continue
         payload = order.get("payload") or {}
         local = str(
             payload.get("ttn_pdf_local_path")
@@ -156,7 +244,6 @@ def merge_ready_ttn_pdfs(storage: AppStorage, orders: list[dict[str, Any]]) -> b
             or ""
         ).strip()
         file_id = str(payload.get("ttn_pdf_drive_file_id") or "").strip()
-        raw: bytes | None = None
         try:
             if local:
                 raw = read_pdf_bytes(local)
