@@ -20,6 +20,10 @@ logger = logging.getLogger(__name__)
 KYIV = ZoneInfo("Europe/Kyiv")
 DRIVE_FILES = "https://www.googleapis.com/drive/v3/files"
 DRIVE_UPLOAD = "https://www.googleapis.com/upload/drive/v3/files"
+_DRIVE_PARAMS = {
+    "supportsAllDrives": "true",
+    "includeItemsFromAllDrives": "true",
+}
 
 
 def day_folder_name(now: datetime | None = None) -> str:
@@ -32,10 +36,24 @@ def day_folder_name(now: datetime | None = None) -> str:
 
 
 def root_folder_id() -> str:
-    return (
+    env = (
         os.getenv("TTN_DRIVE_ROOT_FOLDER_ID", "").strip()
         or os.getenv("STOCK_TTN_DRIVE_FOLDER_ID", "").strip()
     )
+    if env:
+        return env
+    # fallback з config.yaml
+    try:
+        from pathlib import Path
+
+        import yaml
+
+        cfg_path = Path(__file__).resolve().parent.parent / "config.yaml"
+        with open(cfg_path, encoding="utf-8") as f:
+            cfg = yaml.safe_load(f) or {}
+        return str((cfg.get("bot") or {}).get("ttn_drive_root_folder_id") or "").strip()
+    except Exception:
+        return ""
 
 
 def _session() -> AuthorizedSession:
@@ -71,9 +89,21 @@ def ensure_day_folder(
     )
     resp = session.get(
         DRIVE_FILES,
-        params={"q": q, "spaces": "drive", "fields": "files(id,name)", "pageSize": 5},
+        params={
+            "q": q,
+            "spaces": "drive",
+            "fields": "files(id,name)",
+            "pageSize": 5,
+            **_DRIVE_PARAMS,
+        },
         timeout=30,
     )
+    if resp.status_code >= 400:
+        logger.error(
+            "Drive list day folder failed status=%s body=%s",
+            resp.status_code,
+            (resp.text or "")[:500],
+        )
     resp.raise_for_status()
     files = (resp.json() or {}).get("files") or []
     if files:
@@ -87,11 +117,17 @@ def ensure_day_folder(
     }
     create = session.post(
         DRIVE_FILES,
-        params={"fields": "id,name"},
+        params={"fields": "id,name", **_DRIVE_PARAMS},
         headers={"Content-Type": "application/json; charset=UTF-8"},
         data=json.dumps(meta),
         timeout=30,
     )
+    if create.status_code >= 400:
+        logger.error(
+            "Drive create day folder failed status=%s body=%s",
+            create.status_code,
+            (create.text or "")[:500],
+        )
     create.raise_for_status()
     data = create.json() or {}
     return {"id": str(data.get("id") or ""), "name": name, "created": True}
@@ -119,7 +155,12 @@ def upload_pdf_bytes(
     )
     existing = session.get(
         DRIVE_FILES,
-        params={"q": q, "fields": "files(id,name)", "pageSize": 1},
+        params={
+            "q": q,
+            "fields": "files(id,name)",
+            "pageSize": 1,
+            **_DRIVE_PARAMS,
+        },
         timeout=30,
     )
     existing.raise_for_status()
@@ -128,7 +169,7 @@ def upload_pdf_bytes(
         file_id = str(files[0].get("id") or "")
         upd = session.patch(
             f"{DRIVE_UPLOAD}/{file_id}",
-            params={"uploadType": "media"},
+            params={"uploadType": "media", **_DRIVE_PARAMS},
             headers={"Content-Type": "application/pdf"},
             data=data,
             timeout=60,
@@ -157,7 +198,7 @@ def upload_pdf_bytes(
 
     create = session.post(
         DRIVE_UPLOAD,
-        params={"uploadType": "multipart", "fields": "id,name"},
+        params={"uploadType": "multipart", "fields": "id,name", **_DRIVE_PARAMS},
         headers={"Content-Type": f"multipart/related; boundary={boundary}"},
         data=body,
         timeout=90,
@@ -180,7 +221,7 @@ def download_pdf_bytes(file_id: str) -> bytes:
     session = _session()
     resp = session.get(
         f"{DRIVE_FILES}/{fid}",
-        params={"alt": "media"},
+        params={"alt": "media", **_DRIVE_PARAMS},
         timeout=60,
     )
     resp.raise_for_status()

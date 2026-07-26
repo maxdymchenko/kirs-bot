@@ -23,6 +23,10 @@ bot:
   # Можна перевизначити через env STOCK_DIGEST_CHAT_ID.
   stock_digest_chat_id: "-1003582943980"
 
+  # Google Drive: коренева папка «KIRS TTH» для PDF накладних (денні підпапки ДД.ММ.РРРР).
+  # Env TTN_DRIVE_ROOT_FOLDER_ID має пріоритет.
+  ttn_drive_root_folder_id: "1JKjgmAK_R6KHSH4GaMc6flwfP8MlGZg0"
+
   # Опциональные дефолты из yaml (если дроппер ещё не в БД)
   droppers: {}
 
