@@ -50,6 +50,7 @@ class Settings:
     webapp_url: str = ""
     app_data_dir: str = ""
     stock_digest_chat_id: str = ""
+    packing_digest_chat_id: str = ""
 
 
 def load_settings(config_path: str | Path | None = None) -> Settings:
@@ -119,6 +120,11 @@ def load_settings(config_path: str | Path | None = None) -> Settings:
         or str(bot_config.get("stock_digest_chat_id") or "").strip()
         or "-1003582943980"
     )
+    packing_digest_chat = (
+        os.getenv("PACKING_DIGEST_CHAT_ID", "").strip()
+        or str(bot_config.get("packing_digest_chat_id") or "").strip()
+        or "-1003912251878"
+    )
 
     return Settings(
         telegram_token=token,
@@ -137,6 +143,7 @@ def load_settings(config_path: str | Path | None = None) -> Settings:
         webapp_url=webapp_url,
         app_data_dir=app_data,
         stock_digest_chat_id=stock_digest_chat,
+        packing_digest_chat_id=packing_digest_chat,
     )
 
 

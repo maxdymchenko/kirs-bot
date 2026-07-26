@@ -169,7 +169,7 @@ async def main() -> None:
                     pass
 
     async def packing_digest_loop() -> None:
-        """О 10:00 і 22:00 Київ — скільки замовлень чекають упаковки/відправки."""
+        """О 12:00 і 14:00 Київ — черга пакування в групу УПАКОВКА."""
         from bot.packing_digest import (
             run_packing_digest_pass,
             seconds_until_next_digest_slot,
@@ -181,20 +181,25 @@ async def main() -> None:
                 delay, hour = seconds_until_next_digest_slot(allow_current_hour=True)
                 if delay > 0:
                     logger.info(
-                        "Packing digest: next %02d:00 in %.0f min",
+                        "Packing digest: next %02d:00 in %.0f min → %s",
                         hour,
                         delay / 60.0,
+                        settings.packing_digest_chat_id,
                     )
                     try:
                         await asyncio.wait_for(stop_event.wait(), timeout=delay)
                         break
                     except asyncio.TimeoutError:
                         pass
-                # після очікування ще раз визначаємо актуальний слот
                 _, hour = seconds_until_next_digest_slot(allow_current_hour=True)
+                chat_id = (
+                    app_storage.resolve_chat_id(settings.packing_digest_chat_id)
+                    or settings.packing_digest_chat_id
+                )
                 stats = await run_packing_digest_pass(
                     app_storage,
-                    _np_owner_notify,
+                    _np_notify,
+                    chat_id=chat_id,
                     hour=hour,
                 )
                 logger.info("Packing digest: %s", stats)

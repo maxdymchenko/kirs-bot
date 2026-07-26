@@ -508,6 +508,11 @@ async def chat_migrated_handler(update: Update, context: ContextTypes.DEFAULT_TY
         ctx.settings.stock_digest_chat_id = str(new_id)
         logger.info("Обновлён settings.stock_digest_chat_id → %s", new_id)
 
+    # Група дайджесту пакування
+    if str(ctx.settings.packing_digest_chat_id).strip() == str(old_id):
+        ctx.settings.packing_digest_chat_id = str(new_id)
+        logger.info("Обновлён settings.packing_digest_chat_id → %s", new_id)
+
     # Обновить yaml-droppers ключ в рантайме
     if str(old_id) in ctx.settings.droppers:
         cfg = ctx.settings.droppers.pop(str(old_id))
