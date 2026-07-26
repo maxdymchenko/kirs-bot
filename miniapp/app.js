@@ -5496,21 +5496,56 @@ ${
     }
   }
 
-  function syncOwnerReturnsTabs() {
-    if (!els.ownerReturnsTabs) return;
+  function syncOwnerReturnsMainBadge() {
+    const badge = els.ownerTabs?.querySelector(
+      '[data-owner-tab="returns"] [data-returns-nav-count]'
+    );
+    if (!badge) return;
     const counts = ownerReturnsState.counts || {};
-    els.ownerReturnsTabs.querySelectorAll("[data-returns-bucket]").forEach((btn) => {
-      const key = btn.getAttribute("data-returns-bucket") || "";
-      btn.classList.toggle("active", key === ownerReturnsState.bucket);
-      const n = Number(counts[key] || 0);
-      const labels = {
-        awaiting_receipt: "Очікують отримання",
-        awaiting_confirm: "Очікують підтвердження",
-        closed: "Закрито / Архів",
-      };
-      const base = labels[key] || key;
-      btn.textContent = n > 0 ? `${base} (${n})` : base;
-    });
+    const n =
+      Number(counts.awaiting_receipt || 0) + Number(counts.awaiting_confirm || 0);
+    if (n > 0) {
+      badge.textContent = String(n);
+      badge.classList.remove("hidden");
+    } else {
+      badge.classList.add("hidden");
+    }
+  }
+
+  function syncOwnerReturnsTabs() {
+    if (els.ownerReturnsTabs) {
+      const counts = ownerReturnsState.counts || {};
+      els.ownerReturnsTabs.querySelectorAll("[data-returns-bucket]").forEach((btn) => {
+        const key = btn.getAttribute("data-returns-bucket") || "";
+        btn.classList.toggle("active", key === ownerReturnsState.bucket);
+        const badge = btn.querySelector("[data-returns-count]");
+        if (!badge) return;
+        const n = Number(counts[key] || 0);
+        if (n > 0) {
+          badge.textContent = String(n);
+          badge.classList.remove("hidden");
+        } else {
+          badge.classList.add("hidden");
+        }
+      });
+    }
+    syncOwnerReturnsMainBadge();
+  }
+
+  async function refreshOwnerReturnsCounts() {
+    if (!els.ownerTabs?.querySelector('[data-owner-tab="returns"]')) return;
+    try {
+      const params = new URLSearchParams(ownerAuthParams());
+      params.set("bucket", "awaiting_receipt");
+      params.set("limit", "1");
+      const response = await fetch(`/api/owner/returns?${params.toString()}`);
+      const data = await response.json();
+      if (!response.ok) return;
+      ownerReturnsState.counts = data.counts || {};
+      syncOwnerReturnsTabs();
+    } catch {
+      /* ignore badge refresh errors */
+    }
   }
 
   async function markOwnerReturnReceived(orderId) {
@@ -6168,6 +6203,7 @@ ${
             )
             .join("")
         : `<div class="empty">Співробітників ще немає</div>`;
+      refreshOwnerReturnsCounts();
     } catch (error) {
       const msg = `<div class="form-error">${escapeHtml(error.message || "Помилка")}</div>`;
       els.ownerDroppers.innerHTML = msg;

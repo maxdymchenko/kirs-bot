@@ -118,6 +118,17 @@ body {
   margin-left: 4px;
 }
 
+.tab .badge {
+  vertical-align: middle;
+  line-height: 1.2;
+  font-weight: 700;
+}
+
+.tab.active .badge {
+  background: #ff4d4f;
+  color: #fff;
+}
+
 .view { padding: 0 16px; }
 .hidden { display: none !important; }
 

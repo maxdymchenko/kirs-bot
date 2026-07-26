@@ -2671,14 +2671,13 @@ def create_web_app(
             BUCKET_AWAITING_CONFIRM: 0,
             BUCKET_CLOSED: 0,
         }
-        # counts across all (re-list without bucket filter for badges)
+        # counts across all (окремий ліміт, щоб бейджі не залежали від limit списку)
         all_items = storage.list_dropper_return_requests(
-            dropper_id=dropper_id, limit=limit
+            dropper_id=dropper_id, limit=500
         )
         for row in all_items:
-            counts[return_bucket(row.get("dropper_return"))] = (
-                counts.get(return_bucket(row.get("dropper_return")), 0) + 1
-            )
+            b = return_bucket(row.get("dropper_return"))
+            counts[b] = counts.get(b, 0) + 1
 
         for row in items:
             item = dict(row)
