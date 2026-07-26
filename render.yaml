@@ -28,6 +28,8 @@ services:
         sync: false
       - key: STOCK_SPREADSHEET_ID
         value: 1HE1HmyuSevSIYBvk3UiRkoYZgRSdmGqH7ZvK6BFBBCg
+      - key: STOCK_DIGEST_CHAT_ID
+        value: "-1003582943980"
       - key: GOOGLE_CREDENTIALS_JSON
         sync: false
       - key: WEBAPP_URL

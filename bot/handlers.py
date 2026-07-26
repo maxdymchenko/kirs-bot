@@ -145,6 +145,11 @@ async def chat_migrated_handler(update: Update, context: ContextTypes.DEFAULT_TY
             updated_owners.append(chat)
     ctx.settings.owner_chat_ids = updated_owners
 
+    # Група звітів наявності
+    if str(ctx.settings.stock_digest_chat_id).strip() == str(old_id):
+        ctx.settings.stock_digest_chat_id = str(new_id)
+        logger.info("Обновлён settings.stock_digest_chat_id → %s", new_id)
+
     # Обновить yaml-droppers ключ в рантайме
     if str(old_id) in ctx.settings.droppers:
         cfg = ctx.settings.droppers.pop(str(old_id))

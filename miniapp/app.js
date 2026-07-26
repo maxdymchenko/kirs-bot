@@ -4020,6 +4020,17 @@ ${
     });
   }
 
+  function ensureOwnerOrdersAwaitingTab(box) {
+    const nav = box.querySelector("[data-owner-orders-buckets]");
+    if (!nav || nav.querySelector('[data-owner-orders-bucket="awaiting"]')) return;
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "tab";
+    btn.setAttribute("data-owner-orders-bucket", "awaiting");
+    btn.textContent = "Очікує відправлення";
+    nav.insertBefore(btn, nav.firstChild);
+  }
+
   function renderOwnerDropperOrdersPanel(box) {
     if (box._ordersPage == null) box._ordersPage = 0;
     if (!box._ordersBucket) box._ordersBucket = "transit";
@@ -4028,6 +4039,7 @@ ${
       box.innerHTML = `
         <p class="owner-orders-title">Історія замовлень</p>
         <nav class="tabs history-buckets owner-orders-buckets" data-owner-orders-buckets aria-label="Статус замовлень">
+          <button type="button" class="tab" data-owner-orders-bucket="awaiting">Очікує відправлення</button>
           <button type="button" class="tab active" data-owner-orders-bucket="transit">В дорозі</button>
           <button type="button" class="tab" data-owner-orders-bucket="received">Отримано</button>
           <button type="button" class="tab" data-owner-orders-bucket="returns">Повернення</button>
@@ -4138,6 +4150,7 @@ ${
       }
     }
 
+    ensureOwnerOrdersAwaitingTab(box);
     syncOwnerOrdersBucketTabs(box);
     renderOwnerDropperOrdersList(box);
   }
@@ -4160,6 +4173,7 @@ ${
     const prevBtn = box.querySelector("[data-owner-page-prev]");
     const nextBtn = box.querySelector("[data-owner-page-next]");
     const emptyByBucket = {
+      awaiting: "Немає замовлень, що очікують відправлення",
       transit: "Немає замовлень у дорозі",
       received: "Немає отриманих замовлень",
       returns: "Немає повернень",

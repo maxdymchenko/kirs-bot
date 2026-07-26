@@ -219,16 +219,75 @@ async def main() -> None:
     packing_task = asyncio.create_task(
         packing_digest_loop(), name="packing-digest"
     )
+
+    async def stock_digest_loop() -> None:
+        """О 10:00 і 20:00 Київ — зʼявилось / зникло з наявності в групу дропперів."""
+        from bot.stock_digest import (
+            run_stock_digest_pass,
+            seconds_until_next_stock_digest,
+        )
+
+        await asyncio.sleep(70)
+        while not stop_event.is_set():
+            try:
+                delay, hour = seconds_until_next_stock_digest(allow_current_hour=True)
+                if delay > 0:
+                    logger.info(
+                        "Stock digest: next %02d:00 in %.0f min → %s",
+                        hour,
+                        delay / 60.0,
+                        settings.stock_digest_chat_id,
+                    )
+                    try:
+                        await asyncio.wait_for(stop_event.wait(), timeout=delay)
+                        break
+                    except asyncio.TimeoutError:
+                        pass
+                _, hour = seconds_until_next_stock_digest(allow_current_hour=True)
+                chat_id = (
+                    app_storage.resolve_chat_id(settings.stock_digest_chat_id)
+                    or settings.stock_digest_chat_id
+                )
+                stats = await run_stock_digest_pass(
+                    app_storage,
+                    catalog,
+                    _np_notify,
+                    chat_id=chat_id,
+                    hour=hour,
+                )
+                logger.info("Stock digest: %s", stats)
+                delay, hour = seconds_until_next_stock_digest(allow_current_hour=False)
+                try:
+                    await asyncio.wait_for(stop_event.wait(), timeout=delay)
+                    break
+                except asyncio.TimeoutError:
+                    pass
+            except Exception:
+                logger.exception("Stock digest loop error")
+                try:
+                    await asyncio.wait_for(stop_event.wait(), timeout=300)
+                except asyncio.TimeoutError:
+                    pass
+
+    stock_task = asyncio.create_task(stock_digest_loop(), name="stock-digest")
     stop_task = asyncio.create_task(stop_event.wait(), name="stop")
 
     done, _ = await asyncio.wait(
-        {run_task, stop_task, web_task, np_task, warehouse_task, packing_task},
+        {
+            run_task,
+            stop_task,
+            web_task,
+            np_task,
+            warehouse_task,
+            packing_task,
+            stock_task,
+        },
         return_when=asyncio.FIRST_COMPLETED,
     )
 
     server.should_exit = True
     stop_event.set()
-    for task in (run_task, np_task, warehouse_task, packing_task):
+    for task in (run_task, np_task, warehouse_task, packing_task, stock_task):
         if not task.done():
             task.cancel()
             try:

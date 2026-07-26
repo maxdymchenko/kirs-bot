@@ -49,6 +49,7 @@ class Settings:
     droppers: dict[str, DropperConfig] = field(default_factory=dict)
     webapp_url: str = ""
     app_data_dir: str = ""
+    stock_digest_chat_id: str = ""
 
 
 def load_settings(config_path: str | Path | None = None) -> Settings:
@@ -113,6 +114,12 @@ def load_settings(config_path: str | Path | None = None) -> Settings:
     )
     app_data = (os.getenv("APP_DATA_DIR") or "").strip()
 
+    stock_digest_chat = (
+        os.getenv("STOCK_DIGEST_CHAT_ID", "").strip()
+        or str(bot_config.get("stock_digest_chat_id") or "").strip()
+        or "-1003582943980"
+    )
+
     return Settings(
         telegram_token=token,
         telegram_chat_id=chat_id,
@@ -129,6 +136,7 @@ def load_settings(config_path: str | Path | None = None) -> Settings:
         droppers=droppers,
         webapp_url=webapp_url,
         app_data_dir=app_data,
+        stock_digest_chat_id=stock_digest_chat,
     )
 
 

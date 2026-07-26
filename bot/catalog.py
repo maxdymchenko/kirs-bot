@@ -43,6 +43,7 @@ class ProductVariant:
     photo_url: str
     live_photo_url: str = ""
     sheet_row: int = 0  # 1-based рядок у Google Sheet (0 = невідомо)
+    retail_price: str = ""  # колонка H (РРЦ), якщо є
 
     def to_dict(self) -> dict:
         return {
@@ -52,6 +53,7 @@ class ProductVariant:
             "color": self.color,
             "stock": self.stock,
             "drop_price": self.drop_price,
+            "retail_price": self.retail_price,
             "photo_url": self.photo_url,
             "live_photo_url": self.live_photo_url,
         }
@@ -638,6 +640,7 @@ class CatalogService:
                     color=color,
                     stock=_parse_stock(row[5]),
                     drop_price=str(row[6]).strip(),
+                    retail_price=str(row[7]).strip() if len(row) > 7 else "",
                     photo_url=str(row[12]).strip(),
                     live_photo_url=live_photo_url,
                     sheet_row=idx + 2,
@@ -920,3 +923,9 @@ class CatalogService:
             if len(results) >= max(1, min(limit, 200)):
                 break
         return results
+
+    def all_variants(self, *, force_refresh: bool = False) -> list[ProductVariant]:
+        """Усі позиції каталогу (після refresh)."""
+        self.refresh(force=force_refresh)
+        with self._lock:
+            return list(self._variants)
