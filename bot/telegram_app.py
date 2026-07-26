@@ -4,7 +4,7 @@ from telegram import Update
 from telegram.ext import Application
 
 from bot.core import BotContext
-from bot.handlers import register_handlers
+from bot.handlers import register_handlers, setup_bot_commands
 
 logger = logging.getLogger(__name__)
 
@@ -19,6 +19,7 @@ async def start_telegram_app(ctx: BotContext) -> Application:
     register_handlers(application, ctx)
 
     await application.initialize()
+    await setup_bot_commands(application, ctx)
     await application.start()
     await application.updater.start_polling(
         drop_pending_updates=True,

@@ -1,8 +1,17 @@
 import html
 import logging
+import re
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update, WebAppInfo
+from telegram import (
+    BotCommand,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    KeyboardButton,
+    ReplyKeyboardMarkup,
+    Update,
+    WebAppInfo,
+)
 from telegram.constants import ParseMode
 from telegram.ext import (
     Application,
@@ -21,6 +30,27 @@ logger = logging.getLogger(__name__)
 
 DONE_CALLBACK_PREFIX = "done:"
 
+# Reply-клавіатура (кнопки над полем «Сообщение…»)
+BTN_CABINET = "Кабінет"
+BTN_WAREHOUSE = "Кабінет комірника"
+BTN_ORDER = "Замовлення"
+BTN_BALANCE = "Баланс"
+BTN_HISTORY = "Історія"
+BTN_MENU = "Меню"
+BTN_CHAT_ID = "Chat ID"
+
+_REPLY_BUTTON_TEXTS = frozenset(
+    {
+        BTN_CABINET,
+        BTN_WAREHOUSE,
+        BTN_ORDER,
+        BTN_BALANCE,
+        BTN_HISTORY,
+        BTN_MENU,
+        BTN_CHAT_ID,
+    }
+)
+
 
 def register_handlers(application: Application, ctx: BotContext) -> None:
     pending_commands = ctx.settings.pending_commands
@@ -31,6 +61,12 @@ def register_handlers(application: Application, ctx: BotContext) -> None:
     application.add_handler(CommandHandler("chatid", chat_id_command))
     application.add_handler(
         MessageHandler(
+            filters.TEXT & ~filters.COMMAND & filters.Regex(_reply_buttons_regex()),
+            reply_keyboard_handler,
+        )
+    )
+    application.add_handler(
+        MessageHandler(
             filters.StatusUpdate.MIGRATE,
             chat_migrated_handler,
         )
@@ -39,6 +75,74 @@ def register_handlers(application: Application, ctx: BotContext) -> None:
         CallbackQueryHandler(mark_done_callback, pattern=f"^{DONE_CALLBACK_PREFIX}")
     )
     application.add_error_handler(on_error)
+
+
+def _reply_buttons_regex() -> str:
+    """Точний збіг тексту однієї з кнопок reply-клавіатури."""
+    escaped = sorted(_REPLY_BUTTON_TEXTS, key=len, reverse=True)
+    parts = [re.escape(t) for t in escaped]
+    return r"^(?:%s)$" % "|".join(parts)
+
+
+async def setup_bot_commands(application: Application, ctx: BotContext) -> None:
+    """Slash-меню ≡ біля поля вводу."""
+    commands = [
+        BotCommand("start", "Меню / кабінет"),
+        BotCommand("menu", "Меню / кабінет"),
+        BotCommand("chatid", "Показати chat_id"),
+    ]
+    for name in ctx.settings.pending_commands or []:
+        key = str(name or "").strip().lstrip("/")
+        if not key or key in {"start", "menu", "chatid"}:
+            continue
+        commands.append(BotCommand(key, "Необроблені чати OLX"))
+    try:
+        await application.bot.set_my_commands(commands)
+        logger.info("Telegram bot commands set: %s", [c.command for c in commands])
+    except Exception:
+        logger.exception("Не вдалося set_my_commands")
+
+
+def build_reply_keyboard(
+    role: str | None,
+    *,
+    need_registration: bool = False,
+) -> ReplyKeyboardMarkup:
+    """Постійна клавіатура над полем вводу — залежить від ролі чату."""
+    if role == "owner":
+        rows = [[KeyboardButton(BTN_CABINET), KeyboardButton(BTN_CHAT_ID)]]
+    elif role == "warehouse":
+        rows = [[KeyboardButton(BTN_WAREHOUSE), KeyboardButton(BTN_CHAT_ID)]]
+    elif role == "dropper":
+        rows = [
+            [KeyboardButton(BTN_ORDER), KeyboardButton(BTN_BALANCE)],
+            [KeyboardButton(BTN_HISTORY), KeyboardButton(BTN_CHAT_ID)],
+        ]
+    elif role in {"admin", "manager"}:
+        rows = [[KeyboardButton(BTN_MENU), KeyboardButton(BTN_CHAT_ID)]]
+    elif need_registration or role in {None, "", "unknown", "guest"}:
+        rows = [[KeyboardButton(BTN_MENU), KeyboardButton(BTN_CHAT_ID)]]
+    else:
+        rows = [[KeyboardButton(BTN_MENU), KeyboardButton(BTN_CHAT_ID)]]
+    return ReplyKeyboardMarkup(
+        rows,
+        resize_keyboard=True,
+        is_persistent=True,
+    )
+
+
+def _session_role(ctx: BotContext, update: Update) -> tuple[str | None, bool]:
+    chat = update.effective_chat
+    user = update.effective_user
+    if not chat:
+        return None, False
+    session = resolve_session(
+        ctx.settings,
+        ctx.app_storage,
+        chat.id,
+        user.id if user else None,
+    )
+    return session.get("role"), bool(session.get("need_registration"))
 
 
 async def on_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -88,9 +192,29 @@ def _webapp_button(
     return InlineKeyboardButton(text=text, url=url)
 
 
+async def _reply_menu_and_inline(
+    message,
+    *,
+    text: str,
+    reply_kb: ReplyKeyboardMarkup,
+    inline: InlineKeyboardMarkup | None = None,
+    parse_mode: str | None = None,
+) -> None:
+    """Спочатку reply-клавіатура, потім (за потреби) inline-кнопки Mini App."""
+    kwargs: dict = {"reply_markup": reply_kb}
+    if parse_mode:
+        kwargs["parse_mode"] = parse_mode
+    await message.reply_text(text, **kwargs)
+    if inline is not None:
+        await message.reply_text("Відкрити:", reply_markup=inline)
+
+
 async def chat_id_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.effective_chat or not update.message:
         return
+    ctx: BotContext = context.bot_data["ctx"]
+    role, need_reg = _session_role(ctx, update)
+    reply_kb = build_reply_keyboard(role, need_registration=need_reg)
     chat = update.effective_chat
     user = update.effective_user
     user_line = ""
@@ -105,6 +229,7 @@ async def chat_id_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         f"title: {chat.title or '-'}"
         f"{user_line}",
         parse_mode=ParseMode.MARKDOWN,
+        reply_markup=reply_kb,
     )
 
 
@@ -191,6 +316,80 @@ async def chat_migrated_handler(update: Update, context: ContextTypes.DEFAULT_TY
             logger.exception("Не удалось уведомить owner user %s о миграции", owner_user)
 
 
+async def reply_keyboard_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Натискання кнопки reply-клавіатури → та сама логіка, що й у slash-команд."""
+    if not update.message or not update.message.text:
+        return
+    text = update.message.text.strip()
+    if text == BTN_CHAT_ID:
+        await chat_id_command(update, context)
+        return
+    if text in {BTN_CABINET, BTN_WAREHOUSE, BTN_ORDER, BTN_MENU}:
+        await order_menu_command(update, context)
+        return
+    if text == BTN_BALANCE:
+        await dropper_quick_view(update, context, view="balance", title="Мій баланс")
+        return
+    if text == BTN_HISTORY:
+        await dropper_quick_view(
+            update, context, view="history", title="Історія замовлень"
+        )
+        return
+
+
+async def dropper_quick_view(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    *,
+    view: str,
+    title: str,
+) -> None:
+    if not update.effective_chat or not update.message:
+        return
+    ctx: BotContext = context.bot_data["ctx"]
+    chat_id = update.effective_chat.id
+    chat_type = update.effective_chat.type
+    user_id = update.effective_user.id if update.effective_user else None
+    role, need_reg = _session_role(ctx, update)
+    reply_kb = build_reply_keyboard(role, need_registration=need_reg)
+
+    if role != "dropper":
+        await update.message.reply_text(
+            "Ця кнопка доступна лише в чаті зареєстрованого дроппера.",
+            reply_markup=reply_kb,
+        )
+        return
+
+    webapp_url = ctx.settings.webapp_url
+    if not webapp_url:
+        await update.message.reply_text(
+            "Mini App ще не налаштовано (`WEBAPP_URL`).",
+            reply_markup=reply_kb,
+        )
+        return
+
+    inline = InlineKeyboardMarkup(
+        [
+            [
+                _webapp_button(
+                    title,
+                    webapp_url,
+                    chat_type,
+                    chat_id=chat_id,
+                    user_id=user_id,
+                    view=view,
+                )
+            ]
+        ]
+    )
+    await _reply_menu_and_inline(
+        update.message,
+        text=f"{title}:",
+        reply_kb=reply_kb,
+        inline=inline,
+    )
+
+
 async def order_menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.effective_chat or not update.message:
         return
@@ -203,6 +402,7 @@ async def order_menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
     session = resolve_session(ctx.settings, ctx.app_storage, chat_id, user_id)
     role = session.get("role")
     need_registration = bool(session.get("need_registration"))
+    reply_kb = build_reply_keyboard(role, need_registration=need_registration)
 
     logger.info(
         "Команда меню: chat_id=%s type=%s role=%s need_reg=%s webapp=%s",
@@ -220,11 +420,12 @@ async def order_menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
             "У Render Environment задайте:\n"
             "`WEBAPP_URL=https://kirs-bot-web.onrender.com`",
             parse_mode=ParseMode.MARKDOWN,
+            reply_markup=reply_kb,
         )
         return
 
     if role == "owner":
-        keyboard = InlineKeyboardMarkup(
+        inline = InlineKeyboardMarkup(
             [
                 [
                     _webapp_button(
@@ -237,14 +438,16 @@ async def order_menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 ],
             ]
         )
-        await update.message.reply_text(
-            "Меню власника:\n\nКерування дропперами та співробітниками.",
-            reply_markup=keyboard,
+        await _reply_menu_and_inline(
+            update.message,
+            text="Меню власника:\n\nКерування дропперами та співробітниками.",
+            reply_kb=reply_kb,
+            inline=inline,
         )
         return
 
     if role == "warehouse":
-        keyboard = InlineKeyboardMarkup(
+        inline = InlineKeyboardMarkup(
             [
                 [
                     _webapp_button(
@@ -257,20 +460,23 @@ async def order_menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 ]
             ]
         )
-        await update.message.reply_text(
-            "Меню комірника:\n\nКаталог, пакування та друк накладних.",
-            reply_markup=keyboard,
+        await _reply_menu_and_inline(
+            update.message,
+            text="Меню комірника:\n\nКаталог, пакування та друк накладних.",
+            reply_kb=reply_kb,
+            inline=inline,
         )
         return
 
     if role in {"admin", "manager"}:
         await update.message.reply_text(
-            f"Роль: {role}.\nКабінет співробітника з’явиться наступним етапом."
+            f"Роль: {role}.\nКабінет співробітника з’явиться наступним етапом.",
+            reply_markup=reply_kb,
         )
         return
 
     if role == "dropper":
-        keyboard = InlineKeyboardMarkup(
+        inline = InlineKeyboardMarkup(
             [
                 [
                     _webapp_button(
@@ -303,18 +509,24 @@ async def order_menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 ],
             ]
         )
-        await update.message.reply_text("Меню:", reply_markup=keyboard)
+        await _reply_menu_and_inline(
+            update.message,
+            text="Меню:",
+            reply_kb=reply_kb,
+            inline=inline,
+        )
         return
 
     if role == "dropper_blocked":
         await update.message.reply_text(
             "⛔ Вас заблоковано для повного погашення боргу.\n"
-            "Передача замовлень недоступна. Звʼяжіться з власником."
+            "Передача замовлень недоступна. Звʼяжіться з власником.",
+            reply_markup=reply_kb,
         )
         return
 
     if need_registration:
-        keyboard = InlineKeyboardMarkup(
+        inline = InlineKeyboardMarkup(
             [
                 [
                     _webapp_button(
@@ -327,10 +539,14 @@ async def order_menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 ]
             ]
         )
-        await update.message.reply_text(
-            "Цю групу ще не зареєстровано як дроппера.\n"
-            "Натисніть кнопку нижче, щоб пройти реєстрацію один раз.",
-            reply_markup=keyboard,
+        await _reply_menu_and_inline(
+            update.message,
+            text=(
+                "Цю групу ще не зареєстровано як дроппера.\n"
+                "Натисніть кнопку нижче, щоб пройти реєстрацію один раз."
+            ),
+            reply_kb=reply_kb,
+            inline=inline,
         )
         return
 
@@ -338,6 +554,7 @@ async def order_menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
         "Меню недоступне в цьому чаті.\n"
         f"chat_id: `{chat_id}`",
         parse_mode=ParseMode.MARKDOWN,
+        reply_markup=reply_kb,
     )
 
 
