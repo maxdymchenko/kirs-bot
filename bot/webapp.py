@@ -163,6 +163,15 @@ class OwnerReferralLinkRequest(BaseModel):
     referred_chat_id: str = Field(..., min_length=1, max_length=64)
 
 
+class WarehouseAttachPdfRequest(BaseModel):
+    chat_id: str = Field("", max_length=64)
+    user_id: str = Field("", max_length=64)
+    username: str = Field("", max_length=64)
+    order_number: str = Field("", max_length=64)
+    pdf_name: str = Field("", max_length=260)
+    pdf_base64: str = Field(..., min_length=20, max_length=3_500_000)
+
+
 class DropperSelfSettingsUpdateRequest(BaseModel):
     chat_id: str = Field(..., min_length=2, max_length=64)
     user_id: str = Field("", max_length=64)
@@ -2928,6 +2937,46 @@ def create_web_app(
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         return {"ok": True, "order": order}
+
+    @app.post("/api/warehouse/attach-pdf")
+    async def warehouse_attach_pdf(payload: WarehouseAttachPdfRequest) -> dict:
+        """Привʼязати PDF накладної до замовлення (тест / ручне завантаження)."""
+        from bot.ttn_drive import decode_pdf_base64, persist_order_ttn_pdf
+        from bot.warehouse import order_has_ttn_pdf
+
+        _require_warehouse(
+            chat_id=payload.chat_id,
+            user_id=payload.user_id,
+            username=payload.username,
+        )
+        order = None
+        num = str(payload.order_number or "").strip()
+        if num:
+            order = storage.get_order_by_number(num)
+        if not order:
+            raise HTTPException(status_code=404, detail="Замовлення не знайдено")
+        try:
+            pdf_bytes = decode_pdf_base64(payload.pdf_base64)
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail="Некоректний PDF") from exc
+        if pdf_bytes[:4] != b"%PDF":
+            raise HTTPException(status_code=400, detail="Файл не є PDF")
+        name = str(payload.pdf_name or "").strip() or f"{order.get('order_number')}.pdf"
+        saved = persist_order_ttn_pdf(
+            storage,
+            order,
+            pdf_bytes=pdf_bytes,
+            source="manual_attach",
+            filename=name,
+        )
+        if not saved:
+            raise HTTPException(status_code=500, detail="Не вдалося зберегти PDF")
+        return {
+            "ok": True,
+            "order_number": saved.get("order_number"),
+            "has_ttn_pdf": order_has_ttn_pdf(saved),
+            "ttn_pdf_local_path": (saved.get("payload") or {}).get("ttn_pdf_local_path"),
+        }
 
     @app.post("/api/warehouse/orders/{order_id}/packing")
     async def warehouse_mark_packing(
