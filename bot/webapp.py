@@ -2885,7 +2885,11 @@ def create_web_app(
                 {
                     **o,
                     "warehouse_stage": order_warehouse_stage(o),
-                    "has_ttn_pdf": bool(payload.get("ttn_pdf_drive_file_id")),
+                    "has_ttn_pdf": bool(
+                        payload.get("ttn_pdf_local_path")
+                        or payload.get("ttn_pdf_local_abs")
+                        or payload.get("ttn_pdf_drive_file_id")
+                    ),
                     "cart_summary": [
                         {
                             "code": str(x.get("code") or ""),

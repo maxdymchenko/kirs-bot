@@ -31,7 +31,7 @@ services:
       - key: STOCK_DIGEST_CHAT_ID
         value: "-1003582943980"
       - key: TTN_DRIVE_ROOT_FOLDER_ID
-        value: "1JKjgmAK_R6KHSH4GaMc6flwfP8MlGZg0"
+        value: "1JKjgmAK_R6KHSH4GaMc6fIwfP8MIGZg0"
       - key: GOOGLE_CREDENTIALS_JSON
         sync: false
       - key: WEBAPP_URL

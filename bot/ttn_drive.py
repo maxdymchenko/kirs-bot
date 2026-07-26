@@ -246,33 +246,62 @@ def persist_order_ttn_pdf(
     filename: str = "",
 ) -> dict[str, Any] | None:
     """
-    Зберегти PDF на Drive і записати метадані в payload замовлення.
+    Зберегти PDF локально (основне) + спробувати Google Drive (якщо Shared Drive).
     source: upload | np_print
     """
     if not pdf_bytes:
         return None
-    if not root_folder_id():
-        logger.warning(
-            "TTN Drive skip: TTN_DRIVE_ROOT_FOLDER_ID не задано (order=%s)",
-            order.get("order_number"),
-        )
-        return None
+    from bot.ttn_store import save_pdf_bytes
+
     order_number = str(order.get("order_number") or "")
-    ttn = str(order.get("ttn_number") or (order.get("payload") or {}).get("ttn_number") or "")
+    ttn = str(
+        order.get("ttn_number")
+        or (order.get("payload") or {}).get("ttn_number")
+        or ""
+    )
     name = filename or _safe_filename(order_number, ttn or "label")
-    try:
-        uploaded = upload_pdf_bytes(pdf_bytes, filename=name)
-    except Exception:
-        logger.exception(
-            "TTN Drive upload failed order=%s", order.get("order_number")
-        )
-        return None
-    patch = {
-        "ttn_pdf_drive_file_id": uploaded.get("file_id") or "",
-        "ttn_pdf_drive_folder_id": uploaded.get("folder_id") or "",
-        "ttn_pdf_drive_folder_name": uploaded.get("folder_name") or "",
-        "ttn_pdf_drive_name": uploaded.get("name") or name,
+    patch: dict[str, Any] = {
         "ttn_pdf_drive_source": source,
         "ttn_pdf_drive_saved_at": datetime.now(KYIV).isoformat(timespec="seconds"),
     }
+    try:
+        local = save_pdf_bytes(pdf_bytes, filename=name)
+        patch.update(
+            {
+                "ttn_pdf_local_path": local.get("relative") or "",
+                "ttn_pdf_local_abs": local.get("path") or "",
+                "ttn_pdf_drive_folder_name": local.get("folder_name") or "",
+                "ttn_pdf_drive_name": local.get("name") or name,
+            }
+        )
+    except Exception:
+        logger.exception(
+            "TTN local save failed order=%s", order.get("order_number")
+        )
+        return None
+
+    # Google Drive: працює лише зі Shared Drive (у звичайному «Мой диск»
+    # у service account немає квоти — буде 403 storageQuotaExceeded).
+    if root_folder_id():
+        try:
+            uploaded = upload_pdf_bytes(pdf_bytes, filename=name)
+            patch.update(
+                {
+                    "ttn_pdf_drive_file_id": uploaded.get("file_id") or "",
+                    "ttn_pdf_drive_folder_id": uploaded.get("folder_id") or "",
+                    "ttn_pdf_drive_folder_name": uploaded.get("folder_name")
+                    or patch.get("ttn_pdf_drive_folder_name")
+                    or "",
+                    "ttn_pdf_drive_name": uploaded.get("name") or name,
+                }
+            )
+        except Exception:
+            logger.warning(
+                "TTN Drive upload skipped/failed order=%s (локальна копія збережена). "
+                "Для Drive потрібен Shared Drive — у звичайній папці «Мой диск» "
+                "service account не має квоти.",
+                order.get("order_number"),
+                exc_info=True,
+            )
+
     return storage.merge_order_payload(int(order["id"]), patch)

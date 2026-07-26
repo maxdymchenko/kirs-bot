@@ -143,18 +143,28 @@ def merge_ready_ttn_pdfs(storage: AppStorage, orders: list[dict[str, Any]]) -> b
     from pypdf import PdfReader, PdfWriter
 
     from bot.ttn_drive import download_pdf_bytes
+    from bot.ttn_store import read_pdf_bytes
 
     writer = PdfWriter()
     used = 0
     errors: list[str] = []
     for order in orders:
         payload = order.get("payload") or {}
+        local = str(
+            payload.get("ttn_pdf_local_path")
+            or payload.get("ttn_pdf_local_abs")
+            or ""
+        ).strip()
         file_id = str(payload.get("ttn_pdf_drive_file_id") or "").strip()
-        if not file_id:
-            errors.append(str(order.get("order_number") or order.get("id")))
-            continue
+        raw: bytes | None = None
         try:
-            raw = download_pdf_bytes(file_id)
+            if local:
+                raw = read_pdf_bytes(local)
+            elif file_id:
+                raw = download_pdf_bytes(file_id)
+            else:
+                errors.append(str(order.get("order_number") or order.get("id")))
+                continue
             reader = PdfReader(io.BytesIO(raw))
             for page in reader.pages:
                 writer.add_page(page)
@@ -166,7 +176,7 @@ def merge_ready_ttn_pdfs(storage: AppStorage, orders: list[dict[str, Any]]) -> b
             errors.append(f"{order.get('order_number')}: {exc}")
     if used == 0:
         raise ValueError(
-            "Немає PDF накладних на Google Drive для злиття. "
+            "Немає PDF накладних для злиття. "
             + (", ".join(errors[:5]) if errors else "Завантажте/створіть ТТН ще раз.")
         )
     buf = io.BytesIO()

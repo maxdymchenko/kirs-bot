@@ -10,7 +10,7 @@ from bot.google_creds import load_google_credentials, service_account_email
 from bot.ttn_drive import DRIVE_FILES, DRIVE_UPLOAD, day_folder_name, root_folder_id
 
 os.environ.setdefault(
-    "TTN_DRIVE_ROOT_FOLDER_ID", "1JKjgmAK_R6KHSH4GaMc6flwfP8MlGZg0"
+    "TTN_DRIVE_ROOT_FOLDER_ID", "1JKjgmAK_R6KHSH4GaMc6fIwfP8MIGZg0"
 )
 
 
