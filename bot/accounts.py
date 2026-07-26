@@ -403,6 +403,12 @@ class AppStorage:
                 ON order_changes(order_id, id DESC)
                 """
             )
+            self._ensure_column(
+                conn,
+                "orders",
+                "warehouse_stage",
+                "warehouse_stage TEXT NOT NULL DEFAULT 'packing'",
+            )
             conn.commit()
 
     def _row_get(self, row: sqlite3.Row, key: str, default: Any = None) -> Any:
@@ -1291,6 +1297,7 @@ class AppStorage:
             "ttn_status": row["ttn_status"] or "none",
             "sheets_sync_status": row["sheets_sync_status"] or "pending",
             "notify_dropper_status": row["notify_dropper_status"] or "pending",
+            "warehouse_stage": str(self._row_get(row, "warehouse_stage", "packing") or "packing"),
             "payload": payload,
             "created_at": row["created_at"],
             "updated_at": row["updated_at"],
@@ -1386,6 +1393,7 @@ class AppStorage:
         ttn_status: str | None = None,
         sheets_sync_status: str | None = None,
         ttn_number: str | None = None,
+        warehouse_stage: str | None = None,
     ) -> dict[str, Any] | None:
         fields: dict[str, Any] = {"updated_at": _now()}
         if notify_dropper_status is not None:
@@ -1396,6 +1404,11 @@ class AppStorage:
             fields["sheets_sync_status"] = sheets_sync_status
         if ttn_number is not None:
             fields["ttn_number"] = ttn_number
+        if warehouse_stage is not None:
+            stage = str(warehouse_stage or "packing").strip() or "packing"
+            if stage not in {"packing", "ready_to_ship"}:
+                stage = "packing"
+            fields["warehouse_stage"] = stage
         if len(fields) == 1:
             return self.get_order(order_id)
         sets = ", ".join(f"{k} = ?" for k in fields)
@@ -1404,6 +1417,25 @@ class AppStorage:
             conn.execute(f"UPDATE orders SET {sets} WHERE id = ?", values)
             conn.commit()
         return self.get_order(order_id)
+
+    def set_order_warehouse_stage(
+        self, order_id: int, stage: str
+    ) -> dict[str, Any] | None:
+        return self.update_order_flags(order_id, warehouse_stage=stage)
+
+    def list_orders_for_warehouse(self, limit: int = 400) -> list[dict[str, Any]]:
+        """Замовлення для черг комірника (не скасовані)."""
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT * FROM orders
+                WHERE status != 'cancelled'
+                ORDER BY id DESC
+                LIMIT ?
+                """,
+                (max(1, min(int(limit), 800)),),
+            ).fetchall()
+        return [self._row_order(r) for r in rows]
 
     def merge_order_payload(
         self, order_id: int, patch: dict[str, Any]

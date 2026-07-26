@@ -1863,9 +1863,43 @@ input[type="file"] {
   margin-top: 4px;
 }
 
-.owner-returns {
+.warehouse-order-list {
   display: grid;
   gap: 10px;
+}
+
+.warehouse-order-card {
+  display: grid;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: #fff;
+}
+
+.warehouse-order-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.warehouse-order-check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.92rem;
+}
+
+.warehouse-loc {
+  display: block;
+  margin-top: 4px;
+  color: #475569;
+  font-size: 0.86rem;
+}
+
+.warehouse-tabs {
+  margin-bottom: 12px;
 }
 
 .referral-link-row {

@@ -11,15 +11,13 @@ from pathlib import Path
 from threading import Lock
 
 import gspread
-from google.oauth2.service_account import Credentials
+
+from bot.google_creds import SHEETS_SCOPES, load_google_credentials
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_SHEET_ID = "1HE1HmyuSevSIYBvk3UiRkoYZgRSdmGqH7ZvK6BFBBCg"
-SCOPES = [
-    "https://www.googleapis.com/auth/spreadsheets",
-    "https://www.googleapis.com/auth/drive.readonly",
-]
+SCOPES = SHEETS_SCOPES
 
 # Роздільники в кодах комплектів: "010 + 009K", "010+009К", "010/009K"
 _CODE_TOKEN_SPLIT_RE = re.compile(r"[^0-9A-Za-zА-Яа-яЁё]+", re.UNICODE)
@@ -44,6 +42,7 @@ class ProductVariant:
     live_photo_url: str = ""
     sheet_row: int = 0  # 1-based рядок у Google Sheet (0 = невідомо)
     retail_price: str = ""  # колонка H (РРЦ), якщо є
+    location: str = ""  # колонка J — розташування на складі
 
     def to_dict(self) -> dict:
         return {
@@ -54,6 +53,7 @@ class ProductVariant:
             "stock": self.stock,
             "drop_price": self.drop_price,
             "retail_price": self.retail_price,
+            "location": self.location,
             "photo_url": self.photo_url,
             "live_photo_url": self.live_photo_url,
         }
@@ -402,21 +402,7 @@ class CatalogService:
         self._loaded_at = 0.0
 
     def _build_client(self) -> gspread.Client:
-        json_env = os.getenv("GOOGLE_CREDENTIALS_JSON", "").strip()
-        if json_env:
-            import json
-
-            info = json.loads(json_env)
-            creds = Credentials.from_service_account_info(info, scopes=SCOPES)
-        else:
-            if not self.credentials_path.exists():
-                raise FileNotFoundError(
-                    f"Файл credentials не найден: {self.credentials_path}. "
-                    "Задайте GOOGLE_CREDENTIALS_FILE или GOOGLE_CREDENTIALS_JSON"
-                )
-            creds = Credentials.from_service_account_file(
-                str(self.credentials_path), scopes=SCOPES
-            )
+        creds = load_google_credentials(SCOPES)
         return gspread.authorize(creds)
 
     @staticmethod
@@ -641,6 +627,7 @@ class CatalogService:
                     stock=_parse_stock(row[5]),
                     drop_price=str(row[6]).strip(),
                     retail_price=str(row[7]).strip() if len(row) > 7 else "",
+                    location=str(row[9]).strip() if len(row) > 9 else "",
                     photo_url=str(row[12]).strip(),
                     live_photo_url=live_photo_url,
                     sheet_row=idx + 2,

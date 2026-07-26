@@ -303,6 +303,23 @@ def create_web_app(
             raise HTTPException(status_code=403, detail="Доступ лише для власника")
         return cfg
 
+    def _require_warehouse(
+        *,
+        chat_id: str = "",
+        user_id: str = "",
+        username: str = "",
+    ) -> tuple[Settings, str]:
+        """Комірник або власник (для preview). Повертає (settings, actor)."""
+        cfg = _require_settings()
+        if is_owner(cfg, chat_id, user_id, storage, username):
+            return cfg, "owner"
+        staff = storage.get_staff_by_identity(
+            str(user_id or "").strip(), str(username or "").strip()
+        )
+        if staff and staff.role == "warehouse" and bool(getattr(staff, "active", True)):
+            return cfg, "warehouse"
+        raise HTTPException(status_code=403, detail="Доступ лише для комірника")
+
     def _yaml_dropper(chat_id: str) -> DropperConfig | None:
         key = storage.resolve_chat_id(str(chat_id or "").strip())
         if app_settings and key in app_settings.droppers:
@@ -1615,6 +1632,26 @@ def create_web_app(
                         "ttn pdf check after order %s failed",
                         order.get("order_number"),
                     )
+                # Зберегти PDF на Google Drive (навіть якщо звірка з номером не збіглась —
+                # комірник зможе надрукувати; hold уже виставлено вище)
+                try:
+                    from bot.ttn_drive import decode_pdf_base64, persist_order_ttn_pdf
+
+                    persist_order_ttn_pdf(
+                        storage,
+                        order,
+                        pdf_bytes=decode_pdf_base64(pdf_b64),
+                        source="upload",
+                        filename=str(
+                            getattr(payload, "ttn_pdf_name", None)
+                            or f"{order.get('order_number')}_{ttn_number}.pdf"
+                        ),
+                    )
+                except Exception:
+                    logger.exception(
+                        "ttn pdf drive save after order %s failed",
+                        order.get("order_number"),
+                    )
 
         return {"ok": True, "order": order}
 
@@ -2192,6 +2229,25 @@ def create_web_app(
                             )
                         except Exception:
                             logger.exception("notify ttn pdf ok on edit failed")
+                    # Зберегти PDF на Google Drive
+                    try:
+                        from bot.ttn_drive import decode_pdf_base64, persist_order_ttn_pdf
+
+                        persist_order_ttn_pdf(
+                            storage,
+                            saved,
+                            pdf_bytes=decode_pdf_base64(pdf_b64),
+                            source="upload",
+                            filename=str(
+                                getattr(validate_payload, "ttn_pdf_name", None)
+                                or f"{saved.get('order_number')}_{saved_ttn_number}.pdf"
+                            ),
+                        )
+                    except Exception:
+                        logger.exception(
+                            "ttn pdf drive save on edit failed %s",
+                            saved.get("order_number"),
+                        )
                 except Exception:
                     logger.exception(
                         "ttn pdf check on edit %s failed", saved.get("order_number")
@@ -2807,6 +2863,110 @@ def create_web_app(
                 [r for r in saved.get("payment_requisites", []) if r.get("enabled")]
             ),
         }
+
+    @app.get("/api/warehouse/queue")
+    async def warehouse_queue(
+        stage: str = Query("packing", max_length=32),
+        chat_id: str = Query("", max_length=64),
+        user_id: str = Query("", max_length=64),
+        username: str = Query("", max_length=64),
+        limit: int = Query(200, ge=1, le=500),
+    ) -> dict:
+        from bot.warehouse import list_warehouse_queue, order_warehouse_stage
+
+        _require_warehouse(chat_id=chat_id, user_id=user_id, username=username)
+        stage_key = "ready_to_ship" if stage == "ready_to_ship" else "packing"
+        items = list_warehouse_queue(storage, stage=stage_key, limit=limit)
+        enriched = []
+        for o in items:
+            payload = o.get("payload") or {}
+            cart = payload.get("cart") or []
+            enriched.append(
+                {
+                    **o,
+                    "warehouse_stage": order_warehouse_stage(o),
+                    "has_ttn_pdf": bool(payload.get("ttn_pdf_drive_file_id")),
+                    "cart_summary": [
+                        {
+                            "code": str(x.get("code") or ""),
+                            "color": str(x.get("color") or ""),
+                            "qty": int(x.get("qty") or 1),
+                            "name": str(x.get("name") or ""),
+                        }
+                        for x in cart
+                        if isinstance(x, dict)
+                    ][:20],
+                    "recipient_name": " ".join(
+                        [
+                            str((payload.get("recipient") or {}).get("last_name") or ""),
+                            str((payload.get("recipient") or {}).get("first_name") or ""),
+                        ]
+                    ).strip(),
+                }
+            )
+        return {"stage": stage_key, "count": len(enriched), "items": enriched}
+
+    @app.post("/api/warehouse/orders/{order_id}/ready")
+    async def warehouse_mark_ready(
+        order_id: int,
+        chat_id: str = Query("", max_length=64),
+        user_id: str = Query("", max_length=64),
+        username: str = Query("", max_length=64),
+    ) -> dict:
+        from bot.warehouse import mark_order_ready_to_ship
+
+        _require_warehouse(chat_id=chat_id, user_id=user_id, username=username)
+        try:
+            order = mark_order_ready_to_ship(
+                storage, order_id, actor_user_id=user_id
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {"ok": True, "order": order}
+
+    @app.post("/api/warehouse/orders/{order_id}/packing")
+    async def warehouse_mark_packing(
+        order_id: int,
+        chat_id: str = Query("", max_length=64),
+        user_id: str = Query("", max_length=64),
+        username: str = Query("", max_length=64),
+    ) -> dict:
+        from bot.warehouse import mark_order_back_to_packing
+
+        _require_warehouse(chat_id=chat_id, user_id=user_id, username=username)
+        try:
+            order = mark_order_back_to_packing(
+                storage, order_id, actor_user_id=user_id
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {"ok": True, "order": order}
+
+    @app.get("/api/warehouse/print-labels.pdf")
+    async def warehouse_print_labels(
+        chat_id: str = Query("", max_length=64),
+        user_id: str = Query("", max_length=64),
+        username: str = Query("", max_length=64),
+    ) -> Response:
+        from bot.warehouse import list_warehouse_queue, merge_ready_ttn_pdfs
+
+        _require_warehouse(chat_id=chat_id, user_id=user_id, username=username)
+        items = list_warehouse_queue(storage, stage="ready_to_ship", limit=300)
+        try:
+            data = merge_ready_ttn_pdfs(storage, items)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+
+        day = datetime.now(ZoneInfo("Europe/Kyiv")).strftime("%d.%m.%Y")
+        return Response(
+            content=data,
+            media_type="application/pdf",
+            headers={
+                "Content-Disposition": f'inline; filename="nakladni_{day}.pdf"'
+            },
+        )
 
     @app.get("/")
     async def miniapp_index() -> FileResponse:

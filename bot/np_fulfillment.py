@@ -389,7 +389,28 @@ def create_ttn_for_order(
                     label,
                     is_primary,
                 )
-            return storage.get_order(order["id"]) or order
+            saved = storage.get_order(order["id"]) or order
+            # Зберегти етикетку на Google Drive (для друку комірником)
+            try:
+                ref = str(result.get("ref") or "").strip()
+                if ref:
+                    pdf_bytes = client.download_marking_pdf(ref)
+                    from bot.ttn_drive import persist_order_ttn_pdf
+
+                    persist_order_ttn_pdf(
+                        storage,
+                        saved,
+                        pdf_bytes=pdf_bytes,
+                        source="np_print",
+                        filename=f"{saved.get('order_number')}_{result['ttn_number']}.pdf",
+                    )
+                    saved = storage.get_order(order["id"]) or saved
+            except Exception:
+                logger.exception(
+                    "NP label save to Drive failed order=%s",
+                    order.get("order_number"),
+                )
+            return saved
         except NovaPoshtaError as exc:
             last_exc = exc
             logger.warning(

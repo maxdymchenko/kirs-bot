@@ -495,6 +495,40 @@ class NovaPoshtaClient:
             "raw": row,
         }
 
+    def download_marking_pdf(
+        self, document_ref: str, *, size: str = "100x100"
+    ) -> bytes:
+        """Завантажити PDF етикетки (100×100) за Ref документа."""
+        ref = str(document_ref or "").strip()
+        if not ref:
+            raise NovaPoshtaError("Немає Ref документа для друку етикетки")
+        method = "printMarking100x100" if size != "85x85" else "printMarking85x85"
+        urls = [
+            (
+                f"https://my.novaposhta.ua/orders/{method}/orders[]/{ref}"
+                f"/type/pdf/apiKey/{self.api_key}"
+            ),
+            (
+                f"https://my.novaposhta.ua/orders/printDocument/orders[]/{ref}"
+                f"/type/pdf/apiKey/{self.api_key}"
+            ),
+        ]
+        last_err: Exception | None = None
+        for url in urls:
+            try:
+                req = urllib.request.Request(url, method="GET")
+                with urllib.request.urlopen(req, timeout=60) as resp:
+                    data = resp.read()
+                if data[:4] == b"%PDF":
+                    return data
+                last_err = NovaPoshtaError("Відповідь НП не є PDF")
+            except Exception as exc:
+                last_err = exc
+                logger.warning("NP print download failed via %s: %s", method, exc)
+        raise NovaPoshtaError(
+            f"Не вдалося завантажити PDF етикетки: {last_err}"
+        ) from last_err
+
     def delete_internet_document(self, document_ref: str) -> bool:
         """Видалити накладну в кабінеті НП за Ref документа."""
         ref = str(document_ref or "").strip()

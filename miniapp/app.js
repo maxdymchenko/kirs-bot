@@ -126,6 +126,19 @@
     dropperSettingsStatus: document.getElementById("dropperSettingsStatus"),
     staffForm: document.getElementById("staffForm"),
     staffError: document.getElementById("staffError"),
+    warehouseView: document.getElementById("warehouseView"),
+    warehouseTabs: document.getElementById("warehouseTabs"),
+    warehouseTabCatalog: document.getElementById("warehouseTabCatalog"),
+    warehouseTabPacking: document.getElementById("warehouseTabPacking"),
+    warehouseTabShipping: document.getElementById("warehouseTabShipping"),
+    warehouseTabSalary: document.getElementById("warehouseTabSalary"),
+    warehouseSearchForm: document.getElementById("warehouseSearchForm"),
+    warehouseSearchInput: document.getElementById("warehouseSearchInput"),
+    warehouseSearchStatus: document.getElementById("warehouseSearchStatus"),
+    warehouseResults: document.getElementById("warehouseResults"),
+    warehousePackingList: document.getElementById("warehousePackingList"),
+    warehouseShippingList: document.getElementById("warehouseShippingList"),
+    warehousePrintBtn: document.getElementById("warehousePrintBtn"),
     orderMain: document.getElementById("orderMain"),
     searchForm: document.getElementById("searchForm"),
     searchInput: document.getElementById("searchInput"),
@@ -247,6 +260,8 @@
     need_registration: false,
     block_reason: "",
   };
+
+  let warehouseTabState = "catalog";
 
   const previewState = {
     mode: "owner",
@@ -1299,6 +1314,12 @@
     return `<span class="stock-ok">В наявності: ${n}</span>`;
   }
 
+  function locationLabel(location) {
+    const loc = String(location || "").trim();
+    if (!loc) return "";
+    return `<span class="warehouse-loc">Розташування: <b>${escapeHtml(loc)}</b></span>`;
+  }
+
   function availableQtyLabel(stock) {
     const n = stockNumber(stock);
     if (n === null) {
@@ -1345,23 +1366,25 @@
     }
   }
 
-  function renderResults(items) {
-    closePhotoZoom();
-    if (!items.length) {
-      els.results.innerHTML = "";
-      els.status.textContent = "Нічого не знайдено за цим кодом";
-      return;
-    }
+  function isWarehouseCatalogMode() {
+    return (
+      sessionState.role === "warehouse" ||
+      previewState.mode === "warehouse" ||
+      Boolean(sessionState.warehouseCatalog)
+    );
+  }
 
-    const cart = loadCart();
-    els.status.textContent = `Знайдено варіантів: ${items.length}`;
-    els.results.innerHTML = items
+  function renderCatalogCards(items, { showLocation = false, showAdd = true } = {}) {
+    const cart = showAdd ? loadCart() : [];
+    return items
       .map((item) => {
         const photo = item.photo_url || "";
-        const inCart = cart.find((row) => cartKey(row) === cartKey(item));
+        const inCart = showAdd
+          ? cart.find((row) => cartKey(row) === cartKey(item))
+          : null;
         const currentQty = inCart?.qty || 0;
         const outOfStock = stockNumber(item.stock) === 0;
-        const atLimit = !canAddMore(item, currentQty);
+        const atLimit = showAdd ? !canAddMore(item, currentQty) : true;
         const disabled = outOfStock || atLimit ? "disabled" : "";
         return `
           <article class="card">
@@ -1378,16 +1401,38 @@
               </div>
               <div class="row-actions">
                 <div>
-                  ${renderPriceHtml(item)}
+                  ${showAdd ? renderPriceHtml(item) : ""}
                   ${stockLabel(item.stock)}
+                  ${showLocation ? locationLabel(item.location) : ""}
                 </div>
-                <button class="icon-btn" data-add="${encodeURIComponent(JSON.stringify(item))}" ${disabled} title="В кошик">🛒</button>
+                ${
+                  showAdd
+                    ? `<button class="icon-btn" data-add="${encodeURIComponent(
+                        JSON.stringify(item)
+                      )}" ${disabled} title="В кошик">🛒</button>`
+                    : ""
+                }
               </div>
             </div>
           </article>
         `;
       })
       .join("");
+  }
+
+  function renderResults(items) {
+    closePhotoZoom();
+    if (!items.length) {
+      els.results.innerHTML = "";
+      els.status.textContent = "Нічого не знайдено за цим кодом";
+      return;
+    }
+
+    els.status.textContent = `Знайдено варіантів: ${items.length}`;
+    els.results.innerHTML = renderCatalogCards(items, {
+      showLocation: false,
+      showAdd: true,
+    });
   }
 
   function sanitizeCart(cart) {
@@ -6221,6 +6266,7 @@ ${
     setTopbarOrderVisible(false);
     if (els.balanceView) els.balanceView.classList.add("hidden");
     if (els.dropperSettingsView) els.dropperSettingsView.classList.add("hidden");
+    if (els.warehouseView) els.warehouseView.classList.add("hidden");
   }
 
   function resetOrderUiForPreviewDropper(chatId) {
@@ -6277,6 +6323,10 @@ ${
     }
 
     resetOrderUiForPreviewDropper("");
+    if (previewState.mode === "warehouse") {
+      showMode("warehouse");
+      return;
+    }
     // staff stubs
     els.bootStatus.classList.remove("hidden");
     els.bootStatus.innerHTML = `<div class="blocked-box">Роль «${escapeHtml(
@@ -6333,6 +6383,11 @@ ${
       }
       return;
     }
+    if (mode === "warehouse") {
+      if (els.warehouseView) els.warehouseView.classList.remove("hidden");
+      setWarehouseTab(warehouseTabState || "catalog");
+      return;
+    }
     if (mode === "dropper_blocked") {
       els.bootStatus.classList.remove("hidden");
       const reason = sessionState.block_reason || "";
@@ -6385,7 +6440,11 @@ ${
         showMode("register");
         return;
       }
-      if (sessionState.role === "admin" || sessionState.role === "manager" || sessionState.role === "warehouse") {
+      if (sessionState.role === "warehouse") {
+        showMode("warehouse");
+        return;
+      }
+      if (sessionState.role === "admin" || sessionState.role === "manager") {
         els.bootStatus.classList.remove("hidden");
         els.bootStatus.textContent = `Роль «${staffRoleLabel(sessionState.role)}». Кабінет співробітника — наступний етап.`;
         return;
@@ -6439,6 +6498,225 @@ ${
       const btn = event.target.closest("[data-owner-tab]");
       if (!btn) return;
       setOwnerTab(btn.getAttribute("data-owner-tab"));
+    });
+  }
+
+  let warehouseTabState = "catalog";
+
+  function warehouseAuthParams() {
+    const p = new URLSearchParams();
+    const chat = currentTelegramChatId() || sessionState.chat_id || "";
+    const user = currentTelegramUser();
+    if (chat) p.set("chat_id", chat);
+    if (user.user_id) p.set("user_id", user.user_id);
+    if (user.username) p.set("username", user.username);
+    return p.toString();
+  }
+
+  function setWarehouseTab(name) {
+    warehouseTabState = name || "catalog";
+    if (els.warehouseTabs) {
+      els.warehouseTabs.querySelectorAll("[data-wh-tab]").forEach((btn) => {
+        btn.classList.toggle(
+          "active",
+          btn.getAttribute("data-wh-tab") === warehouseTabState
+        );
+      });
+    }
+    const map = {
+      catalog: els.warehouseTabCatalog,
+      packing: els.warehouseTabPacking,
+      shipping: els.warehouseTabShipping,
+      salary: els.warehouseTabSalary,
+    };
+    Object.entries(map).forEach(([key, el]) => {
+      if (!el) return;
+      el.classList.toggle("hidden", key !== warehouseTabState);
+    });
+    if (warehouseTabState === "packing") loadWarehouseQueue("packing");
+    if (warehouseTabState === "shipping") loadWarehouseQueue("ready_to_ship");
+  }
+
+  function renderWarehouseOrderCard(order, { stage }) {
+    const cart = order.cart_summary || [];
+    const cartHtml = cart.length
+      ? cart
+          .map(
+            (x) =>
+              `${escapeHtml(x.code || "")}${
+                x.color ? ` · ${escapeHtml(x.color)}` : ""
+              } ×${escapeHtml(String(x.qty || 1))}`
+          )
+          .join("<br/>")
+      : "—";
+    const pdfBadge = order.has_ttn_pdf
+      ? `<span class="meta-soft">PDF ✓</span>`
+      : `<span class="meta-soft">PDF немає</span>`;
+    const checkHtml =
+      stage === "packing"
+        ? `<label class="warehouse-order-check">
+            <input type="checkbox" data-wh-ready="${escapeHtml(String(order.id))}" />
+            Упаковано → на відправлення
+          </label>`
+        : `<button type="button" class="btn secondary" data-wh-back="${escapeHtml(
+            String(order.id)
+          )}">← На пакування</button>`;
+    return `
+      <article class="warehouse-order-card" data-order-id="${escapeHtml(String(order.id))}">
+        <div class="warehouse-order-head">
+          <div>
+            <div><b>${escapeHtml(order.order_number || "")}</b> · ТТН ${escapeHtml(
+              order.ttn_number || "—"
+            )}</div>
+            <div class="meta">${escapeHtml(order.recipient_name || "—")} · ${escapeHtml(
+              order.own_ttn ? "власна ТТН" : "ТТН власника"
+            )} · ${pdfBadge}</div>
+          </div>
+          ${checkHtml}
+        </div>
+        <div class="meta">${cartHtml}</div>
+      </article>
+    `;
+  }
+
+  async function loadWarehouseQueue(stage) {
+    const listEl =
+      stage === "ready_to_ship" ? els.warehouseShippingList : els.warehousePackingList;
+    if (!listEl) return;
+    listEl.innerHTML = `<div class="empty">Завантаження…</div>`;
+    try {
+      const params = new URLSearchParams(warehouseAuthParams());
+      params.set("stage", stage === "ready_to_ship" ? "ready_to_ship" : "packing");
+      const response = await fetch(`/api/warehouse/queue?${params}`);
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.detail || "Помилка черги");
+      const items = data.items || [];
+      if (!items.length) {
+        listEl.innerHTML = `<div class="empty">${
+          stage === "ready_to_ship"
+            ? "Немає замовлень на відправлення"
+            : "Немає замовлень на пакування"
+        }</div>`;
+        return;
+      }
+      listEl.innerHTML = items
+        .map((o) =>
+          renderWarehouseOrderCard(o, {
+            stage: stage === "ready_to_ship" ? "shipping" : "packing",
+          })
+        )
+        .join("");
+    } catch (error) {
+      listEl.innerHTML = `<div class="empty">${escapeHtml(
+        error.message || "Помилка"
+      )}</div>`;
+    }
+  }
+
+  if (els.warehouseTabs) {
+    els.warehouseTabs.addEventListener("click", (event) => {
+      const btn = event.target.closest("[data-wh-tab]");
+      if (!btn) return;
+      setWarehouseTab(btn.getAttribute("data-wh-tab"));
+    });
+  }
+
+  if (els.warehouseSearchForm) {
+    els.warehouseSearchForm.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const q = (els.warehouseSearchInput?.value || "").trim();
+      if (!q) return;
+      if (els.warehouseSearchStatus) els.warehouseSearchStatus.textContent = "Шукаємо…";
+      try {
+        const response = await fetch(
+          `/api/products/search?q=${encodeURIComponent(q)}&limit=80`
+        );
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.detail || "Помилка пошуку");
+        const items = data.items || [];
+        if (els.warehouseSearchStatus) {
+          els.warehouseSearchStatus.textContent = items.length
+            ? `Знайдено варіантів: ${items.length}`
+            : "Нічого не знайдено";
+        }
+        if (els.warehouseResults) {
+          els.warehouseResults.innerHTML = items.length
+            ? renderCatalogCards(items, { showLocation: true, showAdd: false })
+            : "";
+          bindOrderCardClicks(els.warehouseResults);
+        }
+      } catch (error) {
+        if (els.warehouseSearchStatus) {
+          els.warehouseSearchStatus.textContent = error.message || "Помилка";
+        }
+      }
+    });
+  }
+
+  if (els.warehousePackingList) {
+    els.warehousePackingList.addEventListener("change", async (event) => {
+      const check = event.target.closest("[data-wh-ready]");
+      if (!check || !check.checked) return;
+      const id = check.getAttribute("data-wh-ready");
+      try {
+        const response = await fetch(
+          `/api/warehouse/orders/${encodeURIComponent(id)}/ready?${warehouseAuthParams()}`,
+          { method: "POST" }
+        );
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.detail || "Помилка");
+        showToast("Переміщено на відправлення");
+        loadWarehouseQueue("packing");
+      } catch (error) {
+        check.checked = false;
+        showToast(error.message || "Помилка");
+      }
+    });
+  }
+
+  if (els.warehouseShippingList) {
+    els.warehouseShippingList.addEventListener("click", async (event) => {
+      const btn = event.target.closest("[data-wh-back]");
+      if (!btn) return;
+      const id = btn.getAttribute("data-wh-back");
+      try {
+        const response = await fetch(
+          `/api/warehouse/orders/${encodeURIComponent(id)}/packing?${warehouseAuthParams()}`,
+          { method: "POST" }
+        );
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.detail || "Помилка");
+        showToast("Повернено на пакування");
+        loadWarehouseQueue("ready_to_ship");
+      } catch (error) {
+        showToast(error.message || "Помилка");
+      }
+    });
+  }
+
+  if (els.warehousePrintBtn) {
+    els.warehousePrintBtn.addEventListener("click", async () => {
+      try {
+        const url = `/api/warehouse/print-labels.pdf?${warehouseAuthParams()}`;
+        const response = await fetch(url);
+        if (!response.ok) {
+          let detail = "Не вдалося зібрати PDF";
+          try {
+            const data = await response.json();
+            if (typeof data.detail === "string") detail = data.detail;
+          } catch {
+            /* ignore */
+          }
+          throw new Error(detail);
+        }
+        const blob = await response.blob();
+        const objectUrl = URL.createObjectURL(blob);
+        window.open(objectUrl, "_blank", "noopener,noreferrer");
+        setTimeout(() => URL.revokeObjectURL(objectUrl), 60_000);
+        showToast("PDF відкрито в новій вкладці");
+      } catch (error) {
+        showToast(error.message || "Помилка друку");
+      }
     });
   }
 

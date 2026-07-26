@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
   <title>Kirs — Замовлення</title>
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
-  <link rel="stylesheet" href="/static/styles.css?v=20260726await1" />
+  <link rel="stylesheet" href="/static/styles.css?v=20260726wh1" />
 </head>
 <body>
   <div class="app">
@@ -802,9 +802,48 @@
         </div>
       </section>
     </main>
+
+    <section id="warehouseView" class="view hidden">
+      <h1 class="title">Кабінет комірника</h1>
+      <p class="hint">Каталог, пакування та друк накладних.</p>
+      <nav class="tabs warehouse-tabs" id="warehouseTabs">
+        <button type="button" class="tab active" data-wh-tab="catalog">Каталог</button>
+        <button type="button" class="tab" data-wh-tab="packing">На пакування</button>
+        <button type="button" class="tab" data-wh-tab="shipping">На відправлення</button>
+        <button type="button" class="tab" data-wh-tab="salary">Баланс ЗП</button>
+      </nav>
+
+      <div id="warehouseTabCatalog" class="warehouse-panel">
+        <form id="warehouseSearchForm" class="search-row" autocomplete="off">
+          <input id="warehouseSearchInput" type="search" placeholder="Код або назва…" enterkeyhint="search" />
+          <button type="submit" class="btn primary">Пошук</button>
+        </form>
+        <p id="warehouseSearchStatus" class="meta-soft"></p>
+        <div id="warehouseResults" class="results"></div>
+      </div>
+
+      <div id="warehouseTabPacking" class="warehouse-panel hidden">
+        <p class="hint" style="margin-top:0">Чекбокс — перемістити замовлення у «На відправлення».</p>
+        <div id="warehousePackingList" class="warehouse-order-list"></div>
+      </div>
+
+      <div id="warehouseTabShipping" class="warehouse-panel hidden">
+        <div class="orders-toolbar" style="margin-bottom:10px">
+          <button type="button" class="btn primary" id="warehousePrintBtn">Друк накладних</button>
+        </div>
+        <p class="hint" style="margin-top:0">
+          Зібрані упаковані замовлення. Кнопка обʼєднає PDF накладних в один файл (кожна накладна з нового аркуша).
+        </p>
+        <div id="warehouseShippingList" class="warehouse-order-list"></div>
+      </div>
+
+      <div id="warehouseTabSalary" class="warehouse-panel hidden">
+        <div class="empty">Баланс ЗП — заглушка. Логіку виробітку додамо пізніше.</div>
+      </div>
+    </section>
   </div>
 
   <button type="button" id="photoZoomBackdrop" class="photo-zoom-backdrop hidden" aria-label="Закрити фото"></button>
-  <script src="/static/app.js?v=20260726await1"></script>
+  <script src="/static/app.js?v=20260726wh1"></script>
 </body>
 </html>

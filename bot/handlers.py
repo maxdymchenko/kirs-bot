@@ -243,7 +243,27 @@ async def order_menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
         )
         return
 
-    if role in {"admin", "manager", "warehouse"}:
+    if role == "warehouse":
+        keyboard = InlineKeyboardMarkup(
+            [
+                [
+                    _webapp_button(
+                        "Кабінет комірника",
+                        webapp_url,
+                        chat_type,
+                        chat_id=chat_id,
+                        user_id=user_id,
+                    )
+                ]
+            ]
+        )
+        await update.message.reply_text(
+            "Меню комірника:\n\nКаталог, пакування та друк накладних.",
+            reply_markup=keyboard,
+        )
+        return
+
+    if role in {"admin", "manager"}:
         await update.message.reply_text(
             f"Роль: {role}.\nКабінет співробітника з’явиться наступним етапом."
         )
