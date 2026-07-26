@@ -6501,8 +6501,6 @@ ${
     });
   }
 
-  let warehouseTabState = "catalog";
-
   function warehouseAuthParams() {
     const p = new URLSearchParams();
     const chat = currentTelegramChatId() || sessionState.chat_id || "";
