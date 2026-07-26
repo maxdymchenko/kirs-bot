@@ -9,7 +9,7 @@ import re
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Query, Request
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -157,6 +157,12 @@ class DropperSettingsUpdateRequest(BaseModel):
     credit_holidays_days: int | None = None
 
 
+class OwnerReferralLinkRequest(BaseModel):
+    owner_chat_id: str = Field("", max_length=64)
+    owner_user_id: str = Field("", max_length=64)
+    referred_chat_id: str = Field(..., min_length=1, max_length=64)
+
+
 class DropperSelfSettingsUpdateRequest(BaseModel):
     chat_id: str = Field(..., min_length=2, max_length=64)
     user_id: str = Field("", max_length=64)
@@ -191,6 +197,7 @@ class OrderCreateRequest(BaseModel):
     comment: str = Field("", max_length=1000)
     receipt_name: str = Field("", max_length=260)
     ttn_pdf_name: str = Field("", max_length=260)
+    ttn_pdf_base64: str = Field("", max_length=3_500_000)
     cart: list[dict] = Field(default_factory=list)
     total: float = Field(0, ge=0)
     np_city: dict | None = None
@@ -427,7 +434,7 @@ def create_web_app(
         return {
             "chat_id": str(chat_id or "").strip(),
             "name": "",
-            "allow_cod": True,
+            "allow_cod": False,
             "allow_balance_payment": False,
             "allow_negative_balance": False,
             "negative_balance_limit": 0,
@@ -490,28 +497,6 @@ def create_web_app(
             raise HTTPException(status_code=400, detail="Некоректний телефон")
         phone = phone_digits
 
-        skip_referral = False
-        referral_block_reason = ""
-        if payload.referral_code.strip():
-            if not storage.get_dropper_by_referral_code(payload.referral_code):
-                raise HTTPException(
-                    status_code=400,
-                    detail=(
-                        "Реферальний код не знайдено або програма вимкнена. "
-                        "Перевірте код або залиште поле порожнім."
-                    ),
-                )
-            taken = storage.referral_fingerprint_taken(
-                user_id=payload.user_id,
-                username=payload.username,
-                phone=phone,
-            )
-            if taken:
-                skip_referral = True
-                referral_block_reason = (
-                    f"тип={taken.get('type')} значення={taken.get('value')}"
-                )
-
         try:
             dropper = storage.create_dropper(
                 chat_id=chat_id,
@@ -521,8 +506,8 @@ def create_web_app(
                 comment=payload.comment,
                 registered_by_user_id=payload.user_id,
                 registered_by_username=payload.username,
-                referral_code_used=payload.referral_code,
-                skip_referral_link=skip_referral,
+                referral_code_used="",
+                skip_referral_link=True,
             )
         except Exception as exc:
             logger.exception("register dropper failed")
@@ -539,16 +524,12 @@ def create_web_app(
             phone=phone,
         )
 
-        code_line = ""
-        if dropper.referral_program_enabled and dropper.referral_code:
-            code_line = f"Ваш реферальний код: {dropper.referral_code}\n\n"
         group_text = (
             "✅ Реєстрацію дроппера успішно завершено!\n\n"
             f"Компанія: {dropper.company_name}\n"
             f"Контакт: {dropper.contact_name}\n"
             f"Телефон: {dropper.phone}\n"
             f"chat_id цієї групи: {dropper.chat_id}\n"
-            f"{code_line}"
             "Тепер можна оформлювати замовлення через /menu."
         )
         owner_text = (
@@ -558,23 +539,10 @@ def create_web_app(
             f"Телефон: {dropper.phone}\n"
             f"Коментар: {dropper.comment or '—'}\n"
             f"chat_id групи: `{dropper.chat_id}`\n"
-            f"Реферальний код: `{dropper.referral_code or '—'}`\n"
             f"Хто зареєстрував: @{dropper.registered_by_username or '—'} "
             f"(user_id={dropper.registered_by_user_id or '—'})\n\n"
             "Дроппер уже активний у базі (SQLite)."
         )
-        if dropper.referred_by_dropper_id:
-            referrer = storage.get_dropper_by_id(dropper.referred_by_dropper_id)
-            if referrer:
-                owner_text += (
-                    f"\nЗапросив: {referrer.company_name} ({referrer.referral_code})"
-                    f" · до {dropper.referral_expires_at or '—'}"
-                )
-        elif skip_referral and payload.referral_code.strip():
-            owner_text += (
-                "\n⚠️ Реферальний код вказано, але привʼязку заблоковано "
-                f"(повторна реєстрація: {referral_block_reason})."
-            )
 
         await _notify(chat_id, group_text)
         await _notify_owners(owner_text)
@@ -592,7 +560,17 @@ def create_web_app(
             if d.status != "active":
                 continue
             data = d.to_dict()
-            data["referrals_count"] = len(storage.list_referrals(d.id))
+            refs = storage.list_referrals(d.id)
+            data["referrals_count"] = len(refs)
+            data["referrals"] = [
+                {
+                    "chat_id": r.chat_id,
+                    "company_name": r.company_name,
+                    "phone": r.phone,
+                    "referral_expires_at": r.referral_expires_at or "",
+                }
+                for r in refs
+            ]
             data["turnover"] = round(storage.dropper_turnover(d.id), 2)
             data["balance"] = storage.get_balance(d.id)
             if d.referred_by_dropper_id:
@@ -717,28 +695,35 @@ def create_web_app(
             enriched.append(item)
 
         balance = storage.get_balance(dropper.id)
+        from bot.balance_settle import compute_conditional_balance
+
+        cond = compute_conditional_balance(storage, dropper.id, factual=balance)
         floor = (
             -max(0.0, float(dropper.negative_balance_limit or 0))
             if dropper.allow_negative_balance
             else 0.0
         )
         spend_room = (
-            max(0.0, balance - floor) if dropper.allow_balance_payment else 0.0
+            max(0.0, balance - floor) if dropper.allow_negative_balance else 0.0
         )
         note = (
-            "Тут усі операції по балансу: прибуток з наложки після отримання посилки, "
-            "списання за замовлення, передплата понад «Дроп ціна», реферали тощо. "
+            "Фактичний баланс змінюється після отримання посилки клієнтом: "
+            "прибуток з наложки або списання «Дроп ціна». "
+            "«Умовно» — прогноз з урахуванням посилок ще в дорозі. "
             "Самі замовлення — у вкладці «Історія»."
             if program_on
             else (
-                "Тут усі операції по балансу: прибуток з наложки після отримання посилки, "
-                "списання за замовлення, передплата понад «Дроп ціна» тощо. "
+                "Фактичний баланс змінюється після отримання посилки клієнтом: "
+                "прибуток з наложки або списання «Дроп ціна». "
+                "«Умовно» — прогноз з урахуванням посилок ще в дорозі. "
                 "Самі замовлення — у вкладці «Історія»."
             )
         )
         return {
             "dropper": dropper.to_public_dict(),
             "balance": balance,
+            "conditional_balance": cond["conditional_balance"],
+            "conditional_delta": cond["conditional_delta"],
             "spend_room": round(spend_room, 2),
             "referral_earned_total": referral_earned_total,
             "credited_total": credited_total,
@@ -751,6 +736,64 @@ def create_web_app(
             ),
             "note": note,
         }
+
+    @app.get("/api/dropper/balance/export.xlsx")
+    async def dropper_balance_export(
+        chat_id: str = Query(..., max_length=64),
+        status: str = Query("", max_length=32),
+        date_from: str = Query("", max_length=16),
+        date_to: str = Query("", max_length=16),
+    ) -> Response:
+        from bot.excel_export import (
+            build_balance_ledger_xlsx,
+            order_matches_export_filters,
+            safe_filename,
+        )
+
+        dropper = storage.get_dropper_by_chat(chat_id)
+        if not dropper:
+            raise HTTPException(status_code=404, detail="Дроппера не знайдено")
+        ledger_all = storage.list_ledger(dropper.id, limit=5000)
+        orders_by_number: dict[str, dict] = {}
+        for order in storage.list_orders_for_dropper(dropper.id, limit=500):
+            num = str(order.get("order_number") or "").strip()
+            if num:
+                orders_by_number[num] = order
+
+        export_rows: list[dict] = []
+        for row in ledger_all:
+            order_no = str(row.get("related_order_id") or "").strip()
+            order = orders_by_number.get(order_no) if order_no else None
+            if order is not None:
+                if not order_matches_export_filters(
+                    order,
+                    status=status,
+                    date_from=date_from.strip(),
+                    date_to=date_to.strip(),
+                ):
+                    continue
+            elif str(status or "").strip() and str(status).strip().lower() not in {
+                "",
+                "all",
+            }:
+                continue
+            elif date_from.strip() or date_to.strip():
+                day = str(row.get("created_at") or "")[:10]
+                if date_from.strip() and (not day or day < date_from.strip()):
+                    continue
+                if date_to.strip() and (not day or day > date_to.strip()):
+                    continue
+            export_rows.append({"ledger": row, "order": order})
+
+        data = build_balance_ledger_xlsx(export_rows, sheet_title="Баланс")
+        filename = safe_filename(f"balance_{dropper.company_name or dropper.chat_id}")
+        return Response(
+            content=data,
+            media_type=(
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            ),
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
 
     @app.get("/api/owner/balances")
     async def owner_balances(
@@ -789,8 +832,42 @@ def create_web_app(
         owner_user_id: str = Query("", max_length=64),
     ) -> dict:
         _require_owner(owner_chat_id, owner_user_id)
+        from bot.buyout import build_client_phone_profile
+
         items = storage.list_phone_blacklist()
-        return {"count": len(items), "items": items}
+        enriched: list[dict] = []
+        for item in items:
+            row = dict(item)
+            try:
+                profile = build_client_phone_profile(
+                    storage,
+                    row.get("phone_digits") or "",
+                    include_orders=False,
+                )
+                row["buyout"] = profile.get("buyout") or {}
+                row["orders_total"] = int(profile.get("orders_total") or 0)
+            except Exception:
+                row["buyout"] = {}
+                row["orders_total"] = 0
+            enriched.append(row)
+        return {"count": len(enriched), "items": enriched}
+
+    @app.get("/api/owner/blacklist/client")
+    async def owner_blacklist_client(
+        phone: str = Query(..., min_length=5, max_length=32),
+        owner_chat_id: str = Query("", max_length=64),
+        owner_user_id: str = Query("", max_length=64),
+        limit: int = Query(100, ge=1, le=200),
+    ) -> dict:
+        _require_owner(owner_chat_id, owner_user_id)
+        from bot.buyout import build_client_phone_profile
+
+        profile = build_client_phone_profile(
+            storage, phone, include_orders=True, orders_limit=limit
+        )
+        if not profile.get("phone_digits"):
+            raise HTTPException(status_code=400, detail="Невірний номер телефону")
+        return profile
 
     @app.post("/api/owner/blacklist")
     async def owner_add_blacklist(payload: PhoneBlacklistRequest) -> dict:
@@ -872,7 +949,6 @@ def create_web_app(
         dropper = storage.update_dropper_settings(
             chat_id,
             allow_cod=payload.allow_cod,
-            allow_balance_payment=payload.allow_balance_payment,
             allow_negative_balance=payload.allow_negative_balance,
             negative_balance_limit=payload.negative_balance_limit,
             extra_discount_percent=payload.extra_discount_percent,
@@ -891,6 +967,71 @@ def create_web_app(
         evaluate_credit_holidays(storage, dropper)
         dropper = storage.get_dropper_by_chat(chat_id) or dropper
         return {"ok": True, "dropper": dropper.to_dict()}
+
+    @app.post("/api/owner/droppers/{chat_id}/referrals")
+    async def owner_add_referral(
+        chat_id: str,
+        payload: OwnerReferralLinkRequest,
+    ) -> dict:
+        """Додати дроппера в реферальне дерево (referred → referrer=chat_id)."""
+        _require_owner(payload.owner_chat_id, payload.owner_user_id)
+        referrer = storage.get_dropper_by_chat(chat_id)
+        if not referrer:
+            raise HTTPException(status_code=404, detail="Дроппера-реферера не знайдено")
+        referred = storage.get_dropper_by_chat(payload.referred_chat_id.strip())
+        if not referred:
+            raise HTTPException(status_code=404, detail="Дроппера для привʼязки не знайдено")
+        try:
+            storage.assign_dropper_referrer(
+                referred_dropper_id=referred.id,
+                referrer_dropper_id=referrer.id,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        refs = storage.list_referrals(referrer.id)
+        return {
+            "ok": True,
+            "referrals": [
+                {
+                    "chat_id": r.chat_id,
+                    "company_name": r.company_name,
+                    "phone": r.phone,
+                    "referral_expires_at": r.referral_expires_at or "",
+                }
+                for r in refs
+            ],
+        }
+
+    @app.delete("/api/owner/droppers/{chat_id}/referrals/{referred_chat_id}")
+    async def owner_remove_referral(
+        chat_id: str,
+        referred_chat_id: str,
+        owner_chat_id: str = Query("", max_length=64),
+        owner_user_id: str = Query("", max_length=64),
+    ) -> dict:
+        _require_owner(owner_chat_id, owner_user_id)
+        referrer = storage.get_dropper_by_chat(chat_id)
+        if not referrer:
+            raise HTTPException(status_code=404, detail="Дроппера не знайдено")
+        referred = storage.get_dropper_by_chat(referred_chat_id)
+        if not referred:
+            raise HTTPException(status_code=404, detail="Привʼязаного дроппера не знайдено")
+        if int(referred.referred_by_dropper_id or 0) != int(referrer.id):
+            raise HTTPException(status_code=400, detail="Цей дроппер не в дереві реферера")
+        storage.clear_dropper_referrer(referred.id)
+        refs = storage.list_referrals(referrer.id)
+        return {
+            "ok": True,
+            "referrals": [
+                {
+                    "chat_id": r.chat_id,
+                    "company_name": r.company_name,
+                    "phone": r.phone,
+                    "referral_expires_at": r.referral_expires_at or "",
+                }
+                for r in refs
+            ],
+        }
 
     @app.delete("/api/owner/droppers/{chat_id}")
     async def owner_delete_dropper(
@@ -1050,19 +1191,18 @@ def create_web_app(
             raise HTTPException(status_code=400, detail="Очікується JSON") from exc
         from bot.np_fulfillment import apply_webhook_payload
 
-        stats = await apply_webhook_payload(storage, body, notify=_notify)
+        stats = await apply_webhook_payload(
+            storage, body, notify=_notify, owner_notify=_notify_owners
+        )
         logger.info("NP webhook: %s", stats)
         return {"ok": True, **stats}
 
     def _balance_spend_room(dropper) -> float:
-        if not dropper.allow_balance_payment:
+        # Робота з балансом дозволена лише якщо увімкнено мінус-баланс
+        if not getattr(dropper, "allow_negative_balance", False):
             return 0.0
         balance = storage.get_balance(dropper.id)
-        floor = (
-            -max(0.0, float(dropper.negative_balance_limit or 0))
-            if dropper.allow_negative_balance
-            else 0.0
-        )
+        floor = -max(0.0, float(dropper.negative_balance_limit or 0))
         return max(0.0, balance - floor)
 
     def _validate_order_payload(
@@ -1149,7 +1289,14 @@ def create_web_app(
                         status_code=400,
                         detail="Файл 100×100 має бути у форматі PDF",
                     )
-        elif not for_owner_edit and not getattr(dropper, "allow_cod", True):
+                pdf_b64 = str(getattr(payload, "ttn_pdf_base64", None) or "").strip()
+                if not pdf_b64:
+                    raise HTTPException(
+                        status_code=400,
+                        detail="Не вдалося прочитати PDF — оберіть файл етикетки ще раз",
+                    )
+            # Звірка номера з PDF виконується після створення/збереження (не блокує передачу)
+        elif not for_owner_edit and not getattr(dropper, "allow_cod", False):
             # Без наложенки від постачальника дроппер може передавати лише за власною ТТН
             raise HTTPException(
                 status_code=403,
@@ -1157,7 +1304,7 @@ def create_web_app(
             )
 
         if payload.payment_method == "balance":
-            if not for_owner_edit and not dropper.allow_balance_payment:
+            if not for_owner_edit and not dropper.allow_negative_balance:
                 raise HTTPException(
                     status_code=403,
                     detail="Оплата з балансу для вас вимкнена",
@@ -1179,7 +1326,7 @@ def create_web_app(
             cod_amount = 0.0
             prepay = 0.0
         elif payload.payment_method == "cod":
-            if not for_owner_edit and not getattr(dropper, "allow_cod", True):
+            if not for_owner_edit and not getattr(dropper, "allow_cod", False):
                 raise HTTPException(
                     status_code=403,
                     detail="Передачу замовлень наложкою для вас вимкнено",
@@ -1241,7 +1388,8 @@ def create_web_app(
             lines.append(f"Передплата: {round(float(order.get('prepay') or 0))} ₴")
         if order.get("prepay_balance_debit"):
             lines.append(
-                f"Списано з балансу: {round(float(order.get('prepay_balance_debit') or 0))} ₴"
+                f"З балансу спишеться після отримання: "
+                f"{round(float(order.get('prepay_balance_debit') or 0))} ₴"
             )
         method = (order.get("payment_method") or "").strip()
         if method == "balance":
@@ -1393,27 +1541,14 @@ def create_web_app(
         )
 
         if debit > 0:
-            if payload.payment_method == "balance":
-                storage.add_ledger_entry(
-                    dropper_id=dropper.id,
-                    amount=-debit,
-                    entry_type="balance_payment",
-                    title=f"Оплата з балансу · {order['order_number']}",
-                    note="Списання суми «Дроп ціна» з балансу дроппера",
-                    related_order_id=order["order_number"],
-                )
-            else:
-                storage.add_ledger_entry(
-                    dropper_id=dropper.id,
-                    amount=-debit,
-                    entry_type="prepay_overage_debit",
-                    title=f"Передплата понад «Дроп ціна» · {order['order_number']}",
-                    note="Різниця передплати і суми замовлення",
-                    related_order_id=order["order_number"],
-                )
-            from bot.credit_holidays import evaluate_credit_holidays
-
-            evaluate_credit_holidays(storage, dropper)
+            # Суму запам'ятовуємо; проводка на баланс — лише після забрання.
+            storage.merge_order_payload(
+                order["id"],
+                {
+                    "pending_balance_debit": debit,
+                    "pending_balance_debit_method": payload.payment_method,
+                },
+            )
 
         storage.accrue_referral_from_drop_total(
             source_dropper_id=dropper.id,
@@ -1444,12 +1579,49 @@ def create_web_app(
                     "NP fulfill after order %s failed", order.get("order_number")
                 )
 
+        # Після прийняття/розноски: звірка PDF ↔ номер (не блокує створення)
+        if own_ttn:
+            pdf_b64 = str(getattr(payload, "ttn_pdf_base64", None) or "").strip()
+            if pdf_b64:
+                try:
+                    from bot.ttn_pdf_verify import (
+                        apply_ttn_pdf_check,
+                        format_ttn_pdf_mismatch_message,
+                    )
+
+                    applied = apply_ttn_pdf_check(
+                        storage,
+                        order,
+                        pdf_b64=pdf_b64,
+                        ttn_number=ttn_number,
+                        carrier=carrier,
+                    )
+                    order = applied.get("order") or order
+                    if not applied.get("ok"):
+                        try:
+                            await _notify(
+                                dropper.chat_id,
+                                format_ttn_pdf_mismatch_message(
+                                    order, applied.get("check") or {}
+                                ),
+                            )
+                        except Exception:
+                            logger.exception(
+                                "notify ttn pdf mismatch failed %s",
+                                order.get("order_number"),
+                            )
+                except Exception:
+                    logger.exception(
+                        "ttn pdf check after order %s failed",
+                        order.get("order_number"),
+                    )
+
         return {"ok": True, "order": order}
 
     @app.get("/api/dropper/orders")
     async def dropper_orders(
         chat_id: str = Query(..., max_length=64),
-        limit: int = Query(50, ge=1, le=200),
+        limit: int = Query(200, ge=1, le=500),
     ) -> dict:
         from bot.order_edit import enrich_orders_with_changes
         from bot.order_edit_window import dropper_edit_window_info
@@ -1466,6 +1638,43 @@ def create_web_app(
             "edit_window": window,
         }
 
+    @app.get("/api/dropper/orders/export.xlsx")
+    async def dropper_orders_export(
+        chat_id: str = Query(..., max_length=64),
+        status: str = Query("", max_length=32),
+        date_from: str = Query("", max_length=16),
+        date_to: str = Query("", max_length=16),
+    ) -> Response:
+        from bot.excel_export import (
+            build_orders_xlsx,
+            order_matches_export_filters,
+            safe_filename,
+        )
+
+        dropper = storage.get_dropper_by_chat(chat_id)
+        if not dropper:
+            raise HTTPException(status_code=404, detail="Дроппера не знайдено")
+        items = storage.list_orders_for_dropper(dropper.id, limit=500)
+        filtered = [
+            o
+            for o in items
+            if order_matches_export_filters(
+                o,
+                status=status,
+                date_from=date_from.strip(),
+                date_to=date_to.strip(),
+            )
+        ]
+        data = build_orders_xlsx(filtered, sheet_title="Замовлення")
+        filename = safe_filename(f"orders_{dropper.company_name or dropper.chat_id}")
+        return Response(
+            content=data,
+            media_type=(
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            ),
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
+
     @app.get("/api/orders/edit-window")
     async def orders_edit_window() -> dict:
         from bot.order_edit_window import dropper_edit_window_info
@@ -1477,7 +1686,7 @@ def create_web_app(
         chat_id: str,
         owner_chat_id: str = Query("", max_length=64),
         owner_user_id: str = Query("", max_length=64),
-        limit: int = Query(50, ge=1, le=200),
+        limit: int = Query(200, ge=1, le=500),
     ) -> dict:
         from bot.order_edit import enrich_orders_with_changes
 
@@ -1492,6 +1701,105 @@ def create_web_app(
             "count": len(items),
             "items": items,
         }
+
+    @app.get("/api/owner/droppers/{chat_id}/orders/export.xlsx")
+    async def owner_dropper_orders_export(
+        chat_id: str,
+        owner_chat_id: str = Query("", max_length=64),
+        owner_user_id: str = Query("", max_length=64),
+        status: str = Query("", max_length=32),
+        date_from: str = Query("", max_length=16),
+        date_to: str = Query("", max_length=16),
+    ) -> Response:
+        from bot.excel_export import (
+            build_orders_xlsx,
+            order_matches_export_filters,
+            safe_filename,
+        )
+
+        _require_owner(owner_chat_id, owner_user_id)
+        dropper = storage.get_dropper_by_chat(chat_id)
+        if not dropper:
+            raise HTTPException(status_code=404, detail="Дроппера не знайдено")
+        items = storage.list_orders_for_dropper(dropper.id, limit=500)
+        filtered = [
+            o
+            for o in items
+            if order_matches_export_filters(
+                o,
+                status=status,
+                date_from=date_from.strip(),
+                date_to=date_to.strip(),
+            )
+        ]
+        data = build_orders_xlsx(filtered, sheet_title="Замовлення")
+        filename = safe_filename(f"orders_{dropper.company_name or dropper.chat_id}")
+        return Response(
+            content=data,
+            media_type=(
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            ),
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
+
+    @app.get("/api/owner/droppers/{chat_id}/balance/export.xlsx")
+    async def owner_dropper_balance_export(
+        chat_id: str,
+        owner_chat_id: str = Query("", max_length=64),
+        owner_user_id: str = Query("", max_length=64),
+        status: str = Query("", max_length=32),
+        date_from: str = Query("", max_length=16),
+        date_to: str = Query("", max_length=16),
+    ) -> Response:
+        from bot.excel_export import (
+            build_balance_ledger_xlsx,
+            order_matches_export_filters,
+            safe_filename,
+        )
+
+        _require_owner(owner_chat_id, owner_user_id)
+        dropper = storage.get_dropper_by_chat(chat_id)
+        if not dropper:
+            raise HTTPException(status_code=404, detail="Дроппера не знайдено")
+        ledger_all = storage.list_ledger(dropper.id, limit=5000)
+        orders_by_number: dict[str, dict] = {}
+        for order in storage.list_orders_for_dropper(dropper.id, limit=500):
+            num = str(order.get("order_number") or "").strip()
+            if num:
+                orders_by_number[num] = order
+        export_rows: list[dict] = []
+        for row in ledger_all:
+            order_no = str(row.get("related_order_id") or "").strip()
+            order = orders_by_number.get(order_no) if order_no else None
+            if order is not None:
+                if not order_matches_export_filters(
+                    order,
+                    status=status,
+                    date_from=date_from.strip(),
+                    date_to=date_to.strip(),
+                ):
+                    continue
+            elif str(status or "").strip() and str(status).strip().lower() not in {
+                "",
+                "all",
+            }:
+                continue
+            elif date_from.strip() or date_to.strip():
+                day = str(row.get("created_at") or "")[:10]
+                if date_from.strip() and (not day or day < date_from.strip()):
+                    continue
+                if date_to.strip() and (not day or day > date_to.strip()):
+                    continue
+            export_rows.append({"ledger": row, "order": order})
+        data = build_balance_ledger_xlsx(export_rows, sheet_title="Баланс")
+        filename = safe_filename(f"balance_{dropper.company_name or dropper.chat_id}")
+        return Response(
+            content=data,
+            media_type=(
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            ),
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
 
     async def _perform_order_edit(
         *,
@@ -1714,6 +2022,13 @@ def create_web_app(
             saved_ttn_number = ""
             new_payload["ttn_number"] = ""
 
+        if debit > 0:
+            new_payload["pending_balance_debit"] = debit
+            new_payload["pending_balance_debit_method"] = validate_payload.payment_method
+        else:
+            new_payload.pop("pending_balance_debit", None)
+            new_payload.pop("pending_balance_debit_method", None)
+
         saved = storage.replace_order(
             order_id,
             payment_method=validate_payload.payment_method,
@@ -1834,6 +2149,54 @@ def create_web_app(
             except Exception:
                 logger.exception("notify owners about dropper edit failed")
 
+        # Повторна звірка PDF після правки власної ТТН
+        if own_ttn:
+            pdf_b64 = str(getattr(validate_payload, "ttn_pdf_base64", None) or "").strip()
+            if pdf_b64:
+                try:
+                    from bot.ttn_pdf_verify import (
+                        apply_ttn_pdf_check,
+                        format_ttn_pdf_mismatch_message,
+                    )
+
+                    applied = apply_ttn_pdf_check(
+                        storage,
+                        saved,
+                        pdf_b64=pdf_b64,
+                        ttn_number=saved_ttn_number,
+                        carrier=carrier,
+                    )
+                    saved = applied.get("order") or saved
+                    if not applied.get("ok"):
+                        try:
+                            await _notify(
+                                str(saved.get("chat_id") or dropper.chat_id),
+                                format_ttn_pdf_mismatch_message(
+                                    saved, applied.get("check") or {}
+                                ),
+                            )
+                        except Exception:
+                            logger.exception(
+                                "notify ttn pdf mismatch on edit failed %s",
+                                saved.get("order_number"),
+                            )
+                    else:
+                        try:
+                            await _notify(
+                                str(saved.get("chat_id") or dropper.chat_id),
+                                (
+                                    f"✅ Накладну перевірено · {saved.get('order_number')}\n"
+                                    "Номер у PDF збігається. Hold знято — замовлення знову "
+                                    "може йти в роботу."
+                                ),
+                            )
+                        except Exception:
+                            logger.exception("notify ttn pdf ok on edit failed")
+                except Exception:
+                    logger.exception(
+                        "ttn pdf check on edit %s failed", saved.get("order_number")
+                    )
+
         changes = storage.list_order_changes(order_id, limit=100)
         return {
             "ok": True,
@@ -1906,7 +2269,7 @@ def create_web_app(
             raise HTTPException(
                 status_code=403,
                 detail=window.get("message")
-                or "Редагування тимчасово закрите (13:30–14:30). Подайте запит власнику.",
+                or "Редагування тимчасово закрите (11:50–14:30). Подайте запит власнику.",
             )
         if not can_modify_unshipped_order(order):
             raise HTTPException(
@@ -1915,7 +2278,7 @@ def create_web_app(
             )
         if (
             str(payload.payment_method or "").strip() == "cod"
-            and not getattr(dropper, "allow_cod", True)
+            and not getattr(dropper, "allow_cod", False)
         ):
             raise HTTPException(
                 status_code=403,
@@ -1923,7 +2286,7 @@ def create_web_app(
             )
         if (
             str(payload.payment_method or "").strip() == "balance"
-            and not getattr(dropper, "allow_balance_payment", False)
+            and not getattr(dropper, "allow_negative_balance", False)
         ):
             raise HTTPException(
                 status_code=403,
@@ -1964,7 +2327,7 @@ def create_web_app(
             raise HTTPException(
                 status_code=403,
                 detail=window.get("message")
-                or "Скасування тимчасово закрите (13:30–14:30). Подайте запит власнику.",
+                or "Скасування тимчасово закрите (11:50–14:30). Подайте запит власнику.",
             )
         if not can_modify_unshipped_order(order):
             raise HTTPException(
@@ -2097,7 +2460,7 @@ def create_web_app(
             f"chat_id: {dropper.chat_id}\n"
             f"Що потрібно: {note}\n"
             "\n"
-            "Зараз 13:30–14:30 — дроппер не може редагувати сам. "
+            "Зараз 11:50–14:30 — дроппер не може редагувати сам. "
             "Відкрийте замовлення в кабінеті власника і внесіть правки."
         )
         await _notify_owners(owner_text)
@@ -2117,8 +2480,6 @@ def create_web_app(
         order_id: int,
         payload: OrderDropperReturnRequest,
     ) -> dict:
-        from datetime import datetime
-
         dropper = storage.get_dropper_by_chat(payload.chat_id)
         if not dropper:
             raise HTTPException(status_code=404, detail="Дроппера не знайдено")
@@ -2154,15 +2515,11 @@ def create_web_app(
             )
         return_ttn = ttn_raw if ttn_raw.startswith("RMP-") else ttn_digits
         type_label = "Легке повернення" if return_type == "easy" else "Звичайне повернення"
-        now_iso = datetime.now().isoformat(timespec="seconds")
-        dropper_return = {
-            "type": return_type,
-            "ttn_number": return_ttn,
-            "status": "pending",
-            "created_at": now_iso,
-            "accepted_at": "",
-            "accepted_by": "",
-        }
+        from bot.returns import new_dropper_return, STATUS_AWAITING_RECEIPT
+
+        dropper_return = new_dropper_return(
+            return_type=return_type, ttn_number=return_ttn
+        )
         saved = storage.merge_order_payload(order_id, {"dropper_return": dropper_return})
         storage.add_order_change(
             order_id=order_id,
@@ -2175,7 +2532,11 @@ def create_web_app(
             diff=[
                 {"field": "dropper_return.type", "old": "", "new": return_type},
                 {"field": "dropper_return.ttn_number", "old": "", "new": return_ttn},
-                {"field": "dropper_return.status", "old": "", "new": "pending"},
+                {
+                    "field": "dropper_return.status",
+                    "old": "",
+                    "new": STATUS_AWAITING_RECEIPT,
+                },
             ],
         )
         owner_text = (
@@ -2184,9 +2545,9 @@ def create_web_app(
             f"Дроппер: {dropper.company_name}\n"
             f"Тип: {type_label}\n"
             f"ТТН повернення: {return_ttn}\n"
-            "Статус: очікує обробки\n"
+            "Статус: очікує отримання\n"
             "\n"
-            "Підтвердіть у кабінеті власника → вкладка «Повернення»."
+            "Кабінет власника → вкладка «Повернення»."
         )
         await _notify_owners(owner_text)
         try:
@@ -2196,7 +2557,7 @@ def create_web_app(
                     f"↩️ Заявку на повернення {order.get('order_number')} прийнято.\n"
                     f"Тип: {type_label}\n"
                     f"ТТН: {return_ttn}\n"
-                    "Статус: очікує обробки."
+                    "Статус: очікує отримання зворотної посилки."
                 ),
             )
         except Exception:
@@ -2209,8 +2570,18 @@ def create_web_app(
         owner_chat_id: str = Query("", max_length=64),
         owner_user_id: str = Query("", max_length=64),
         dropper_chat_id: str = Query("", max_length=64),
+        bucket: str = Query("", max_length=32),
         limit: int = Query(200, ge=1, le=500),
     ) -> dict:
+        from bot.returns import (
+            BUCKET_AWAITING_CONFIRM,
+            BUCKET_AWAITING_RECEIPT,
+            BUCKET_CLOSED,
+            normalize_return_status,
+            return_bucket,
+            status_label_uk,
+        )
+
         _require_owner(owner_chat_id, owner_user_id)
         dropper_id = None
         if dropper_chat_id.strip():
@@ -2221,14 +2592,59 @@ def create_web_app(
         items = storage.list_dropper_return_requests(
             dropper_id=dropper_id, limit=limit
         )
-        return {"items": items, "count": len(items)}
+        bucket_key = str(bucket or "").strip().lower()
+        if bucket_key in {
+            BUCKET_AWAITING_RECEIPT,
+            BUCKET_AWAITING_CONFIRM,
+            BUCKET_CLOSED,
+        }:
+            items = [x for x in items if return_bucket(x.get("dropper_return")) == bucket_key]
 
-    @app.post("/api/owner/returns/{order_id}/accept")
-    async def owner_accept_return(
+        enriched: list[dict] = []
+        counts = {
+            BUCKET_AWAITING_RECEIPT: 0,
+            BUCKET_AWAITING_CONFIRM: 0,
+            BUCKET_CLOSED: 0,
+        }
+        # counts across all (re-list without bucket filter for badges)
+        all_items = storage.list_dropper_return_requests(
+            dropper_id=dropper_id, limit=limit
+        )
+        for row in all_items:
+            counts[return_bucket(row.get("dropper_return"))] = (
+                counts.get(return_bucket(row.get("dropper_return")), 0) + 1
+            )
+
+        for row in items:
+            item = dict(row)
+            ret = dict(item.get("dropper_return") or {})
+            st = normalize_return_status(ret.get("status"))
+            ret["status"] = st
+            ret["status_label"] = status_label_uk(st)
+            ret["bucket"] = return_bucket(ret)
+            item["dropper_return"] = ret
+            item["return_bucket"] = ret["bucket"]
+            enriched.append(item)
+
+        return {
+            "items": enriched,
+            "count": len(enriched),
+            "counts": counts,
+            "bucket": bucket_key or "all",
+        }
+
+    @app.post("/api/owner/returns/{order_id}/mark-received")
+    async def owner_mark_return_received(
         order_id: int,
         payload: OwnerReturnAcceptRequest,
     ) -> dict:
-        from datetime import datetime
+        """Вручну: зворотна посилка на пошті → «Очікують підтвердження»."""
+        from bot.returns import (
+            STATUS_AWAITING_CONFIRM,
+            STATUS_AWAITING_RECEIPT,
+            mark_return_received_async,
+            normalize_return_status,
+        )
 
         _require_owner(payload.owner_chat_id, payload.owner_user_id)
         order = storage.get_order(order_id)
@@ -2237,54 +2653,88 @@ def create_web_app(
         ret = (order.get("payload") or {}).get("dropper_return")
         if not isinstance(ret, dict) or not ret.get("status"):
             raise HTTPException(status_code=400, detail="Немає заявки на повернення")
-        if str(ret.get("status") or "") == "accepted":
+        st = normalize_return_status(ret.get("status"))
+        if st == STATUS_AWAITING_CONFIRM:
             changes = storage.list_order_changes(order_id, limit=100)
             return {"ok": True, "order": {**order, "changes": changes}, "already": True}
-        if str(ret.get("status") or "") != "pending":
-            raise HTTPException(status_code=400, detail="Заявку не можна прийняти")
-        now_iso = datetime.now().isoformat(timespec="seconds")
-        updated_ret = dict(ret)
-        updated_ret["status"] = "accepted"
-        updated_ret["accepted_at"] = now_iso
-        updated_ret["accepted_by"] = str(payload.owner_user_id or "").strip()
-        saved = storage.merge_order_payload(order_id, {"dropper_return": updated_ret})
-        storage.add_order_change(
-            order_id=order_id,
-            order_number=str(order.get("order_number") or ""),
+        if st != STATUS_AWAITING_RECEIPT:
+            raise HTTPException(
+                status_code=400,
+                detail="Можна лише для заявок, що очікують отримання",
+            )
+        saved = await mark_return_received_async(
+            storage,
+            order,
+            ttn_status="received",
             actor_role="owner",
-            actor_user_id=str(payload.owner_user_id or "").strip(),
             actor_label="Власник",
-            change_type="status",
-            summary="Повернення прийнято",
-            diff=[
-                {
-                    "field": "dropper_return.status",
-                    "old": "pending",
-                    "new": "accepted",
-                }
-            ],
+            actor_user_id=str(payload.owner_user_id or "").strip(),
+            owner_notify=_notify_owners,
         )
-        dropper = storage.get_dropper_by_id(int(order.get("dropper_id") or 0))
-        if dropper:
+        changes = storage.list_order_changes(order_id, limit=100)
+        return {
+            "ok": True,
+            "order": {**(saved or order), "changes": changes},
+            "status": STATUS_AWAITING_CONFIRM,
+        }
+
+    @app.post("/api/owner/returns/{order_id}/accept")
+    async def owner_accept_return(
+        order_id: int,
+        payload: OwnerReturnAcceptRequest,
+    ) -> dict:
+        from bot.returns import settle_confirmed_return
+
+        _require_owner(payload.owner_chat_id, payload.owner_user_id)
+        order = storage.get_order(order_id)
+        if not order:
+            raise HTTPException(status_code=404, detail="Замовлення не знайдено")
+        try:
+            result = settle_confirmed_return(
+                storage,
+                order,
+                accepted_by=str(payload.owner_user_id or "").strip(),
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+        saved = result.get("order") or order
+        dropper = storage.get_dropper_by_id(int(saved.get("dropper_id") or 0))
+        ret = (saved.get("payload") or {}).get("dropper_return") or {}
+        if dropper and not result.get("already"):
             type_label = (
                 "Легке повернення"
-                if str(updated_ret.get("type") or "") == "easy"
+                if str(ret.get("type") or "") == "easy"
                 else "Звичайне повернення"
             )
+            refund = round(float(result.get("refund_amount") or 0), 2)
+            notes = result.get("ledger_notes") or []
             try:
                 await _notify(
                     dropper.chat_id,
                     (
-                        f"✅ Повернення прийнято\n"
-                        f"Замовлення: {order.get('order_number')}\n"
+                        f"✅ Повернення підтверджено\n"
+                        f"Замовлення: {saved.get('order_number')}\n"
                         f"Тип: {type_label}\n"
-                        f"ТТН повернення: {updated_ret.get('ttn_number') or '—'}"
+                        f"ТТН повернення: {ret.get('ttn_number') or '—'}\n"
+                        + (
+                            f"Нараховано на баланс (товар): +{refund} ₴\n"
+                            if refund > 0
+                            else ""
+                        )
+                        + (f"Розноска: {', '.join(notes)}" if notes else "")
                     ),
                 )
             except Exception:
                 logger.exception("owner accept return notify failed")
         changes = storage.list_order_changes(order_id, limit=100)
-        return {"ok": True, "order": {**(saved or order), "changes": changes}}
+        return {
+            "ok": True,
+            "order": {**saved, "changes": changes},
+            "already": bool(result.get("already")),
+            "refund_amount": result.get("refund_amount"),
+            "ledger_notes": result.get("ledger_notes") or [],
+        }
 
     @app.get("/api/owner/settings")
     async def get_owner_settings(

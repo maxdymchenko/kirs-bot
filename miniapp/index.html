@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
   <title>Kirs — Замовлення</title>
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
-  <link rel="stylesheet" href="/static/styles.css?v=20260724ttn5" />
+  <link rel="stylesheet" href="/static/styles.css?v=20260726ref1" />
 </head>
 <body>
   <div class="app">
@@ -69,10 +69,6 @@
         <label class="field">
           <span class="field-label">Коментар</span>
           <textarea id="regComment" name="comment" rows="2" placeholder="Необовʼязково"></textarea>
-        </label>
-        <label class="field">
-          <span class="field-label">Реферальний код (якщо вас запросили)</span>
-          <input id="regReferral" name="referral_code" type="text" placeholder="Напр. A1B2C3" />
         </label>
         <p id="registerError" class="form-error hidden"></p>
         <button type="submit" class="btn primary block">Зареєструвати</button>
@@ -165,14 +161,20 @@
       <div id="ownerTabReturns" class="owner-panel hidden">
         <h2 class="section-title">Заявки на повернення</h2>
         <p class="hint">
-          Дроппер додає ТТН повернення після отримання клієнтом. Статус: очікує обробки → повернення прийнято.
+          Дроппер додає ТТН повернення після отримання клієнтом. Спочатку посилка їде до вас,
+          потім ви підтверджуєте товар — і система робить разноску по балансах.
         </p>
-        <label class="field">
-          <span class="field-label">Фільтр по дропперу</span>
-          <select id="ownerReturnsDropperFilter">
-            <option value="">Усі дроппери</option>
-          </select>
-        </label>
+        <div class="owner-returns-tabs" id="ownerReturnsTabs" role="tablist">
+          <button type="button" class="tab active" data-returns-bucket="awaiting_receipt">
+            Очікують отримання
+          </button>
+          <button type="button" class="tab" data-returns-bucket="awaiting_confirm">
+            Очікують підтвердження
+          </button>
+          <button type="button" class="tab" data-returns-bucket="closed">
+            Закрито / Архів
+          </button>
+        </div>
         <div id="ownerReturnsList" class="results" style="margin-top:12px"></div>
       </div>
 
@@ -276,6 +278,7 @@
         <h2 class="section-title">Чорний список клієнтів</h2>
         <p class="hint">
           Номери в списку не можуть отримувати відправки. Дроппер побачить попередження при оформленні.
+          Якщо по номеру вже є 5 незаборів/відмов — система додає його автоматично і повідомляє власника.
         </p>
         <form id="blacklistForm" class="blacklist-form" novalidate>
           <label class="field">
@@ -290,6 +293,11 @@
           <button type="submit" class="btn primary block">Додати в список</button>
         </form>
         <h2 class="section-title" style="margin-top:18px">Список номерів</h2>
+        <label class="field blacklist-search-field">
+          <span class="field-label">Пошук за номером</span>
+          <input id="blacklistSearch" type="search" inputmode="tel" placeholder="+380…" autocomplete="off" />
+        </label>
+        <p id="blacklistFilterMeta" class="meta-soft blacklist-filter-meta hidden"></p>
         <div id="ownerBlacklist" class="results"></div>
       </div>
     </section>
@@ -684,6 +692,49 @@
           <button type="button" class="tab" data-history-bucket="received">Отримано</button>
           <button type="button" class="tab" data-history-bucket="returns">Повернення</button>
         </nav>
+        <div class="history-filters-bar orders-toolbar">
+          <button type="button" class="btn secondary" id="historyFiltersToggle">Фільтри</button>
+          <button type="button" class="btn secondary" id="historyExcelExport">Excel</button>
+          <div class="orders-pager" id="historyPager">
+            <button type="button" class="btn secondary orders-pager-btn" id="historyPagePrev" aria-label="Попередні">‹</button>
+            <span class="orders-pager-label" id="historyPageLabel"></span>
+            <button type="button" class="btn secondary orders-pager-btn" id="historyPageNext" aria-label="Наступні">›</button>
+          </div>
+        </div>
+        <div id="historyFiltersPanel" class="owner-orders-filters history-orders-filters hidden" data-history-order-filters>
+          <label class="field compact-field">
+            <span class="field-label">Код товару</span>
+            <input type="text" data-filter-code placeholder="Напр. 1469Д" autocomplete="off" />
+          </label>
+          <label class="field compact-field">
+            <span class="field-label">№ замовлення</span>
+            <input type="text" data-filter-order placeholder="К-…" autocomplete="off" />
+          </label>
+          <label class="field compact-field">
+            <span class="field-label">Номер накладної</span>
+            <input type="text" data-filter-ttn placeholder="ТТН / RMP…" autocomplete="off" />
+          </label>
+          <label class="field compact-field">
+            <span class="field-label">Телефон клієнта</span>
+            <input type="text" data-filter-phone placeholder="+380…" autocomplete="off" />
+          </label>
+          <label class="field compact-field">
+            <span class="field-label">Прізвище / імʼя</span>
+            <input type="text" data-filter-name placeholder="Прізвище або Імʼя" autocomplete="off" />
+          </label>
+          <label class="field compact-field">
+            <span class="field-label">Дата від</span>
+            <input type="date" data-filter-date-from />
+          </label>
+          <label class="field compact-field">
+            <span class="field-label">Дата до</span>
+            <input type="date" data-filter-date-to />
+          </label>
+          <div class="owner-orders-filters-actions">
+            <button type="button" class="btn secondary" id="historyFiltersReset" data-filter-reset>Скинути фільтри</button>
+          </div>
+        </div>
+        <p class="meta-soft history-orders-count hidden" id="historyOrdersCount"></p>
         <div id="ordersHistory" class="results"></div>
       </section>
 
@@ -693,8 +744,33 @@
           Усі нарахування та списання: оплата з балансу, передплата понад «Дроп ціна» тощо.
         </p>
         <div class="balance-hero" id="balanceHero">—</div>
+        <div class="balance-conditional meta-soft hidden" id="balanceConditional"></div>
         <div class="balance-stats" id="balanceStats"></div>
         <h2 class="section-title" style="margin-top:16px">Історія операцій</h2>
+        <div class="orders-toolbar" id="balanceExportBar">
+          <button type="button" class="btn secondary" id="balanceFiltersToggle">Фільтри</button>
+          <button type="button" class="btn secondary" id="balanceExcelExport">Excel</button>
+        </div>
+        <div id="balanceFiltersPanel" class="owner-orders-filters history-orders-filters hidden">
+          <label class="field compact-field">
+            <span class="field-label">Статус замовлення</span>
+            <select id="balanceFilterStatus">
+              <option value="all">Усі</option>
+              <option value="awaiting">Очікує відправлення</option>
+              <option value="transit">В дорозі</option>
+              <option value="received">Отримано</option>
+              <option value="returns">Повернення</option>
+            </select>
+          </label>
+          <label class="field compact-field">
+            <span class="field-label">Дата від</span>
+            <input type="date" id="balanceFilterDateFrom" />
+          </label>
+          <label class="field compact-field">
+            <span class="field-label">Дата до</span>
+            <input type="date" id="balanceFilterDateTo" />
+          </label>
+        </div>
         <div id="balanceLedger" class="results"></div>
       </section>
 
@@ -729,6 +805,6 @@
   </div>
 
   <button type="button" id="photoZoomBackdrop" class="photo-zoom-backdrop hidden" aria-label="Закрити фото"></button>
-  <script src="/static/app.js?v=20260726hist1"></script>
+  <script src="/static/app.js?v=20260726ref1"></script>
 </body>
 </html>

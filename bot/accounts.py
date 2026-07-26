@@ -211,7 +211,7 @@ class AppStorage:
                 ("negative_balance_limit", "negative_balance_limit REAL NOT NULL DEFAULT 0"),
                 ("extra_discount_percent", "extra_discount_percent REAL NOT NULL DEFAULT 0"),
                 ("orders_disabled", "orders_disabled INTEGER NOT NULL DEFAULT 0"),
-                ("allow_cod", "allow_cod INTEGER NOT NULL DEFAULT 1"),
+                ("allow_cod", "allow_cod INTEGER NOT NULL DEFAULT 0"),
                 ("referral_code", "referral_code TEXT NOT NULL DEFAULT ''"),
                 ("referred_by_dropper_id", "referred_by_dropper_id INTEGER"),
                 ("referral_percent", "referral_percent REAL NOT NULL DEFAULT 0"),
@@ -421,8 +421,9 @@ class AppStorage:
             phone=row["phone"],
             comment=row["comment"] or "",
             require_full_payment=bool(row["require_full_payment"]),
-            allow_cod=bool(self._row_get(row, "allow_cod", 1)),
-            allow_balance_payment=bool(self._row_get(row, "allow_balance_payment", 0)),
+            allow_cod=bool(self._row_get(row, "allow_cod", 0)),
+            # «В рахунок балансу» = те саме, що дозвіл мінус-балансу
+            allow_balance_payment=bool(self._row_get(row, "allow_negative_balance", 0)),
             allow_negative_balance=bool(self._row_get(row, "allow_negative_balance", 0)),
             negative_balance_limit=float(self._row_get(row, "negative_balance_limit", 0) or 0),
             extra_discount_percent=float(self._row_get(row, "extra_discount_percent", 0) or 0),
@@ -703,6 +704,60 @@ class AppStorage:
             ).fetchall()
         return [self._row_dropper(r) for r in rows]
 
+    def assign_dropper_referrer(
+        self,
+        *,
+        referred_dropper_id: int,
+        referrer_dropper_id: int,
+    ) -> Dropper | None:
+        """Власник вручну додає дроппера в реферальне дерево referrer."""
+        referred = self.get_dropper_by_id(referred_dropper_id)
+        referrer = self.get_dropper_by_id(referrer_dropper_id)
+        if not referred or not referrer:
+            return None
+        if referred.id == referrer.id:
+            raise ValueError("Не можна привʼязати дроппера до самого себе")
+        if not referrer.referral_program_enabled:
+            raise ValueError("Спочатку увімкніть реферальну програму для цього дроппера")
+        # Захист від простого циклу: referrer уже в дереві referred
+        walker_id = referrer.referred_by_dropper_id
+        seen = {referred.id}
+        while walker_id:
+            if walker_id in seen:
+                raise ValueError("Така привʼязка створить цикл у реферальному дереві")
+            if walker_id == referred.id:
+                raise ValueError("Така привʼязка створить цикл у реферальному дереві")
+            seen.add(walker_id)
+            parent = self.get_dropper_by_id(walker_id)
+            walker_id = parent.referred_by_dropper_id if parent else None
+
+        months = max(1, int(referrer.referral_months or 12))
+        expires = _add_months_iso(_now(), months)
+        with self._connect() as conn:
+            conn.execute(
+                """
+                UPDATE droppers
+                SET referred_by_dropper_id = ?, referral_expires_at = ?
+                WHERE id = ?
+                """,
+                (int(referrer.id), expires, int(referred.id)),
+            )
+            conn.commit()
+        return self.get_dropper_by_id(referred.id)
+
+    def clear_dropper_referrer(self, referred_dropper_id: int) -> Dropper | None:
+        with self._connect() as conn:
+            conn.execute(
+                """
+                UPDATE droppers
+                SET referred_by_dropper_id = NULL, referral_expires_at = NULL
+                WHERE id = ?
+                """,
+                (int(referred_dropper_id),),
+            )
+            conn.commit()
+        return self.get_dropper_by_id(referred_dropper_id)
+
     def list_droppers(self) -> list[Dropper]:
         with self._connect() as conn:
             rows = conn.execute(
@@ -744,8 +799,10 @@ class AppStorage:
                     require_full_payment, status,
                     registered_by_user_id, registered_by_username, created_at,
                     referral_code, referred_by_dropper_id, referral_expires_at,
-                    referral_program_enabled, referral_months
-                ) VALUES (?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, '', ?, ?, 0, 12)
+                    referral_program_enabled, referral_months,
+                    allow_cod, allow_balance_payment, allow_negative_balance,
+                    orders_disabled
+                ) VALUES (?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, '', ?, ?, 0, 12, 0, 0, 0, 0)
                 """,
                 (
                     str(chat_id).strip(),
@@ -797,10 +854,15 @@ class AppStorage:
             fields["require_full_payment"] = 1 if require_full_payment else 0
         if allow_cod is not None:
             fields["allow_cod"] = 1 if allow_cod else 0
-        if allow_balance_payment is not None:
-            fields["allow_balance_payment"] = 1 if allow_balance_payment else 0
+        # Один тумблер: мінус-баланс ↔ робота з балансом у замовленнях
         if allow_negative_balance is not None:
-            fields["allow_negative_balance"] = 1 if allow_negative_balance else 0
+            flag = 1 if allow_negative_balance else 0
+            fields["allow_negative_balance"] = flag
+            fields["allow_balance_payment"] = flag
+        elif allow_balance_payment is not None:
+            flag = 1 if allow_balance_payment else 0
+            fields["allow_negative_balance"] = flag
+            fields["allow_balance_payment"] = flag
         if negative_balance_limit is not None:
             fields["negative_balance_limit"] = max(0.0, float(negative_balance_limit))
         if extra_discount_percent is not None:
@@ -1148,7 +1210,9 @@ class AppStorage:
         )
 
     def list_dropper_balances(self) -> list[dict[str, Any]]:
+        from bot.balance_settle import compute_conditional_balance
         from bot.buyout import compute_buyout, tier_label
+        from bot.excel_export import order_history_bucket
 
         droppers = self.list_droppers()
         items = []
@@ -1160,6 +1224,17 @@ class AppStorage:
             )
             orders = self.list_orders_for_dropper(d.id, limit=500)
             buyout = compute_buyout(orders)
+            in_transit_drop_total = round(
+                sum(
+                    float(o.get("total") or 0)
+                    for o in orders
+                    if order_history_bucket(o) == "transit"
+                ),
+                2,
+            )
+            cond = compute_conditional_balance(
+                self, d.id, factual=bal, orders=orders
+            )
             # Кешуємо актуальний % у дроппера (без нотифікацій)
             if (
                 buyout["percent"] != d.buyout_percent
@@ -1178,6 +1253,9 @@ class AppStorage:
                         "buyout_tier": buyout["tier"],
                     },
                     "balance": bal,
+                    "conditional_balance": cond["conditional_balance"],
+                    "conditional_delta": cond["conditional_delta"],
+                    "in_transit_drop_total": in_transit_drop_total,
                     "referral_earned_total": round(float(referral_earned), 2),
                     "buyout": {
                         **buyout,
@@ -1634,6 +1712,7 @@ class AppStorage:
                   AND (ttn_number IS NULL OR ttn_number = '')
                   AND ttn_status IN ('pending_create', 'create_error', 'none')
                   AND status != 'cancelled'
+                  AND COALESCE(sheets_sync_status, '') != 'hold_pdf'
                 ORDER BY id ASC
                 LIMIT ?
                 """,
@@ -1723,6 +1802,38 @@ class AppStorage:
                 (int(dropper_id), limit),
             ).fetchall()
         return [self._row_order(r) for r in rows]
+
+    def list_orders_for_client_phone(
+        self, phone: str, limit: int = 200
+    ) -> list[dict[str, Any]]:
+        """Замовлення клієнта за нормалізованим номером (payload.recipient.phone)."""
+        digits = self.normalize_client_phone(phone)
+        if not digits:
+            return []
+        limit = max(1, min(int(limit or 200), 500))
+        tail = digits[-9:]
+        # Спочатку грубий LIKE, потім точна нормалізація.
+        fetch_n = min(1500, max(limit * 8, 80))
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT * FROM orders
+                WHERE payload_json LIKE ?
+                ORDER BY id DESC
+                LIMIT ?
+                """,
+                (f"%{tail}%", fetch_n),
+            ).fetchall()
+        out: list[dict[str, Any]] = []
+        for row in rows:
+            order = self._row_order(row)
+            recipient = (order.get("payload") or {}).get("recipient") or {}
+            if self.normalize_client_phone(str(recipient.get("phone") or "")) != digits:
+                continue
+            out.append(order)
+            if len(out) >= limit:
+                break
+        return out
 
     def list_dropper_return_requests(
         self,
@@ -1829,6 +1940,26 @@ class AppStorage:
             for r in rows
         ]
 
+    def get_phone_blacklist_by_digits(self, phone: str) -> dict[str, Any] | None:
+        digits = self.normalize_client_phone(phone)
+        if not digits:
+            return None
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM phone_blacklist WHERE phone_digits = ? LIMIT 1",
+                (digits,),
+            ).fetchone()
+        if not row:
+            return None
+        return {
+            "id": row["id"],
+            "phone_digits": row["phone_digits"],
+            "phone_display": row["phone_display"] or row["phone_digits"],
+            "note": row["note"] or "",
+            "created_at": row["created_at"],
+            "created_by_user_id": row["created_by_user_id"] or "",
+        }
+
     def add_phone_blacklist(
         self,
         phone: str,
@@ -1871,6 +2002,30 @@ class AppStorage:
             "created_at": row["created_at"],
             "created_by_user_id": row["created_by_user_id"] or "",
         }
+
+    def try_add_phone_blacklist(
+        self,
+        phone: str,
+        *,
+        note: str = "",
+        created_by_user_id: str = "",
+    ) -> tuple[dict[str, Any] | None, bool]:
+        """Додати номер, якщо його ще немає. Повертає (entry, created)."""
+        existing = self.get_phone_blacklist_by_digits(phone)
+        if existing:
+            return existing, False
+        try:
+            return (
+                self.add_phone_blacklist(
+                    phone,
+                    note=note,
+                    created_by_user_id=created_by_user_id,
+                ),
+                True,
+            )
+        except ValueError:
+            existing = self.get_phone_blacklist_by_digits(phone)
+            return existing, False
 
     def remove_phone_blacklist(self, entry_id: int) -> bool:
         with self._connect() as conn:

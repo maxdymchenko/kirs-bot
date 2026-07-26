@@ -170,51 +170,65 @@ def summarize_diffs(diffs: list[dict[str, str]], limit: int = 12) -> str:
 
 def sync_ledger_for_edited_order(storage: AppStorage, order: dict[str, Any]) -> None:
     """Перезаписати ledger-записи, привʼязані до order_number."""
+    from bot.balance_settle import (
+        goods_already_debited,
+        goods_debit_amount,
+        order_prepay_overage,
+        order_should_debit_goods,
+        prepay_overage_already_posted,
+    )
+
     dropper_id = int(order.get("dropper_id") or 0)
     order_number = str(order.get("order_number") or "").strip()
     if not dropper_id or not order_number:
         return
 
-    payment = str(order.get("payment_method") or "").strip()
-    debit = _money(order.get("prepay_balance_debit"))
     total = _money(order.get("total"))
     payload = order.get("payload") or {}
 
-    # Списання з балансу / передплата понад дроп
-    if payment == "balance" and debit > 0:
-        storage.upsert_ledger_entry(
-            dropper_id=dropper_id,
-            amount=-debit,
-            entry_type="balance_payment",
-            title=f"Оплата з балансу · {order_number}",
-            note="Списання суми «Дроп ціна» з балансу дроппера (після редагування)",
-            related_order_id=order_number,
-        )
+    # Списання дроп-ціни — лише якщо вже проведено після забрання
+    if goods_already_debited(storage, order) and order_should_debit_goods(order):
+        amount = goods_debit_amount(order)
+        if amount > 0:
+            storage.upsert_ledger_entry(
+                dropper_id=dropper_id,
+                amount=-amount,
+                entry_type="balance_payment",
+                title=f"Оплата з балансу · {order_number}",
+                note="Списання «Дроп ціна» після отримання (після редагування)",
+                related_order_id=order_number,
+            )
+        else:
+            storage.delete_ledger_entry_for_order(
+                dropper_id=dropper_id,
+                entry_type="balance_payment",
+                related_order_id=order_number,
+            )
+    elif not goods_already_debited(storage, order):
+        # Ще не забрано — проводки немає; прибрати застарілі, якщо були
         storage.delete_ledger_entry_for_order(
             dropper_id=dropper_id,
-            entry_type="prepay_overage_debit",
+            entry_type="balance_payment",
             related_order_id=order_number,
         )
-    elif debit > 0 and payment != "balance":
+
+    overage = order_prepay_overage(order)
+    if prepay_overage_already_posted(storage, order) and overage > 0:
         storage.upsert_ledger_entry(
             dropper_id=dropper_id,
-            amount=-debit,
+            amount=-overage,
             entry_type="prepay_overage_debit",
             title=f"Передплата понад «Дроп ціна» · {order_number}",
             note="Різниця передплати і суми замовлення (після редагування)",
             related_order_id=order_number,
         )
+    elif not prepay_overage_already_posted(storage, order):
         storage.delete_ledger_entry_for_order(
             dropper_id=dropper_id,
-            entry_type="balance_payment",
+            entry_type="prepay_overage_debit",
             related_order_id=order_number,
         )
     else:
-        storage.delete_ledger_entry_for_order(
-            dropper_id=dropper_id,
-            entry_type="balance_payment",
-            related_order_id=order_number,
-        )
         storage.delete_ledger_entry_for_order(
             dropper_id=dropper_id,
             entry_type="prepay_overage_debit",

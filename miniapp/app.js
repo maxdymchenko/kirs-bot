@@ -49,16 +49,33 @@
     ownerTabBalances: document.getElementById("ownerTabBalances"),
     ownerTabReturns: document.getElementById("ownerTabReturns"),
     ownerReturnsList: document.getElementById("ownerReturnsList"),
+    ownerReturnsTabs: document.getElementById("ownerReturnsTabs"),
     ownerReturnsDropperFilter: document.getElementById("ownerReturnsDropperFilter"),
     ownerTabSettings: document.getElementById("ownerTabSettings"),
     ownerTabOrder: document.getElementById("ownerTabOrder"),
     ownerTabBlacklist: document.getElementById("ownerTabBlacklist"),
     historyBuckets: document.getElementById("historyBuckets"),
+    historyFiltersToggle: document.getElementById("historyFiltersToggle"),
+    historyFiltersPanel: document.getElementById("historyFiltersPanel"),
+    historyFiltersReset: document.getElementById("historyFiltersReset"),
+    historyExcelExport: document.getElementById("historyExcelExport"),
+    historyPagePrev: document.getElementById("historyPagePrev"),
+    historyPageNext: document.getElementById("historyPageNext"),
+    historyPageLabel: document.getElementById("historyPageLabel"),
+    historyOrdersCount: document.getElementById("historyOrdersCount"),
+    balanceFiltersToggle: document.getElementById("balanceFiltersToggle"),
+    balanceFiltersPanel: document.getElementById("balanceFiltersPanel"),
+    balanceExcelExport: document.getElementById("balanceExcelExport"),
+    balanceFilterStatus: document.getElementById("balanceFilterStatus"),
+    balanceFilterDateFrom: document.getElementById("balanceFilterDateFrom"),
+    balanceFilterDateTo: document.getElementById("balanceFilterDateTo"),
     ownerBlacklist: document.getElementById("ownerBlacklist"),
     blacklistForm: document.getElementById("blacklistForm"),
     blacklistPhone: document.getElementById("blacklistPhone"),
     blacklistNote: document.getElementById("blacklistNote"),
     blacklistError: document.getElementById("blacklistError"),
+    blacklistSearch: document.getElementById("blacklistSearch"),
+    blacklistFilterMeta: document.getElementById("blacklistFilterMeta"),
     phoneBlacklistWarn: document.getElementById("phoneBlacklistWarn"),
     ownerDroppers: document.getElementById("ownerDroppers"),
     ownerBroadcastOpen: document.getElementById("ownerBroadcastOpen"),
@@ -99,6 +116,7 @@
     ordersSheetColumnsHint: document.getElementById("ordersSheetColumnsHint"),
     balanceView: document.getElementById("balanceView"),
     balanceHero: document.getElementById("balanceHero"),
+    balanceConditional: document.getElementById("balanceConditional"),
     balanceReferralTotal: document.getElementById("balanceReferralTotal"),
     balanceStats: document.getElementById("balanceStats"),
     balanceLedger: document.getElementById("balanceLedger"),
@@ -241,6 +259,16 @@
   const PHONE_PREFIX_DIGITS = "380";
   const PHONE_MAX_DIGITS = 12;
   const PHONE_PREFIX_DISPLAY = "+380(";
+
+  const blacklistState = {
+    items: [],
+    search: "",
+  };
+
+  const ownerReturnsState = {
+    bucket: "awaiting_receipt",
+    counts: {},
+  };
 
   const npState = {
     city: null,
@@ -966,8 +994,8 @@
         throw new Error(data.detail || "settings error");
       }
       // Явно false/0 з API = вимкнено; відсутнє поле → увімкнено (сумісність)
-      dropperSettings.allow_cod = isFlagEnabled(data.allow_cod, true);
-      dropperSettings.allow_balance_payment = Boolean(data.allow_balance_payment);
+      dropperSettings.allow_cod = isFlagEnabled(data.allow_cod, false);
+      dropperSettings.allow_balance_payment = Boolean(data.allow_negative_balance);
       dropperSettings.allow_negative_balance = Boolean(data.allow_negative_balance);
       dropperSettings.negative_balance_limit = Number(data.negative_balance_limit || 0);
       dropperSettings.balance = Number(data.balance || 0);
@@ -1092,7 +1120,7 @@
   }
 
   function balanceSpendRoom() {
-    if (!dropperSettings.allow_balance_payment) return 0;
+    if (!dropperSettings.allow_negative_balance) return 0;
     const balance = Number(dropperSettings.balance || 0);
     const floor = dropperSettings.allow_negative_balance
       ? -Math.max(0, Number(dropperSettings.negative_balance_limit || 0))
@@ -1146,7 +1174,7 @@
 
   function syncPaymentAndTtn() {
     const allowCod = isFlagEnabled(dropperSettings.allow_cod, true);
-    const allowBalance = Boolean(dropperSettings.allow_balance_payment);
+    const allowBalance = Boolean(dropperSettings.allow_negative_balance);
 
     // Без наложенки від постачальника — лише власна ТТН
     if (!allowCod && els.ownTtn && !els.ownTtn.checked) {
@@ -1248,8 +1276,8 @@
     if (els.balancePayHint && showBalance) {
       const room = balanceSpendRoom();
       els.balancePayHint.textContent =
-        `Суму «Дроп ціна» (${formatMoneyAmount(total)} грн) буде списано з балансу. ` +
-        `Доступно з урахуванням ліміту мінусу: ${formatMoneyAmount(room)} грн.`;
+        `Суму «Дроп ціна» (${formatMoneyAmount(total)} грн) буде списано з балансу після отримання посилки клієнтом. ` +
+        `Доступно з урахуванням ліміту мінусу (фактичний баланс): ${formatMoneyAmount(room)} грн.`;
     }
   }
 
@@ -1612,7 +1640,7 @@
     }
 
     if (data.paymentMethod === "balance") {
-      if (!dropperSettings.allow_balance_payment) {
+      if (!dropperSettings.allow_negative_balance) {
         return "Оплата з балансу для вас вимкнена";
       }
       const room = balanceSpendRoom();
@@ -1647,7 +1675,7 @@
       }
       const maxPrepay = maxPrepayAmount(data.total);
       if (prepay > maxPrepay) {
-        if (dropperSettings.allow_balance_payment) {
+        if (dropperSettings.allow_negative_balance) {
           return `Передплата не може перевищувати ${Math.round(maxPrepay)} грн (Дроп ціна + доступний баланс)`;
         }
         return `Передплата не може перевищувати ${Math.round(data.total)} грн`;
@@ -1759,7 +1787,7 @@ ${escapeHtml(deliveryExtra)}</div>
         <div class="confirm-value">${escapeHtml(paymentMethodLabel(data.paymentMethod))}
 Дроп ціна: ${escapeHtml(formatMoneyAmount(totalExact))} ₴
 ${paymentExtra}
-${debit > 0 ? `З балансу спишеться: ${escapeHtml(formatMoneyAmount(debit))} ₴` : ""}
+${debit > 0 ? `З балансу спишеться після отримання: ${escapeHtml(formatMoneyAmount(debit))} ₴` : ""}
 ${ttnLine}</div>
       </div>
       <div class="confirm-block">
@@ -1786,6 +1814,23 @@ ${ttnLine}</div>
       els.confirmError.textContent = "";
     }
     window.scrollTo({ top: 0, behavior: "smooth" });
+  }
+
+  function readFileAsBase64(file) {
+    return new Promise((resolve, reject) => {
+      if (!file) {
+        reject(new Error("Файл не обрано"));
+        return;
+      }
+      const reader = new FileReader();
+      reader.onload = () => {
+        const result = String(reader.result || "");
+        const idx = result.indexOf(",");
+        resolve(idx >= 0 ? result.slice(idx + 1) : result);
+      };
+      reader.onerror = () => reject(new Error("Не вдалося прочитати файл"));
+      reader.readAsDataURL(file);
+    });
   }
 
   function buildOrderApiPayload(data) {
@@ -1818,6 +1863,7 @@ ${ttnLine}</div>
       comment: data.comment || "",
       receipt_name: data.receiptName || "",
       ttn_pdf_name: data.ttnPdfName || "",
+      ttn_pdf_base64: data.ttnPdfBase64 || "",
       cart: (data.cart || []).map((item) => ({
         product_id: item.product_id || "",
         code: item.code || "",
@@ -1853,6 +1899,9 @@ ${ttnLine}</div>
       els.confirmError.textContent = "";
     }
     try {
+      if (checkoutDraft.ownTtn && checkoutDraft.ttnPdfFile) {
+        checkoutDraft.ttnPdfBase64 = await readFileAsBase64(checkoutDraft.ttnPdfFile);
+      }
       const response = await fetch("/api/orders", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -1967,8 +2016,18 @@ ${ttnLine}</div>
   }
 
   function dropperReturnStatusLabel(status) {
-    if (String(status || "") === "accepted") return "Повернення прийнято";
+    const st = String(status || "");
+    if (st === "accepted" || st === "closed") return "Закрито";
+    if (st === "awaiting_confirm") return "Очікує підтвердження";
+    if (st === "awaiting_receipt" || st === "pending") return "Очікує отримання";
     return "Очікує обробки";
+  }
+
+  function normalizeReturnStatus(status) {
+    const st = String(status || "");
+    if (st === "pending") return "awaiting_receipt";
+    if (st === "closed") return "accepted";
+    return st || "awaiting_receipt";
   }
 
   function orderHistoryStatus(order) {
@@ -1978,17 +2037,24 @@ ${ttnLine}</div>
     const ret = payload.dropper_return;
 
     if (ret && typeof ret === "object") {
-      const st = String(ret.status || "pending");
+      const st = normalizeReturnStatus(ret.status);
       if (st === "accepted") {
         return {
           kind: "return_accepted",
-          label: "Повернення прийнято",
+          label: "Повернення підтверджено",
+          sub: dropperReturnTypeLabel(ret.type),
+        };
+      }
+      if (st === "awaiting_confirm") {
+        return {
+          kind: "return_pending",
+          label: "Очікує підтвердження",
           sub: dropperReturnTypeLabel(ret.type),
         };
       }
       return {
         kind: "return_pending",
-        label: "Очікує обробки",
+        label: "Очікує отримання",
         sub: dropperReturnTypeLabel(ret.type),
       };
     }
@@ -2141,7 +2207,11 @@ ${
         ${renderOrderTrackingTimelineHtml(order)}
         ${renderOrderChangesTimelineHtml(order)}
         ${renderOrderReturnBlockHtml(order, options)}
-        ${renderOrderDropperActionsHtml(order, options)}
+        ${
+          options.allowDropperEdit
+            ? renderOrderDropperActionsHtml(order, options)
+            : ""
+        }
         ${
           options.editable
             ? `<div class="order-edit-actions">
@@ -2170,16 +2240,17 @@ ${
 
     let infoHtml = "";
     if (ret && typeof ret === "object") {
+      const st = normalizeReturnStatus(ret.status);
       infoHtml = `
         <div class="confirm-block">
           <div class="confirm-label">Заявка на повернення</div>
           <div class="confirm-value">${escapeHtml(dropperReturnTypeLabel(ret.type))}
-Статус: ${escapeHtml(dropperReturnStatusLabel(ret.status))}
+Статус: ${escapeHtml(dropperReturnStatusLabel(st))}
 ТТН повернення: ${escapeHtml(ret.ttn_number || "—")}
 ${ret.created_at ? `Створено: ${escapeHtml(formatOrderDate(ret.created_at) || ret.created_at)}` : ""}
 ${
   ret.accepted_at
-    ? `Прийнято: ${escapeHtml(formatOrderDate(ret.accepted_at) || ret.accepted_at)}`
+    ? `Підтверджено: ${escapeHtml(formatOrderDate(ret.accepted_at) || ret.accepted_at)}`
     : ""
 }</div>
         </div>`;
@@ -2189,7 +2260,7 @@ ${
 
     return `
       ${infoHtml}
-      <div class="order-edit-actions">
+      <div class="order-edit-actions order-return-actions">
         <button type="button" class="btn primary" data-order-return-open="${escapeHtml(
           String(order.id || "")
         )}">Оформити повернення</button>
@@ -2197,11 +2268,11 @@ ${
           String(order.id || "")
         )}">
           <p class="hint" style="margin:0">
-            Звичайне — повернення на дані постачальника. Легке — без заміни даних постачальника.
+            Вкажіть номер зворотної ТТН: Нова Пошта (14+ цифр) або Rozetka (RMP-…).
           </p>
           <label class="field">
-            <span class="field-label">ТТН повернення</span>
-            <input type="text" data-return-ttn inputmode="numeric" placeholder="Номер зворотної ТТН" autocomplete="off" />
+            <span class="field-label">ТТН повернення <span class="req">*</span></span>
+            <input type="text" data-return-ttn placeholder="2045… або RMP-…" autocomplete="off" />
           </label>
           <div class="choice-list" role="radiogroup" aria-label="Тип повернення">
             <label class="choice-card">
@@ -2223,7 +2294,7 @@ ${
           <div class="order-edit-actions-row">
             <button type="button" class="btn primary" data-order-return-submit="${escapeHtml(
               String(order.id || "")
-            )}">Надіслати заявку</button>
+            )}">Відправити заявку</button>
             <button type="button" class="btn secondary" data-order-return-cancel="${escapeHtml(
               String(order.id || "")
             )}">Скасувати</button>
@@ -2232,8 +2303,24 @@ ${
       </div>`;
   }
 
+  function validateReturnTtn(raw) {
+    const value = String(raw || "").trim().toUpperCase();
+    if (!value) return { ok: false, message: "Вкажіть ТТН повернення" };
+    if (/^RMP-\d{6,20}$/i.test(value)) {
+      return { ok: true, ttn: value };
+    }
+    const digits = value.replace(/\D/g, "");
+    if (digits.length >= 10) {
+      return { ok: true, ttn: digits };
+    }
+    return {
+      ok: false,
+      message: "ТТН: Нова Пошта (мінімум 10 цифр) або Rozetka у форматі RMP-XXXXXXXXX",
+    };
+  }
+
   function renderOrderDropperActionsHtml(order, options = {}) {
-    if (!options.dropperActions) return "";
+    if (!options.allowDropperEdit) return "";
     if (String(order.status || "") === "cancelled") {
       return `<div class="order-edit-actions"><p class="hint">Замовлення скасовано</p></div>`;
     }
@@ -2247,7 +2334,7 @@ ${
         <div class="order-edit-actions">
           <p class="hint">${escapeHtml(
             options.editWindow?.message ||
-              "Зараз 13:30–14:30 — редагування закрите. Можна подати запит власнику."
+              "Зараз 11:50–14:30 — редагування закрите. Можна подати запит власнику."
           )}</p>
           <label class="field">
             <span class="field-label">Що потрібно виправити</span>
@@ -2258,9 +2345,13 @@ ${
           )}">Подати запит на виправлення</button>
         </div>`;
     }
+    const allowCod = isFlagEnabled(dropperSettings.allow_cod, true);
+    const editHint = allowCod
+      ? "До 11:50 і після 14:30 (Київ) можна змінити або скасувати, якщо ще не відправлено. ТТН перествориться автоматично."
+      : "До 11:50 і після 14:30 (Київ) можна змінити або скасувати, якщо ще не відправлено.";
     return `
       <div class="order-edit-actions">
-        <p class="hint">До 13:30 і після 14:30 (Київ) можна змінити або скасувати, якщо ще не відправлено. ТТН перествориться автоматично.</p>
+        <p class="hint">${escapeHtml(editHint)}</p>
         <div class="order-edit-actions-row">
           <button type="button" class="btn primary" data-order-edit-open="${escapeHtml(
             String(order.id || "")
@@ -2417,7 +2508,14 @@ ${
 
   function renderOrderCard(
     order,
-    { compact = false, editable = false, dropperActions = false, editWindow = null, editMode = "owner" } = {}
+    {
+      compact = false,
+      editable = false,
+      dropperActions = false,
+      allowDropperEdit = false,
+      editWindow = null,
+      editMode = "owner",
+    } = {}
   ) {
     const payload = order.payload || {};
     const recipient = payload.recipient || {};
@@ -2442,6 +2540,12 @@ ${
     const statusSub = hist.sub
       ? `<div class="order-card-status-sub">${escapeHtml(hist.sub)}</div>`
       : "";
+    const pdfHold = Boolean(payload.ttn_pdf_hold);
+    const pdfHoldHtml = pdfHold
+      ? `<div class="form-error order-pdf-hold">⚠️ Номер ТТН і PDF не збігаються — виправте, інакше замовлення не піде на упаковку. ${escapeHtml(
+          payload.ttn_pdf_check_message || ""
+        )}</div>`
+      : "";
     return `
       <article class="order-card" data-order-id="${orderId}">
         <button type="button" class="order-card-toggle" aria-expanded="false">
@@ -2454,6 +2558,7 @@ ${
               ${order.prepay ? ` · передплата ${escapeHtml(formatMoney(order.prepay))}` : ""}
             </div>
             <div class="meta">${escapeHtml(ttnLine)}</div>
+            ${pdfHoldHtml}
             <div class="meta">${escapeHtml(itemsPreview + more)}</div>
           </div>
           <div class="order-card-aside">
@@ -2473,6 +2578,7 @@ ${
           ${renderOrderDetailsHtml(order, {
             editable,
             dropperActions,
+            allowDropperEdit,
             editWindow,
             editMode,
           })}
@@ -2535,7 +2641,7 @@ ${
     const allowCod =
       editMode === "owner" ? true : isFlagEnabled(dropperSettings.allow_cod, true);
     const allowBalance =
-      editMode === "owner" ? true : Boolean(dropperSettings.allow_balance_payment);
+      editMode === "owner" ? true : Boolean(dropperSettings.allow_negative_balance);
     let method = order.payment_method || payment.method || "cod";
     if (!allowCod && method === "cod") {
       method = allowBalance ? "balance" : "requisites";
@@ -2699,13 +2805,13 @@ ${
               )
             )}" />
           </label>
-          <label class="field compact-field">
+          <label class="field compact-field" data-edit-own-ttn-wrap>
             <span class="field-label">Власна ТТН / RMP</span>
             <input name="ttn_number" type="text" value="${escapeHtml(
               order.ttn_number || payload.ttn_number || ""
             )}" />
           </label>
-          <label class="field compact-field">
+          <label class="field compact-field" data-edit-own-ttn-wrap>
             <span class="field-label">Перевізник власної ТТН</span>
             <select name="own_ttn_carrier">
               <option value="nova_poshta" ${
@@ -2716,6 +2822,33 @@ ${
               }>Rozetka</option>
             </select>
           </label>
+          <div class="field compact-field" data-edit-own-ttn-wrap data-edit-ttn-pdf-wrap style="grid-column:1/-1">
+            <span class="field-label">Файл PDF 100×100</span>
+            <label class="file-picker">
+              <input
+                name="ttn_pdf"
+                class="file-picker-input"
+                type="file"
+                accept="application/pdf,.pdf"
+                data-edit-ttn-pdf
+              />
+              <span class="file-picker-btn">Обрати файл</span>
+              <span
+                class="file-picker-name${payload.ttn_pdf_name ? " is-selected" : ""}"
+                data-edit-ttn-pdf-name
+                data-empty="Файл не обрано"
+                data-current-name="${escapeHtml(payload.ttn_pdf_name || "")}"
+              >${escapeHtml(payload.ttn_pdf_name || "Файл не обрано")}</span>
+            </label>
+            <input type="hidden" name="ttn_pdf_name" value="${escapeHtml(
+              payload.ttn_pdf_name || ""
+            )}" />
+            <span class="field-hint">${
+              payload.ttn_pdf_name
+                ? "Можна замінити поточну накладну новим PDF"
+                : "Обовʼязково для власної ТТН · етикетка у форматі PDF 100×100"
+            }</span>
+          </div>
         </div>
         <input type="hidden" name="city_ref" value="${escapeHtml(delivery.city_ref || "")}" />
         <input type="hidden" name="settlement_ref" value="${escapeHtml(
@@ -2772,6 +2905,12 @@ ${
             user_id: currentTelegramUser().user_id || "",
           }
         : ownerAuthBody();
+    const pdfInput = form.querySelector("[data-edit-ttn-pdf]");
+    const pdfFile = pdfInput?.files?.[0] || null;
+    let ttnPdfName = form.ttn_pdf_name?.value?.trim() || payload.ttn_pdf_name || "";
+    if (pdfFile) {
+      ttnPdfName = pdfFile.name || ttnPdfName;
+    }
     return {
       ...base,
       first_name: form.first_name?.value?.trim() || "",
@@ -2791,6 +2930,7 @@ ${
       own_ttn: ownTtn,
       own_ttn_carrier: form.own_ttn_carrier?.value || "nova_poshta",
       ttn_number: form.ttn_number?.value?.trim() || "",
+      ttn_pdf_name: ttnPdfName,
       payment_method: form.payment_method?.value || "cod",
       prepay: Number(form.prepay?.value || 0),
       cod_amount: Number(form.cod_amount?.value || 0),
@@ -2819,6 +2959,35 @@ ${
     const apt = form.apartment?.closest(".field");
     if (house) house.classList.toggle("hidden", !isCourier || isOwn);
     if (apt) apt.classList.toggle("hidden", !isCourier || isOwn);
+  }
+
+  function bindOrderEditTtnPdfPicker(form) {
+    if (!form) return;
+    const inputEl = form.querySelector("[data-edit-ttn-pdf]");
+    const nameEl = form.querySelector("[data-edit-ttn-pdf-name]");
+    const hiddenName = form.querySelector('input[name="ttn_pdf_name"]');
+    if (!inputEl || !nameEl || inputEl.dataset.bound === "1") return;
+    inputEl.dataset.bound = "1";
+    const currentName = nameEl.dataset.currentName || "";
+    const emptyText = nameEl.dataset.empty || "Файл не обрано";
+    const sync = () => {
+      const file = inputEl.files && inputEl.files[0];
+      if (file) {
+        nameEl.textContent = file.name;
+        nameEl.classList.add("is-selected");
+        if (hiddenName) hiddenName.value = file.name;
+      } else if (currentName) {
+        nameEl.textContent = currentName;
+        nameEl.classList.add("is-selected");
+        if (hiddenName) hiddenName.value = currentName;
+      } else {
+        nameEl.textContent = emptyText;
+        nameEl.classList.remove("is-selected");
+        if (hiddenName) hiddenName.value = "";
+      }
+    };
+    inputEl.addEventListener("change", sync);
+    sync();
   }
 
   function bindOrderEditNpAutocomplete(form, order) {
@@ -3183,6 +3352,7 @@ ${
     syncOrderEditPaymentFields(form);
     form?.payment_method?.addEventListener("change", () => syncOrderEditPaymentFields(form));
     bindOrderEditNpAutocomplete(form, hit.order);
+    bindOrderEditTtnPdfPicker(form);
   }
 
   async function saveOwnerOrderEdit(form) {
@@ -3203,6 +3373,60 @@ ${
         errEl.classList.remove("hidden");
       }
       return;
+    }
+    if (body.own_ttn) {
+      const pdfInput = form.querySelector("[data-edit-ttn-pdf]");
+      const pdfFile = pdfInput?.files?.[0] || null;
+      const pdfName = String(body.ttn_pdf_name || "").trim();
+      if (!pdfName) {
+        if (errEl) {
+          errEl.textContent = "Прикріпіть файл PDF 100×100";
+          errEl.classList.remove("hidden");
+        }
+        return;
+      }
+      if (pdfFile) {
+        const lower = (pdfFile.name || "").toLowerCase();
+        const type = pdfFile.type || "";
+        if (!lower.endsWith(".pdf") && type !== "application/pdf") {
+          if (errEl) {
+            errEl.textContent = "Файл 100×100 має бути у форматі PDF";
+            errEl.classList.remove("hidden");
+          }
+          return;
+        }
+        try {
+          body.ttn_pdf_base64 = await readFileAsBase64(pdfFile);
+        } catch (e) {
+          if (errEl) {
+            errEl.textContent = e.message || "Не вдалося прочитати PDF";
+            errEl.classList.remove("hidden");
+          }
+          return;
+        }
+      } else {
+        if (!pdfName.toLowerCase().endsWith(".pdf")) {
+          if (errEl) {
+            errEl.textContent = "Файл 100×100 має бути у форматі PDF";
+            errEl.classList.remove("hidden");
+          }
+          return;
+        }
+        const oldTtn = String(order.ttn_number || "")
+          .replace(/\s+/g, "")
+          .toUpperCase();
+        const newTtn = String(body.ttn_number || "")
+          .replace(/\s+/g, "")
+          .toUpperCase();
+        if (oldTtn !== newTtn) {
+          if (errEl) {
+            errEl.textContent =
+              "При зміні номера накладної прикріпіть PDF етикетки ще раз — для звірки номера";
+            errEl.classList.remove("hidden");
+          }
+          return;
+        }
+      }
     }
     const submitBtn = form.querySelector('button[type="submit"]');
     if (submitBtn) submitBtn.disabled = true;
@@ -3318,6 +3542,7 @@ ${
           cart,
           own_ttn_carrier: preserved.own_ttn_carrier,
           ttn_number: preserved.ttn_number,
+          ttn_pdf_name: preserved.ttn_pdf_name,
         },
         payment_method: preserved.payment_method,
         own_ttn: preserved.own_ttn,
@@ -3336,6 +3561,7 @@ ${
         syncOrderEditPaymentFields(formAfter)
       );
       bindOrderEditNpAutocomplete(formAfter, panel._orderRef);
+      bindOrderEditTtnPdfPicker(formAfter);
     } catch (error) {
       showToast(error.message || "Помилка пошуку");
     }
@@ -3471,7 +3697,7 @@ ${
   async function submitDropperReturn(orderId) {
     const form = document.querySelector(`[data-order-return-form="${orderId}"]`);
     const errEl = form?.querySelector("[data-return-error]");
-    const ttn = form?.querySelector("[data-return-ttn]")?.value?.trim() || "";
+    const rawTtn = form?.querySelector("[data-return-ttn]")?.value?.trim() || "";
     const type =
       form?.querySelector(`input[name="returnType-${orderId}"]:checked`)?.value ||
       "regular";
@@ -3479,12 +3705,13 @@ ${
       errEl.classList.add("hidden");
       errEl.textContent = "";
     }
-    if (!ttn) {
+    const checked = validateReturnTtn(rawTtn);
+    if (!checked.ok) {
       if (errEl) {
-        errEl.textContent = "Вкажіть ТТН повернення";
+        errEl.textContent = checked.message;
         errEl.classList.remove("hidden");
       } else {
-        showToast("Вкажіть ТТН повернення");
+        showToast(checked.message);
       }
       return;
     }
@@ -3499,7 +3726,7 @@ ${
           body: JSON.stringify({
             chat_id: effectiveDropperChatId(),
             user_id: currentTelegramUser().user_id || "",
-            ttn_number: ttn,
+            ttn_number: checked.ttn,
             return_type: type,
           }),
         }
@@ -3508,7 +3735,7 @@ ${
       if (!response.ok) {
         throw new Error(typeof data.detail === "string" ? data.detail : "Помилка");
       }
-      showToast("Заявку на повернення надіслано");
+      showToast("Заявку надіслано · очікує отримання");
       historyBucket = "returns";
       syncHistoryBucketTabs();
       await renderOrdersHistory();
@@ -3534,6 +3761,8 @@ ${
   let dropperOrdersEditWindow = null;
   let dropperOrdersCache = [];
   let historyBucket = "awaiting";
+  const ORDERS_PAGE_SIZE = 20;
+  let historyPage = 0;
 
   function syncHistoryBucketTabs() {
     if (!els.historyBuckets) return;
@@ -3548,14 +3777,21 @@ ${
   function paintOrdersHistoryList() {
     if (!els.ordersHistory) return;
     const items = dropperOrdersCache || [];
-    const filtered = items.filter((o) => orderHistoryBucket(o) === historyBucket);
+    const inBucket = items.filter((o) => orderHistoryBucket(o) === historyBucket);
+    const filters = collectOrderFilterValues(els.historyFiltersPanel);
+    const filtered = inBucket.filter((o) => orderMatchesOwnerFilters(o, filters));
+    const pageCount = Math.max(1, Math.ceil(filtered.length / ORDERS_PAGE_SIZE) || 1);
+    if (historyPage >= pageCount) historyPage = Math.max(0, pageCount - 1);
+    if (historyPage < 0) historyPage = 0;
+    const start = historyPage * ORDERS_PAGE_SIZE;
+    const pageItems = filtered.slice(start, start + ORDERS_PAGE_SIZE);
     const lockedHint =
-      dropperOrdersEditWindow?.locked
+      historyBucket === "awaiting" && dropperOrdersEditWindow?.locked
         ? `<div class="hint order-window-banner">${escapeHtml(
             dropperOrdersEditWindow.message ||
-              "13:30–14:30 — редагування закрите, можна лише запит власнику."
+              "11:50–14:30 — редагування закрите, можна лише запит власнику."
           )}</div>`
-        : dropperOrdersEditWindow
+        : historyBucket === "awaiting" && dropperOrdersEditWindow
           ? `<div class="hint order-window-banner">${escapeHtml(
               dropperOrdersEditWindow.message || ""
             )}</div>`
@@ -3566,20 +3802,44 @@ ${
       received: "Немає отриманих замовлень",
       returns: "Немає повернень",
     };
+    if (els.historyOrdersCount) {
+      if (!inBucket.length) {
+        els.historyOrdersCount.classList.add("hidden");
+        els.historyOrdersCount.textContent = "";
+      } else {
+        els.historyOrdersCount.classList.remove("hidden");
+        const shown = pageItems.length;
+        els.historyOrdersCount.textContent = `Показано ${shown} з ${filtered.length} (у вкладці ${inBucket.length})`;
+      }
+    }
+    if (els.historyPageLabel) {
+      els.historyPageLabel.textContent =
+        filtered.length > 0
+          ? `${historyPage + 1} / ${pageCount}`
+          : "0 / 0";
+    }
+    if (els.historyPagePrev) els.historyPagePrev.disabled = historyPage <= 0;
+    if (els.historyPageNext) {
+      els.historyPageNext.disabled =
+        filtered.length === 0 || historyPage >= pageCount - 1;
+    }
     els.ordersHistory.innerHTML =
       lockedHint +
-      (filtered.length
-        ? filtered
+      (pageItems.length
+        ? pageItems
             .map((o) =>
               renderOrderCard(o, {
                 dropperActions: true,
+                allowDropperEdit: historyBucket === "awaiting",
                 editWindow: dropperOrdersEditWindow,
                 editMode: "dropper",
               })
             )
             .join("")
         : `<div class="empty">${escapeHtml(
-            emptyByBucket[historyBucket] || "Порожньо"
+            inBucket.length
+              ? "Нічого не знайдено за фільтрами"
+              : emptyByBucket[historyBucket] || "Порожньо"
           )}</div>`);
     bindOrderCardClicks(els.ordersHistory);
   }
@@ -3588,10 +3848,11 @@ ${
     if (!els.ordersHistory) return;
     const chatId = effectiveDropperChatId();
     syncHistoryBucketTabs();
+    historyPage = 0;
     els.ordersHistory.innerHTML = `<div class="ac-loading">Завантаження історії...</div>`;
     try {
       const response = await fetch(
-        `/api/dropper/orders?chat_id=${encodeURIComponent(chatId)}&limit=100`
+        `/api/dropper/orders?chat_id=${encodeURIComponent(chatId)}&limit=500`
       );
       const data = await response.json();
       if (!response.ok) {
@@ -3624,13 +3885,15 @@ ${
       box.innerHTML = `<div class="ac-loading">Завантаження замовлень...</div>`;
       try {
         const response = await fetch(
-          `/api/owner/droppers/${encodeURIComponent(chatId)}/orders?${ownerAuthParams()}&limit=100`
+          `/api/owner/droppers/${encodeURIComponent(chatId)}/orders?${ownerAuthParams()}&limit=500`
         );
         const data = await response.json();
         if (!response.ok) {
           throw new Error(typeof data.detail === "string" ? data.detail : "Помилка");
         }
         box._ordersCache = data.items || [];
+        box._ordersPage = 0;
+        box.dataset.dropperChat = chatId;
         box.dataset.loaded = "1";
       } catch (error) {
         box.innerHTML = `<div class="form-error">${escapeHtml(error.message || "Помилка")}</div>`;
@@ -3641,16 +3904,33 @@ ${
     renderOwnerDropperOrdersPanel(box);
   }
 
-  function ownerOrderFilterValues(box) {
+  function collectOrderFilterValues(root) {
+    if (!root) {
+      return {
+        productCode: "",
+        orderNumber: "",
+        phone: "",
+        clientName: "",
+        ttnNumber: "",
+        dateFrom: "",
+        dateTo: "",
+      };
+    }
     return {
-      productCode: box.querySelector("[data-filter-code]")?.value?.trim() || "",
-      orderNumber: box.querySelector("[data-filter-order]")?.value?.trim() || "",
-      phone: box.querySelector("[data-filter-phone]")?.value?.trim() || "",
-      clientName: box.querySelector("[data-filter-name]")?.value?.trim() || "",
-      ttnNumber: box.querySelector("[data-filter-ttn]")?.value?.trim() || "",
-      dateFrom: box.querySelector("[data-filter-date-from]")?.value || "",
-      dateTo: box.querySelector("[data-filter-date-to]")?.value || "",
+      productCode: root.querySelector("[data-filter-code]")?.value?.trim() || "",
+      orderNumber: root.querySelector("[data-filter-order]")?.value?.trim() || "",
+      phone: root.querySelector("[data-filter-phone]")?.value?.trim() || "",
+      clientName: root.querySelector("[data-filter-name]")?.value?.trim() || "",
+      ttnNumber: root.querySelector("[data-filter-ttn]")?.value?.trim() || "",
+      dateFrom: root.querySelector("[data-filter-date-from]")?.value || "",
+      dateTo: root.querySelector("[data-filter-date-to]")?.value || "",
     };
+  }
+
+  function ownerOrderFilterValues(box) {
+    const base = collectOrderFilterValues(box);
+    base.status = box?._ordersBucket || "transit";
+    return base;
   }
 
   function orderCreatedDateLocal(order) {
@@ -3730,13 +4010,38 @@ ${
     return true;
   }
 
+  function syncOwnerOrdersBucketTabs(box) {
+    const bucket = box._ordersBucket || "transit";
+    box.querySelectorAll("[data-owner-orders-bucket]").forEach((btn) => {
+      btn.classList.toggle(
+        "active",
+        btn.getAttribute("data-owner-orders-bucket") === bucket
+      );
+    });
+  }
+
   function renderOwnerDropperOrdersPanel(box) {
-    const all = Array.isArray(box._ordersCache) ? box._ordersCache : [];
+    if (box._ordersPage == null) box._ordersPage = 0;
+    if (!box._ordersBucket) box._ordersBucket = "transit";
 
     if (!box.querySelector("[data-owner-order-filters]")) {
       box.innerHTML = `
         <p class="owner-orders-title">Історія замовлень</p>
-        <div class="owner-orders-filters" data-owner-order-filters>
+        <nav class="tabs history-buckets owner-orders-buckets" data-owner-orders-buckets aria-label="Статус замовлень">
+          <button type="button" class="tab active" data-owner-orders-bucket="transit">В дорозі</button>
+          <button type="button" class="tab" data-owner-orders-bucket="received">Отримано</button>
+          <button type="button" class="tab" data-owner-orders-bucket="returns">Повернення</button>
+        </nav>
+        <div class="orders-toolbar">
+          <button type="button" class="btn secondary" data-owner-filters-toggle>Фільтри</button>
+          <button type="button" class="btn secondary" data-owner-orders-excel>Excel</button>
+          <div class="orders-pager">
+            <button type="button" class="btn secondary orders-pager-btn" data-owner-page-prev aria-label="Попередні">‹</button>
+            <span class="orders-pager-label" data-owner-page-label></span>
+            <button type="button" class="btn secondary orders-pager-btn" data-owner-page-next aria-label="Наступні">›</button>
+          </div>
+        </div>
+        <div class="owner-orders-filters hidden" data-owner-order-filters>
           <label class="field compact-field">
             <span class="field-label">Код товару</span>
             <input type="text" data-filter-code placeholder="Напр. 1469Д" autocomplete="off" />
@@ -3776,44 +4081,164 @@ ${
         box.dataset.filtersBound = "1";
         box.addEventListener("input", (event) => {
           if (!event.target.closest("[data-owner-order-filters]")) return;
+          box._ordersPage = 0;
           renderOwnerDropperOrdersList(box);
         });
         box.addEventListener("change", (event) => {
           if (!event.target.closest("[data-owner-order-filters]")) return;
+          box._ordersPage = 0;
           renderOwnerDropperOrdersList(box);
         });
-        box.addEventListener("click", (event) => {
+        box.addEventListener("click", async (event) => {
+          const bucketBtn = event.target.closest("[data-owner-orders-bucket]");
+          if (bucketBtn && box.contains(bucketBtn)) {
+            const bucket = bucketBtn.getAttribute("data-owner-orders-bucket");
+            if (!bucket || bucket === box._ordersBucket) return;
+            box._ordersBucket = bucket;
+            box._ordersPage = 0;
+            syncOwnerOrdersBucketTabs(box);
+            renderOwnerDropperOrdersList(box);
+            return;
+          }
+          const toggle = event.target.closest("[data-owner-filters-toggle]");
+          if (toggle && box.contains(toggle)) {
+            const panel = box.querySelector("[data-owner-order-filters]");
+            if (!panel) return;
+            const open = panel.classList.toggle("hidden") === false;
+            toggle.classList.toggle("active", open);
+            toggle.textContent = open ? "Сховати фільтри" : "Фільтри";
+            return;
+          }
           const reset = event.target.closest("[data-filter-reset]");
-          if (!reset || !box.contains(reset)) return;
-          box.querySelectorAll("[data-owner-order-filters] input").forEach((input) => {
-            input.value = "";
-          });
-          renderOwnerDropperOrdersList(box);
+          if (reset && box.contains(reset)) {
+            box.querySelectorAll("[data-owner-order-filters] input").forEach((input) => {
+              input.value = "";
+            });
+            box._ordersPage = 0;
+            renderOwnerDropperOrdersList(box);
+            return;
+          }
+          const excelBtn = event.target.closest("[data-owner-orders-excel]");
+          if (excelBtn && box.contains(excelBtn)) {
+            await downloadOwnerDropperOrdersExcel(box);
+            return;
+          }
+          const prev = event.target.closest("[data-owner-page-prev]");
+          if (prev && box.contains(prev)) {
+            box._ordersPage = Math.max(0, (box._ordersPage || 0) - 1);
+            renderOwnerDropperOrdersList(box);
+            return;
+          }
+          const next = event.target.closest("[data-owner-page-next]");
+          if (next && box.contains(next)) {
+            box._ordersPage = (box._ordersPage || 0) + 1;
+            renderOwnerDropperOrdersList(box);
+          }
         });
       }
     }
 
+    syncOwnerOrdersBucketTabs(box);
     renderOwnerDropperOrdersList(box);
   }
 
   function renderOwnerDropperOrdersList(box) {
     const all = Array.isArray(box._ordersCache) ? box._ordersCache : [];
+    const bucket = box._ordersBucket || "transit";
     const filters = ownerOrderFilterValues(box);
-    const filtered = all.filter((o) => orderMatchesOwnerFilters(o, filters));
+    const inBucket = all.filter((o) => orderHistoryBucket(o) === bucket);
+    const filtered = inBucket.filter((o) => orderMatchesOwnerFilters(o, filters));
+    const page = Math.max(0, Number(box._ordersPage) || 0);
+    const pageCount = Math.max(1, Math.ceil(filtered.length / ORDERS_PAGE_SIZE) || 1);
+    const safePage = Math.min(page, pageCount - 1);
+    box._ordersPage = safePage;
+    const start = safePage * ORDERS_PAGE_SIZE;
+    const pageItems = filtered.slice(start, start + ORDERS_PAGE_SIZE);
     const countEl = box.querySelector("[data-orders-count]");
     const listEl = box.querySelector("[data-owner-orders-list]");
+    const pageLabel = box.querySelector("[data-owner-page-label]");
+    const prevBtn = box.querySelector("[data-owner-page-prev]");
+    const nextBtn = box.querySelector("[data-owner-page-next]");
+    const emptyByBucket = {
+      transit: "Немає замовлень у дорозі",
+      received: "Немає отриманих замовлень",
+      returns: "Немає повернень",
+    };
     if (countEl) {
-      countEl.textContent = `Показано ${filtered.length} з ${all.length}`;
+      countEl.textContent = inBucket.length
+        ? `Показано ${pageItems.length} з ${filtered.length}`
+        : "Показано 0 з 0";
     }
+    if (pageLabel) {
+      pageLabel.textContent = filtered.length ? `${safePage + 1} / ${pageCount}` : "0 / 0";
+    }
+    if (prevBtn) prevBtn.disabled = safePage <= 0;
+    if (nextBtn) nextBtn.disabled = filtered.length === 0 || safePage >= pageCount - 1;
     if (listEl) {
-      listEl.innerHTML = filtered.length
-        ? filtered.map((o) =>
-            renderOrderCard(o, { compact: true, editable: true, editMode: "owner" })
-          ).join("")
+      listEl.innerHTML = pageItems.length
+        ? pageItems
+            .map((o) =>
+              renderOrderCard(o, { compact: true, editable: true, editMode: "owner" })
+            )
+            .join("")
         : `<div class="empty">${
-            all.length ? "Нічого не знайдено за фільтрами" : "Замовлень ще немає"
+            inBucket.length
+              ? "Нічого не знайдено за фільтрами"
+              : emptyByBucket[bucket] || "Замовлень ще немає"
           }</div>`;
       bindOrderCardClicks(listEl);
+    }
+  }
+
+  async function downloadBlobUrl(url, fallbackName) {
+    const response = await fetch(url);
+    if (!response.ok) {
+      let detail = "Помилка вивантаження";
+      try {
+        const data = await response.json();
+        if (typeof data.detail === "string") detail = data.detail;
+      } catch {
+        /* ignore */
+      }
+      throw new Error(detail);
+    }
+    const blob = await response.blob();
+    const disp = response.headers.get("Content-Disposition") || "";
+    const match = /filename=\"([^\"]+)\"/i.exec(disp);
+    const name = match ? match[1] : fallbackName;
+    const objectUrl = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = objectUrl;
+    a.download = name;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(objectUrl);
+  }
+
+  async function downloadOwnerDropperOrdersExcel(box) {
+    const chatId =
+      box.dataset.dropperChat ||
+      box.closest("[data-balance-chat]")?.getAttribute("data-balance-chat") ||
+      box.closest("[data-dropper-chat]")?.getAttribute("data-dropper-chat") ||
+      "";
+    if (!chatId) {
+      showToast("Немає chat_id дроппера");
+      return;
+    }
+    const filters = ownerOrderFilterValues(box);
+    const params = new URLSearchParams(ownerAuthParams());
+    if (filters.status && filters.status !== "all") params.set("status", filters.status);
+    if (filters.dateFrom) params.set("date_from", filters.dateFrom);
+    if (filters.dateTo) params.set("date_to", filters.dateTo);
+    try {
+      await downloadBlobUrl(
+        `/api/owner/droppers/${encodeURIComponent(chatId)}/orders/export.xlsx?${params}`,
+        "orders.xlsx"
+      );
+      showToast("Excel завантажено");
+    } catch (error) {
+      showToast(error.message || "Помилка Excel");
     }
   }
 
@@ -4342,6 +4767,8 @@ ${
     if (key === "cod_profit_credit") return "Прибуток з наложки (посилку отримано)";
     if (key === "cod_profit_reversal") return "Сторно прибутку (повернення)";
     if (key === "return_delivery_debit") return "Доставка при відмові/поверненні";
+    if (key === "return_goods_credit") return "Повернення товару";
+    if (key === "referral_reversal") return "Сторно рефералу";
     if (key === "manual_credit") return "Ручне нарахування";
     if (key === "manual_debit") return "Ручне списання";
     return key || "Операція";
@@ -4387,6 +4814,19 @@ ${
       if (!response.ok) throw new Error(data.detail || "Помилка балансу");
       const balance = Number(data.balance || 0);
       els.balanceHero.textContent = formatMoney(balance);
+      if (els.balanceConditional) {
+        const condBal = Number(
+          data.conditional_balance != null ? data.conditional_balance : balance
+        );
+        const delta = Number(data.conditional_delta || 0);
+        if (Math.abs(delta) > 0.009) {
+          els.balanceConditional.classList.remove("hidden");
+          els.balanceConditional.textContent = `Умовно: ${formatMoney(condBal)}`;
+        } else {
+          els.balanceConditional.classList.add("hidden");
+          els.balanceConditional.textContent = "";
+        }
+      }
       const dropper = data.dropper || {};
       const programOn = Boolean(dropper.referral_program_enabled);
       const spendRoom = Number(data.spend_room != null ? data.spend_room : 0);
@@ -4410,17 +4850,10 @@ ${
             formatMoney(-Math.abs(debited))
           )}</span></div>`
         );
-        if (dropper.allow_balance_payment) {
+        if (dropper.allow_negative_balance) {
           bits.push(
             `<div class="balance-stat"><span class="balance-stat-label">Доступно до списання</span><span class="balance-stat-value">${escapeHtml(
               formatMoney(spendRoom)
-            )}</span></div>`
-          );
-        }
-        if (programOn && dropper.referral_code) {
-          bits.push(
-            `<div class="balance-stat"><span class="balance-stat-label">Ваш реферальний код</span><span class="balance-stat-value">${escapeHtml(
-              dropper.referral_code
             )}</span></div>`
           );
         }
@@ -4432,9 +4865,7 @@ ${
       if (els.balanceHint) {
         els.balanceHint.textContent =
           data.note ||
-          (programOn
-            ? "Усі нарахування та списання: оплата з балансу, передплата понад «Дроп ціна», реферали тощо."
-            : "Усі нарахування та списання: оплата з балансу, передплата понад «Дроп ціна» тощо.");
+          "Фактичний баланс змінюється після отримання посилки. «Умовно» — прогноз з урахуванням посилок у дорозі.";
       }
       const rows = data.ledger || [];
       els.balanceLedger.innerHTML = rows.length
@@ -4446,6 +4877,10 @@ ${
           }</div>`;
     } catch (error) {
       els.balanceHero.textContent = "—";
+      if (els.balanceConditional) {
+        els.balanceConditional.classList.add("hidden");
+        els.balanceConditional.textContent = "";
+      }
       if (els.balanceStats) els.balanceStats.innerHTML = "";
       els.balanceLedger.innerHTML = `<div class="form-error">${escapeHtml(
         error.message || "Помилка"
@@ -4909,30 +5344,65 @@ ${
 
   async function renderOwnerReturns() {
     if (!els.ownerReturnsList) return;
+    syncOwnerReturnsTabs();
     els.ownerReturnsList.innerHTML = `<div class="ac-loading">Завантаження...</div>`;
     try {
-      await fillOwnerReturnsDropperFilter();
-      const dropperChat = els.ownerReturnsDropperFilter?.value || "";
       const params = new URLSearchParams(ownerAuthParams());
-      if (dropperChat) params.set("dropper_chat_id", dropperChat);
+      params.set("bucket", ownerReturnsState.bucket || "awaiting_receipt");
       params.set("limit", "200");
       const response = await fetch(`/api/owner/returns?${params.toString()}`);
       const data = await response.json();
       if (!response.ok) {
         throw new Error(typeof data.detail === "string" ? data.detail : "Помилка");
       }
+      ownerReturnsState.counts = data.counts || {};
+      syncOwnerReturnsTabs();
       const items = data.items || [];
+      const emptyByBucket = {
+        awaiting_receipt: "Немає повернень у дорозі",
+        awaiting_confirm: "Немає повернень на підтвердження",
+        closed: "Архів порожній",
+      };
       if (!items.length) {
-        els.ownerReturnsList.innerHTML = `<div class="empty">Немає заявок на повернення</div>`;
+        els.ownerReturnsList.innerHTML = `<div class="empty">${escapeHtml(
+          emptyByBucket[ownerReturnsState.bucket] || "Немає заявок на повернення"
+        )}</div>`;
         return;
       }
       els.ownerReturnsList.className = "results owner-returns";
       els.ownerReturnsList.innerHTML = items
         .map((row) => {
           const ret = row.dropper_return || (row.payload && row.payload.dropper_return) || {};
-          const pending = String(ret.status || "") === "pending";
+          const st = normalizeReturnStatus(ret.status);
           const statusKind =
-            String(ret.status || "") === "accepted" ? "return_accepted" : "return_pending";
+            st === "accepted"
+              ? "return_accepted"
+              : st === "awaiting_confirm"
+                ? "return_pending"
+                : "return_pending";
+          let actionHtml = "";
+          if (st === "awaiting_receipt") {
+            actionHtml = `<button type="button" class="btn secondary" data-owner-return-received="${escapeHtml(
+              String(row.id || "")
+            )}">Позначити отриманим</button>`;
+          } else if (st === "awaiting_confirm") {
+            actionHtml = `<button type="button" class="btn primary" data-owner-return-accept="${escapeHtml(
+              String(row.id || "")
+            )}">Підтвержено</button>`;
+          } else if (ret.accepted_at) {
+            actionHtml = `<div class="meta-soft">Підтверджено: ${escapeHtml(
+              formatOrderDate(ret.accepted_at) || ret.accepted_at
+            )}${
+              ret.refund_amount
+                ? ` · товар +${escapeHtml(formatMoney(ret.refund_amount))}`
+                : ""
+            }</div>`;
+          }
+          const ttnStatus = ret.ttn_status
+            ? `<div class="meta-soft">Статус зворотної ТТН: ${escapeHtml(
+                ret.ttn_status
+              )}</div>`
+            : "";
           return `
           <article class="owner-return-card" data-return-order-id="${escapeHtml(
             String(row.id || "")
@@ -4946,23 +5416,15 @@ ${
                 )}</div>
               </div>
               <div class="order-card-status status-${escapeHtml(statusKind)}">${escapeHtml(
-                dropperReturnStatusLabel(ret.status)
+                dropperReturnStatusLabel(st)
               )}</div>
             </div>
             <div class="meta">Тип: <b>${escapeHtml(dropperReturnTypeLabel(ret.type))}</b></div>
             <div class="meta">ТТН повернення: <b>${escapeHtml(ret.ttn_number || "—")}</b></div>
             <div class="meta">Оригінальна ТТН: ${escapeHtml(row.ttn_number || "—")}</div>
-            ${
-              pending
-                ? `<button type="button" class="btn primary" data-owner-return-accept="${escapeHtml(
-                    String(row.id || "")
-                  )}">Повернення прийнято</button>`
-                : ret.accepted_at
-                  ? `<div class="meta-soft">Прийнято: ${escapeHtml(
-                      formatOrderDate(ret.accepted_at) || ret.accepted_at
-                    )}</div>`
-                  : ""
-            }
+            <div class="meta">Дроп-ціна: <b>${escapeHtml(formatMoney(row.total || 0))}</b></div>
+            ${ttnStatus}
+            ${actionHtml}
           </article>`;
         })
         .join("");
@@ -4973,29 +5435,42 @@ ${
     }
   }
 
-  async function fillOwnerReturnsDropperFilter() {
-    if (!els.ownerReturnsDropperFilter) return;
-    const prev = els.ownerReturnsDropperFilter.value;
+  function syncOwnerReturnsTabs() {
+    if (!els.ownerReturnsTabs) return;
+    const counts = ownerReturnsState.counts || {};
+    els.ownerReturnsTabs.querySelectorAll("[data-returns-bucket]").forEach((btn) => {
+      const key = btn.getAttribute("data-returns-bucket") || "";
+      btn.classList.toggle("active", key === ownerReturnsState.bucket);
+      const n = Number(counts[key] || 0);
+      const labels = {
+        awaiting_receipt: "Очікують отримання",
+        awaiting_confirm: "Очікують підтвердження",
+        closed: "Закрито / Архів",
+      };
+      const base = labels[key] || key;
+      btn.textContent = n > 0 ? `${base} (${n})` : base;
+    });
+  }
+
+  async function markOwnerReturnReceived(orderId) {
     try {
-      const response = await fetch(`/api/owner/droppers?${ownerAuthParams()}`);
+      const response = await fetch(
+        `/api/owner/returns/${encodeURIComponent(orderId)}/mark-received`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(ownerAuthBody()),
+        }
+      );
       const data = await response.json();
-      if (!response.ok) throw new Error(data.detail || "Помилка");
-      const items = data.items || [];
-      els.ownerReturnsDropperFilter.innerHTML =
-        `<option value="">Усі дроппери</option>` +
-        items
-          .map(
-            (d) =>
-              `<option value="${escapeHtml(d.chat_id)}">${escapeHtml(
-                d.company_name || d.chat_id
-              )}</option>`
-          )
-          .join("");
-      if (prev && items.some((d) => String(d.chat_id) === String(prev))) {
-        els.ownerReturnsDropperFilter.value = prev;
+      if (!response.ok) {
+        throw new Error(typeof data.detail === "string" ? data.detail : "Помилка");
       }
+      showToast("Повернення позначено отриманим");
+      ownerReturnsState.bucket = "awaiting_confirm";
+      await renderOwnerReturns();
     } catch (error) {
-      console.warn("owner returns droppers", error);
+      showToast(error.message || "Помилка");
     }
   }
 
@@ -5013,7 +5488,13 @@ ${
       if (!response.ok) {
         throw new Error(typeof data.detail === "string" ? data.detail : "Помилка");
       }
-      showToast("Повернення прийнято");
+      const refund = Number(data.refund_amount || 0);
+      showToast(
+        refund > 0
+          ? `Підтверджено · на баланс +${formatMoney(refund)}`
+          : "Повернення підтверджено"
+      );
+      ownerReturnsState.bucket = "closed";
       await renderOwnerReturns();
     } catch (error) {
       showToast(error.message || "Помилка");
@@ -5046,6 +5527,17 @@ ${
                     ${buyoutBadgeHtml(row.buyout)}
                   </div>
                   <div class="meta">Баланс: <b>${escapeHtml(formatMoney(row.balance || 0))}</b></div>
+                  <div class="meta balance-conditional-line">Умовно: <b>${escapeHtml(
+                    formatMoney(
+                      row.conditional_balance != null
+                        ? row.conditional_balance
+                        : row.balance || 0
+                    )
+                  )}</b></div>
+                  <div class="meta">Отримано: <b>—</b></div>
+                  <div class="meta">В дорозі: <b>${escapeHtml(
+                    formatMoney(row.in_transit_drop_total || 0)
+                  )}</b></div>
                   <div class="meta-soft">Реф. нараховано: ${escapeHtml(
                     formatMoney(row.referral_earned_total || 0)
                   )} · код ${escapeHtml(d.referral_code || "—")}</div>
@@ -5089,32 +5581,185 @@ ${
       const response = await fetch(`/api/owner/blacklist?${ownerAuthParams()}`);
       const data = await response.json();
       if (!response.ok) throw new Error(data.detail || "Помилка");
-      const items = data.items || [];
-      els.ownerBlacklist.innerHTML = items.length
-        ? items
-            .map(
-              (row) => `
-          <article class="owner-card blacklist-card">
-            <div class="owner-card-head">
-              <div class="owner-card-title">${escapeHtml(row.phone_display || row.phone_digits)}</div>
-              ${
-                row.note
-                  ? `<div class="meta">${escapeHtml(row.note)}</div>`
-                  : ""
-              }
-              <div class="meta-soft">${escapeHtml(row.created_at || "")}</div>
-            </div>
-            <button type="button" class="btn secondary" data-blacklist-del="${escapeHtml(
-              String(row.id)
-            )}">Видалити</button>
-          </article>`
-            )
-            .join("")
-        : `<div class="empty">Чорний список порожній</div>`;
+      blacklistState.items = data.items || [];
+      if (els.blacklistSearch && !blacklistState.search) {
+        blacklistState.search = (els.blacklistSearch.value || "").trim();
+      }
+      paintOwnerBlacklistList();
     } catch (error) {
       els.ownerBlacklist.innerHTML = `<div class="form-error">${escapeHtml(
         error.message || "Помилка"
       )}</div>`;
+    }
+  }
+
+  function blacklistPhoneDigits(value) {
+    return String(value || "").replace(/\D/g, "");
+  }
+
+  function filteredBlacklistItems() {
+    const q = blacklistPhoneDigits(blacklistState.search);
+    if (!q) return blacklistState.items.slice();
+    return blacklistState.items.filter((row) => {
+      const digits = blacklistPhoneDigits(row.phone_digits || row.phone_display || "");
+      return digits.includes(q);
+    });
+  }
+
+  function paintOwnerBlacklistList() {
+    if (!els.ownerBlacklist) return;
+    const items = filteredBlacklistItems();
+    const total = blacklistState.items.length;
+    if (els.blacklistFilterMeta) {
+      if (!total) {
+        els.blacklistFilterMeta.classList.add("hidden");
+        els.blacklistFilterMeta.textContent = "";
+      } else {
+        els.blacklistFilterMeta.classList.remove("hidden");
+        els.blacklistFilterMeta.textContent = `Показано ${items.length} з ${total}`;
+      }
+    }
+    if (!total) {
+      els.ownerBlacklist.innerHTML = `<div class="empty">Чорний список порожній</div>`;
+      return;
+    }
+    if (!items.length) {
+      els.ownerBlacklist.innerHTML = `<div class="empty">Нічого не знайдено за номером</div>`;
+      return;
+    }
+    els.ownerBlacklist.innerHTML = items
+      .map((row) => {
+        const phone = row.phone_display || row.phone_digits || "";
+        const digits = row.phone_digits || blacklistPhoneDigits(phone);
+        const buyout = row.buyout || {};
+        const received = Number(buyout.received || 0);
+        const lost = Number(buyout.lost || 0);
+        const completed = Number(buyout.completed || 0);
+        const statsLine =
+          completed > 0
+            ? `Забрано ${received} з ${completed} · незаборів ${lost}`
+            : row.orders_total
+              ? `Замовлень: ${row.orders_total} (ще немає завершених)`
+              : "Немає завершених замовлень";
+        return `
+          <article class="owner-card blacklist-card is-collapsed" data-blacklist-phone="${escapeHtml(
+            digits
+          )}" data-blacklist-id="${escapeHtml(String(row.id))}">
+            <button type="button" class="owner-card-toggle" aria-expanded="false">
+              <div class="owner-card-head">
+                <div class="owner-card-title-row">
+                  <div class="owner-card-title">${escapeHtml(phone)}</div>
+                  ${buyoutBadgeHtml(buyout)}
+                </div>
+                ${
+                  row.note
+                    ? `<div class="meta">${escapeHtml(row.note)}</div>`
+                    : ""
+                }
+                <div class="meta-soft">${escapeHtml(statsLine)}</div>
+                <div class="meta-soft">${escapeHtml(row.created_at || "")}</div>
+              </div>
+              <span class="owner-card-chevron" aria-hidden="true"></span>
+            </button>
+            <div class="blacklist-card-actions">
+              <button type="button" class="btn secondary" data-blacklist-del="${escapeHtml(
+                String(row.id)
+              )}">Видалити</button>
+            </div>
+            <div class="blacklist-client-panel" data-blacklist-detail hidden></div>
+          </article>`;
+      })
+      .join("");
+  }
+
+  function blacklistOutcomeHtml(outcome) {
+    if (outcome === "received") {
+      return `<span class="blacklist-outcome is-received">забрав</span>`;
+    }
+    if (outcome === "lost") {
+      return `<span class="blacklist-outcome is-lost">не забрав / відмова</span>`;
+    }
+    return `<span class="blacklist-outcome is-open">в процесі</span>`;
+  }
+
+  function renderBlacklistClientPanel(box, profile) {
+    const buyout = profile.buyout || {};
+    const orders = profile.orders || [];
+    const received = Number(buyout.received || 0);
+    const lost = Number(buyout.lost || 0);
+    const completed = Number(buyout.completed || 0);
+    const totalOrders = Number(profile.orders_total || orders.length || 0);
+    const pct =
+      buyout.percent != null && Number.isFinite(Number(buyout.percent))
+        ? `${buyout.percent}%`
+        : "—";
+    const statsHtml = `
+      <div class="blacklist-stats">
+        <div>Усього замовлень: <b>${escapeHtml(String(totalOrders))}</b></div>
+        <div>Забрав: <b>${escapeHtml(String(received))}</b> · не забрав/відмова: <b>${escapeHtml(
+          String(lost)
+        )}</b></div>
+        <div>Завершених: <b>${escapeHtml(String(completed))}</b> · % забору: <b>${escapeHtml(
+          pct
+        )}</b></div>
+        ${buyoutBadgeHtml(buyout)}
+      </div>`;
+    const ordersHtml = orders.length
+      ? orders
+          .map(
+            (o) => `
+        <div class="blacklist-order">
+          <div class="meta"><b>${escapeHtml(o.order_number || "—")}</b> · ${blacklistOutcomeHtml(
+              o.outcome
+            )}</div>
+          <div class="meta">${escapeHtml(o.cart_summary || "—")}</div>
+          <div class="meta-soft">Дроппер: ${escapeHtml(o.dropper_name || "—")}${
+              o.client_name ? ` · ${escapeHtml(o.client_name)}` : ""
+            }</div>
+          <div class="meta-soft">${escapeHtml(o.created_at || "")}${
+              o.ttn_number ? ` · ТТН ${escapeHtml(o.ttn_number)}` : ""
+            }${
+              o.total != null
+                ? ` · ${escapeHtml(formatMoney(o.total))}`
+                : ""
+            }</div>
+        </div>`
+          )
+          .join("")
+      : `<div class="empty">Замовлень по цьому номеру не знайдено</div>`;
+    box.innerHTML = `${statsHtml}${ordersHtml}`;
+    box.hidden = false;
+  }
+
+  async function loadBlacklistClientDetail(card) {
+    const phone = card.getAttribute("data-blacklist-phone") || "";
+    if (!phone) return;
+    let box = card.querySelector("[data-blacklist-detail]");
+    if (!box) {
+      box = document.createElement("div");
+      box.className = "blacklist-client-panel";
+      box.setAttribute("data-blacklist-detail", "1");
+      card.appendChild(box);
+    }
+    if (box.dataset.loaded === "1") {
+      box.hidden = false;
+      return;
+    }
+    box.hidden = false;
+    box.innerHTML = `<div class="ac-loading">Завантаження клієнта...</div>`;
+    try {
+      const params = new URLSearchParams(ownerAuthParams());
+      params.set("phone", phone);
+      params.set("limit", "100");
+      const response = await fetch(`/api/owner/blacklist/client?${params.toString()}`);
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(typeof data.detail === "string" ? data.detail : "Помилка");
+      }
+      renderBlacklistClientPanel(box, data);
+      box.dataset.loaded = "1";
+    } catch (error) {
+      box.innerHTML = `<div class="form-error">${escapeHtml(error.message || "Помилка")}</div>`;
     }
   }
 
@@ -5175,6 +5820,71 @@ ${
     return data.dropper;
   }
 
+  let ownerDroppersCache = [];
+
+  function renderReferralLinkedList(refs) {
+    const list = Array.isArray(refs) ? refs : [];
+    if (!list.length) {
+      return `<div class="meta-soft">Поки нікого не привʼязано</div>`;
+    }
+    return list
+      .map(
+        (r) => `
+      <div class="referral-linked-item" data-referred-chat="${escapeHtml(r.chat_id || "")}">
+        <div>
+          <div class="meta"><b>${escapeHtml(r.company_name || "")}</b></div>
+          <div class="meta-soft">${escapeHtml(r.phone || "")} · ${escapeHtml(r.chat_id || "")}</div>
+        </div>
+        <button type="button" class="btn secondary" data-referral-unlink title="Відвʼязати">✕</button>
+      </div>`
+      )
+      .join("");
+  }
+
+  function paintReferralSearchResults(card, query) {
+    const box = card.querySelector("[data-referral-search-results]");
+    if (!box) return;
+    const referrerChat = card.getAttribute("data-dropper-chat") || "";
+    const linked = new Set(
+      Array.from(card.querySelectorAll("[data-referred-chat]")).map((el) =>
+        el.getAttribute("data-referred-chat")
+      )
+    );
+    const q = String(query || "").trim().toLowerCase();
+    if (q.length < 1) {
+      box.classList.add("hidden");
+      box.innerHTML = "";
+      return;
+    }
+    const hits = (ownerDroppersCache || [])
+      .filter((d) => {
+        if (!d || d.chat_id === referrerChat) return false;
+        if (linked.has(d.chat_id)) return false;
+        const hay = `${d.company_name || ""} ${d.contact_name || ""} ${d.phone || ""} ${
+          d.chat_id || ""
+        }`.toLowerCase();
+        return hay.includes(q);
+      })
+      .slice(0, 8);
+    if (!hits.length) {
+      box.classList.remove("hidden");
+      box.innerHTML = `<div class="meta-soft">Нічого не знайдено</div>`;
+      return;
+    }
+    box.classList.remove("hidden");
+    box.innerHTML = hits
+      .map(
+        (d) => `
+      <button type="button" class="referral-search-hit" data-referral-pick="${escapeHtml(
+        d.chat_id || ""
+      )}">
+        <b>${escapeHtml(d.company_name || "")}</b>
+        <span class="meta-soft">${escapeHtml(d.phone || "")} · ${escapeHtml(d.chat_id || "")}</span>
+      </button>`
+      )
+      .join("");
+  }
+
   async function renderOwnerCabinet() {
     els.ownerDroppers.innerHTML = `<div class="ac-loading">Завантаження дропперів...</div>`;
     els.ownerStaff.innerHTML = `<div class="ac-loading">Завантаження...</div>`;
@@ -5190,6 +5900,7 @@ ${
       if (!staffRes.ok) throw new Error(staffData.detail || "Помилка співробітників");
 
       const droppers = droppersData.items || [];
+      ownerDroppersCache = droppers;
       els.ownerDroppers.innerHTML = droppers.length
         ? droppers
             .map(
@@ -5238,22 +5949,8 @@ ${
               </label>
               <label class="setting-row">
                 <span class="setting-copy">
-                  <span class="setting-label">В рахунок балансу</span>
-                  <span class="setting-hint">Списання з балансу замість оплати (реквізити + баланс)</span>
-                </span>
-                <span class="setting-control">
-                  <span class="toggle">
-                    <input type="checkbox" data-rule="allow_balance_payment" ${
-                      d.allow_balance_payment ? "checked" : ""
-                    } />
-                    <span class="toggle-ui"></span>
-                  </span>
-                </span>
-              </label>
-              <label class="setting-row">
-                <span class="setting-copy">
                   <span class="setting-label">Мінус-баланс дозволено</span>
-                  <span class="setting-hint">Можна йти в мінус до ліміту</span>
+                  <span class="setting-hint">Дозволяє оплату з балансу та борг до ліміту; уже відправлені посилки при отриманні спишуться навіть понад ліміт</span>
                 </span>
                 <span class="setting-control">
                   <span class="toggle">
@@ -5349,6 +6046,21 @@ ${
                     ${d.referral_program_enabled ? "" : "disabled"} />
                 </span>
               </label>
+              <div class="setting-block is-nested${
+                d.referral_program_enabled ? "" : " is-disabled"
+              }" data-referral-tree-row>
+                <span class="setting-label">Привʼязати дропперів</span>
+                <span class="setting-hint">Пошук за назвою / телефоном / chat_id — додає в реферальне дерево</span>
+                <div class="referral-link-row">
+                  <input type="text" class="setting-input" data-referral-search
+                    placeholder="Пошук дроппера…" autocomplete="off"
+                    ${d.referral_program_enabled ? "" : "disabled"} />
+                </div>
+                <div class="referral-search-results hidden" data-referral-search-results></div>
+                <div class="referral-linked-list" data-referral-linked>
+                  ${renderReferralLinkedList(d.referrals || [])}
+                </div>
+              </div>
               <label class="setting-row">
                 <span class="setting-copy">
                   <span class="setting-label">Блокування замовлень</span>
@@ -5681,7 +6393,6 @@ ${
         contact_name: document.getElementById("regContact").value.trim(),
         phone: document.getElementById("regPhone").value.trim(),
         comment: document.getElementById("regComment").value.trim(),
-        referral_code: (document.getElementById("regReferral")?.value || "").trim(),
         user_id: currentTelegramUser().user_id,
         username: currentTelegramUser().username,
       };
@@ -5724,23 +6435,123 @@ ${
       const bucket = btn.getAttribute("data-history-bucket");
       if (!bucket || bucket === historyBucket) return;
       historyBucket = bucket;
+      historyPage = 0;
       syncHistoryBucketTabs();
       paintOrdersHistoryList();
     });
   }
 
-  if (els.ownerReturnsDropperFilter) {
-    els.ownerReturnsDropperFilter.addEventListener("change", () => {
+  if (els.historyFiltersToggle && els.historyFiltersPanel) {
+    els.historyFiltersToggle.addEventListener("click", () => {
+      const open = els.historyFiltersPanel.classList.toggle("hidden") === false;
+      els.historyFiltersToggle.classList.toggle("active", open);
+      els.historyFiltersToggle.textContent = open ? "Сховати фільтри" : "Фільтри";
+    });
+    els.historyFiltersPanel.addEventListener("input", (event) => {
+      if (!event.target.closest("[data-history-order-filters]")) return;
+      historyPage = 0;
+      paintOrdersHistoryList();
+    });
+    els.historyFiltersPanel.addEventListener("change", (event) => {
+      if (!event.target.closest("[data-history-order-filters]")) return;
+      historyPage = 0;
+      paintOrdersHistoryList();
+    });
+  }
+  if (els.historyFiltersReset) {
+    els.historyFiltersReset.addEventListener("click", () => {
+      els.historyFiltersPanel?.querySelectorAll("input").forEach((input) => {
+        input.value = "";
+      });
+      historyPage = 0;
+      paintOrdersHistoryList();
+    });
+  }
+  if (els.historyPagePrev) {
+    els.historyPagePrev.addEventListener("click", () => {
+      historyPage = Math.max(0, historyPage - 1);
+      paintOrdersHistoryList();
+    });
+  }
+  if (els.historyPageNext) {
+    els.historyPageNext.addEventListener("click", () => {
+      historyPage += 1;
+      paintOrdersHistoryList();
+    });
+  }
+  if (els.historyExcelExport) {
+    els.historyExcelExport.addEventListener("click", async () => {
+      const chatId = effectiveDropperChatId();
+      const filters = collectOrderFilterValues(els.historyFiltersPanel);
+      const params = new URLSearchParams({ chat_id: chatId });
+      params.set("status", historyBucket || "all");
+      if (filters.dateFrom) params.set("date_from", filters.dateFrom);
+      if (filters.dateTo) params.set("date_to", filters.dateTo);
+      try {
+        await downloadBlobUrl(
+          `/api/dropper/orders/export.xlsx?${params.toString()}`,
+          "orders.xlsx"
+        );
+        showToast("Excel завантажено");
+      } catch (error) {
+        showToast(error.message || "Помилка Excel");
+      }
+    });
+  }
+  if (els.balanceFiltersToggle && els.balanceFiltersPanel) {
+    els.balanceFiltersToggle.addEventListener("click", () => {
+      const open = els.balanceFiltersPanel.classList.toggle("hidden") === false;
+      els.balanceFiltersToggle.classList.toggle("active", open);
+      els.balanceFiltersToggle.textContent = open ? "Сховати фільтри" : "Фільтри";
+    });
+  }
+  if (els.balanceExcelExport) {
+    els.balanceExcelExport.addEventListener("click", async () => {
+      const chatId = effectiveDropperChatId();
+      const params = new URLSearchParams({ chat_id: chatId });
+      const status = els.balanceFilterStatus?.value || "all";
+      if (status && status !== "all") params.set("status", status);
+      const from = els.balanceFilterDateFrom?.value || "";
+      const to = els.balanceFilterDateTo?.value || "";
+      if (from) params.set("date_from", from);
+      if (to) params.set("date_to", to);
+      try {
+        await downloadBlobUrl(
+          `/api/dropper/balance/export.xlsx?${params.toString()}`,
+          "balance.xlsx"
+        );
+        showToast("Excel завантажено");
+      } catch (error) {
+        showToast(error.message || "Помилка Excel");
+      }
+    });
+  }
+
+  if (els.ownerReturnsTabs) {
+    els.ownerReturnsTabs.addEventListener("click", (event) => {
+      const btn = event.target.closest("[data-returns-bucket]");
+      if (!btn || !els.ownerReturnsTabs.contains(btn)) return;
+      const bucket = btn.getAttribute("data-returns-bucket") || "awaiting_receipt";
+      if (bucket === ownerReturnsState.bucket) return;
+      ownerReturnsState.bucket = bucket;
       renderOwnerReturns();
     });
   }
 
   document.addEventListener("click", (event) => {
     const acceptBtn = event.target.closest("[data-owner-return-accept]");
-    if (!acceptBtn) return;
-    event.preventDefault();
-    const orderId = acceptBtn.getAttribute("data-owner-return-accept");
-    if (orderId) acceptOwnerReturn(orderId);
+    if (acceptBtn) {
+      event.preventDefault();
+      const orderId = acceptBtn.getAttribute("data-owner-return-accept");
+      if (orderId) acceptOwnerReturn(orderId);
+      return;
+    }
+    const receivedBtn = event.target.closest("[data-owner-return-received]");
+    if (receivedBtn) {
+      event.preventDefault();
+      const orderId = receivedBtn.getAttribute("data-owner-return-received");
+      if (orderId) markOwnerReturnReceived(orderId);
+    }
   });
 
   if (els.previewRoleSelect) {
@@ -6040,25 +6851,46 @@ ${
     });
   }
 
+  if (els.blacklistSearch) {
+    els.blacklistSearch.addEventListener("input", () => {
+      blacklistState.search = (els.blacklistSearch.value || "").trim();
+      if (blacklistState.items.length || els.ownerBlacklist) {
+        paintOwnerBlacklistList();
+      }
+    });
+  }
+
   if (els.ownerBlacklist) {
     els.ownerBlacklist.addEventListener("click", async (event) => {
-      const btn = event.target.closest("[data-blacklist-del]");
-      if (!btn || !els.ownerBlacklist.contains(btn)) return;
-      const id = btn.getAttribute("data-blacklist-del");
-      if (!id) return;
-      try {
-        const response = await fetch(
-          `/api/owner/blacklist/${encodeURIComponent(id)}?${ownerAuthParams()}`,
-          { method: "DELETE" }
-        );
-        const data = await response.json().catch(() => ({}));
-        if (!response.ok) {
-          throw new Error(typeof data.detail === "string" ? data.detail : "Помилка");
+      const delBtn = event.target.closest("[data-blacklist-del]");
+      if (delBtn && els.ownerBlacklist.contains(delBtn)) {
+        const id = delBtn.getAttribute("data-blacklist-del");
+        if (!id) return;
+        try {
+          const response = await fetch(
+            `/api/owner/blacklist/${encodeURIComponent(id)}?${ownerAuthParams()}`,
+            { method: "DELETE" }
+          );
+          const data = await response.json().catch(() => ({}));
+          if (!response.ok) {
+            throw new Error(typeof data.detail === "string" ? data.detail : "Помилка");
+          }
+          showToast("Номер видалено");
+          renderOwnerBlacklist();
+        } catch (error) {
+          showToast(error.message || "Помилка");
         }
-        showToast("Номер видалено");
-        renderOwnerBlacklist();
-      } catch (error) {
-        showToast(error.message || "Помилка");
+        return;
+      }
+
+      const toggle = event.target.closest(".owner-card-toggle");
+      if (!toggle || !els.ownerBlacklist.contains(toggle)) return;
+      const card = toggle.closest(".blacklist-card");
+      if (!card) return;
+      const collapsed = card.classList.toggle("is-collapsed");
+      toggle.setAttribute("aria-expanded", collapsed ? "false" : "true");
+      if (!collapsed) {
+        loadBlacklistClientDetail(card);
       }
     });
   }
@@ -6240,7 +7072,84 @@ ${
           showToast(error.message || "Не вдалося видалити");
           delBtn.disabled = false;
         }
+        return;
       }
+
+      const pickBtn = event.target.closest("[data-referral-pick]");
+      if (pickBtn && els.ownerDroppers.contains(pickBtn)) {
+        const card = pickBtn.closest("[data-dropper-chat]");
+        const referrerChat = card?.getAttribute("data-dropper-chat");
+        const referredChat = pickBtn.getAttribute("data-referral-pick");
+        if (!referrerChat || !referredChat) return;
+        try {
+          const response = await fetch(
+            `/api/owner/droppers/${encodeURIComponent(referrerChat)}/referrals`,
+            {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                ...ownerAuthBody(),
+                referred_chat_id: referredChat,
+              }),
+            }
+          );
+          const data = await response.json();
+          if (!response.ok) {
+            throw new Error(typeof data.detail === "string" ? data.detail : "Помилка");
+          }
+          const list = card.querySelector("[data-referral-linked]");
+          if (list) list.innerHTML = renderReferralLinkedList(data.referrals || []);
+          const search = card.querySelector("[data-referral-search]");
+          if (search) search.value = "";
+          const results = card.querySelector("[data-referral-search-results]");
+          if (results) {
+            results.classList.add("hidden");
+            results.innerHTML = "";
+          }
+          showToast("Дроппера привʼязано");
+          const cached = ownerDroppersCache.find((x) => x.chat_id === referrerChat);
+          if (cached) cached.referrals = data.referrals || [];
+        } catch (error) {
+          showToast(error.message || "Не вдалося привʼязати");
+        }
+        return;
+      }
+
+      const unlinkBtn = event.target.closest("[data-referral-unlink]");
+      if (unlinkBtn && els.ownerDroppers.contains(unlinkBtn)) {
+        const card = unlinkBtn.closest("[data-dropper-chat]");
+        const item = unlinkBtn.closest("[data-referred-chat]");
+        const referrerChat = card?.getAttribute("data-dropper-chat");
+        const referredChat = item?.getAttribute("data-referred-chat");
+        if (!referrerChat || !referredChat) return;
+        try {
+          const response = await fetch(
+            `/api/owner/droppers/${encodeURIComponent(
+              referrerChat
+            )}/referrals/${encodeURIComponent(referredChat)}?${ownerAuthParams()}`,
+            { method: "DELETE" }
+          );
+          const data = await response.json();
+          if (!response.ok) {
+            throw new Error(typeof data.detail === "string" ? data.detail : "Помилка");
+          }
+          const list = card.querySelector("[data-referral-linked]");
+          if (list) list.innerHTML = renderReferralLinkedList(data.referrals || []);
+          showToast("Привʼязку знято");
+          const cached = ownerDroppersCache.find((x) => x.chat_id === referrerChat);
+          if (cached) cached.referrals = data.referrals || [];
+        } catch (error) {
+          showToast(error.message || "Не вдалося відвʼязати");
+        }
+      }
+    });
+
+    els.ownerDroppers.addEventListener("input", (event) => {
+      const search = event.target.closest("[data-referral-search]");
+      if (!search || !els.ownerDroppers.contains(search)) return;
+      const card = search.closest("[data-dropper-chat]");
+      if (!card) return;
+      paintReferralSearchResults(card, search.value);
     });
 
     els.ownerDroppers.addEventListener("change", async (event) => {
@@ -6276,6 +7185,8 @@ ${
           const percentInput = card.querySelector('[data-rule-num="referral_percent"]');
           const monthsRow = card.querySelector("[data-referral-months-row]");
           const monthsInput = card.querySelector('[data-rule-num="referral_months"]');
+          const treeRow = card.querySelector("[data-referral-tree-row]");
+          const searchInput = card.querySelector("[data-referral-search]");
           const enabled = Boolean(check.checked);
           if (percentRow && percentInput) {
             percentRow.classList.toggle("is-disabled", !enabled);
@@ -6285,6 +7196,8 @@ ${
             monthsRow.classList.toggle("is-disabled", !enabled);
             monthsInput.disabled = !enabled;
           }
+          if (treeRow) treeRow.classList.toggle("is-disabled", !enabled);
+          if (searchInput) searchInput.disabled = !enabled;
         }
         await persistRule(card, { [key]: Boolean(check.checked) }, () => {
           check.checked = prev;
@@ -6309,6 +7222,8 @@ ${
             const percentInput = card.querySelector('[data-rule-num="referral_percent"]');
             const monthsRow = card.querySelector("[data-referral-months-row]");
             const monthsInput = card.querySelector('[data-rule-num="referral_months"]');
+            const treeRow = card.querySelector("[data-referral-tree-row]");
+            const searchInput = card.querySelector("[data-referral-search]");
             const enabled = Boolean(check.checked);
             if (percentRow && percentInput) {
               percentRow.classList.toggle("is-disabled", !enabled);
@@ -6318,6 +7233,8 @@ ${
               monthsRow.classList.toggle("is-disabled", !enabled);
               monthsInput.disabled = !enabled;
             }
+            if (treeRow) treeRow.classList.toggle("is-disabled", !enabled);
+            if (searchInput) searchInput.disabled = !enabled;
           }
         });
         if (key === "referral_program_enabled") {

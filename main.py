@@ -168,21 +168,67 @@ async def main() -> None:
                 except asyncio.TimeoutError:
                     pass
 
+    async def packing_digest_loop() -> None:
+        """О 10:00 і 22:00 Київ — скільки замовлень чекають упаковки/відправки."""
+        from bot.packing_digest import (
+            run_packing_digest_pass,
+            seconds_until_next_digest_slot,
+        )
+
+        await asyncio.sleep(55)
+        while not stop_event.is_set():
+            try:
+                delay, hour = seconds_until_next_digest_slot(allow_current_hour=True)
+                if delay > 0:
+                    logger.info(
+                        "Packing digest: next %02d:00 in %.0f min",
+                        hour,
+                        delay / 60.0,
+                    )
+                    try:
+                        await asyncio.wait_for(stop_event.wait(), timeout=delay)
+                        break
+                    except asyncio.TimeoutError:
+                        pass
+                # після очікування ще раз визначаємо актуальний слот
+                _, hour = seconds_until_next_digest_slot(allow_current_hour=True)
+                stats = await run_packing_digest_pass(
+                    app_storage,
+                    _np_owner_notify,
+                    hour=hour,
+                )
+                logger.info("Packing digest: %s", stats)
+                delay, hour = seconds_until_next_digest_slot(allow_current_hour=False)
+                try:
+                    await asyncio.wait_for(stop_event.wait(), timeout=delay)
+                    break
+                except asyncio.TimeoutError:
+                    pass
+            except Exception:
+                logger.exception("Packing digest loop error")
+                try:
+                    await asyncio.wait_for(stop_event.wait(), timeout=300)
+                except asyncio.TimeoutError:
+                    pass
+
     run_task = asyncio.create_task(run_modules(modules, ctx), name="modules")
     np_task = asyncio.create_task(np_maintenance_loop(), name="np-maintenance")
     warehouse_task = asyncio.create_task(
         warehouse_reminders_loop(), name="warehouse-reminders"
     )
+    packing_task = asyncio.create_task(
+        packing_digest_loop(), name="packing-digest"
+    )
     stop_task = asyncio.create_task(stop_event.wait(), name="stop")
 
     done, _ = await asyncio.wait(
-        {run_task, stop_task, web_task, np_task, warehouse_task},
+        {run_task, stop_task, web_task, np_task, warehouse_task, packing_task},
         return_when=asyncio.FIRST_COMPLETED,
     )
 
     server.should_exit = True
     stop_event.set()
-    for task in (run_task, np_task, warehouse_task):
+    for task in (run_task, np_task, warehouse_task, packing_task):
         if not task.done():
             task.cancel()
             try:

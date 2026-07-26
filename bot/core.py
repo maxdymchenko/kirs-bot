@@ -24,7 +24,7 @@ class DropperConfig:
             "chat_id": self.chat_id,
             "name": self.name,
             "require_full_payment": self.require_full_payment,
-            "allow_cod": True,
+            "allow_cod": False,
             "allow_balance_payment": False,
             "allow_negative_balance": False,
             "negative_balance_limit": 0,

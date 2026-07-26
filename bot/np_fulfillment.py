@@ -699,6 +699,21 @@ async def _maybe_eval_buyout(
         logger.exception("buyout eval after status failed dropper_id=%s", dropper_id)
 
 
+async def _maybe_auto_blacklist_phone(
+    storage: AppStorage,
+    order: dict[str, Any],
+    owner_notify: OwnerNotifyFn | None,
+) -> None:
+    try:
+        from bot.buyout import maybe_auto_blacklist_client
+
+        await maybe_auto_blacklist_client(
+            storage, order, owner_notify=owner_notify
+        )
+    except Exception:
+        logger.exception("auto blacklist check failed order_id=%s", order.get("id"))
+
+
 async def _send_dropper_chat(
     notify: NotifyFn | None,
     chat_id: str,
@@ -777,6 +792,7 @@ async def apply_tracking_event(
     status_text: str = "",
     tracking_row: dict[str, Any] | None = None,
     notify: NotifyFn | None = None,
+    owner_notify: OwnerNotifyFn | None = None,
 ) -> dict[str, Any]:
     """
     Застосувати статус ТТН до замовлення:
@@ -877,9 +893,15 @@ async def apply_tracking_event(
                 logger.exception("order_change tracking failed")
 
     if mapped == "received" and prev != "received":
-        entry = credit_cod_profit_if_needed(storage, order)
-        if entry:
+        from bot.balance_settle import settle_order_on_received
+
+        settled = settle_order_on_received(storage, order)
+        entry = settled.get("profit_entry")
+        goods_entry = settled.get("goods_entry")
+        overage_entry = settled.get("overage_entry")
+        if entry or goods_entry or overage_entry:
             result["received"] = True
+        if entry:
             amount = round(float(entry.get("amount") or 0), 2)
             try:
                 await _maybe_profit_notify(
@@ -894,8 +916,24 @@ async def apply_tracking_event(
                 )
             except Exception:
                 logger.exception("notify profit credit failed")
-            order = storage.get_order(order["id"]) or order
-            result["order"] = order
+        elif goods_entry:
+            amount = round(abs(float(goods_entry.get("amount") or 0)), 2)
+            try:
+                await _maybe_profit_notify(
+                    storage,
+                    order,
+                    notify,
+                    (
+                        f"📦 Посилку отримано · {order.get('order_number')}\n"
+                        f"ТТН: {order.get('ttn_number')}\n"
+                        f"З балансу списано «Дроп ціна»: −{amount} ₴"
+                    ),
+                )
+            except Exception:
+                logger.exception("notify goods debit failed")
+        order = storage.get_order(order["id"]) or order
+        result["order"] = order
+        if entry or goods_entry or overage_entry:
             await _maybe_eval_buyout(storage, order, notify)
 
     if mapped in {"returned", "refused"} and prev not in {"returned", "refused"}:
@@ -943,12 +981,15 @@ async def apply_tracking_event(
         order = storage.get_order(order["id"]) or order
         result["order"] = order
         await _maybe_eval_buyout(storage, order, notify)
+        await _maybe_auto_blacklist_phone(storage, order, owner_notify)
 
     return result
 
 
 async def track_order_statuses_async(
-    storage: AppStorage, notify: NotifyFn | None = None
+    storage: AppStorage,
+    notify: NotifyFn | None = None,
+    owner_notify: OwnerNotifyFn | None = None,
 ) -> dict[str, int]:
     """Опитування статусів ТТН (основний канал; webhook — додатковий, якщо підключений)."""
     clients = list_np_clients(storage)
@@ -1005,6 +1046,7 @@ async def track_order_statuses_async(
             status_text=str(row.get("Status") or ""),
             tracking_row=row,
             notify=notify,
+            owner_notify=owner_notify,
         )
         if applied["updated"]:
             stats["updated"] += 1
@@ -1076,6 +1118,7 @@ async def apply_webhook_payload(
     storage: AppStorage,
     payload: Any,
     notify: NotifyFn | None = None,
+    owner_notify: OwnerNotifyFn | None = None,
 ) -> dict[str, Any]:
     """
     Webhook від НП / зовнішнього трекінгу — основний канал оновлення статусів ТТН.
@@ -1103,6 +1146,7 @@ async def apply_webhook_payload(
             status_text=_webhook_status_text(item),
             tracking_row=item,
             notify=notify,
+            owner_notify=owner_notify,
         )
         if applied["updated"]:
             stats["updated"] += 1
@@ -1184,6 +1228,18 @@ async def run_np_maintenance_once(
             stats["create_fail"] += 1
             logger.exception("Retry TTN create failed for %s", order.get("order_number"))
 
-    track = await track_order_statuses_async(storage, notify=notify)
+    track = await track_order_statuses_async(
+        storage, notify=notify, owner_notify=owner_notify
+    )
     stats.update(track)
+    try:
+        from bot.returns import track_return_ttns_async
+
+        ret_stats = await track_return_ttns_async(
+            storage, owner_notify=owner_notify
+        )
+        stats["return_ttn_checked"] = int(ret_stats.get("checked") or 0)
+        stats["return_ttn_moved"] = int(ret_stats.get("moved") or 0)
+    except Exception:
+        logger.exception("return TTN tracking failed")
     return stats

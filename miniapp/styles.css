@@ -382,6 +382,11 @@ select {
   pointer-events: none;
 }
 
+.setting-block.is-disabled {
+  opacity: 0.48;
+  pointer-events: none;
+}
+
 .setting-row.is-disabled .setting-label,
 .setting-row.is-disabled .setting-hint {
   color: #9aa3b2;
@@ -579,6 +584,22 @@ select {
   border: 1px solid var(--line);
   font-size: 28px;
   font-weight: 800;
+}
+
+.balance-conditional {
+  margin: 6px 4px 0;
+  font-size: 0.95rem;
+  color: #94a3b8;
+}
+
+.balance-conditional-line,
+.owner-card .balance-conditional-line {
+  color: #94a3b8;
+}
+
+.balance-conditional-line b {
+  font-weight: 600;
+  color: #94a3b8;
 }
 
 .balance-stats {
@@ -1717,6 +1738,72 @@ input[type="file"] {
   flex-wrap: wrap;
 }
 
+.history-filters-bar {
+  padding: 0 16px 10px;
+  display: flex;
+  justify-content: flex-end;
+}
+
+.history-filters-bar .btn.active {
+  background: var(--primary);
+  color: #fff;
+  border-color: var(--primary);
+}
+
+.orders-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 0 0 10px;
+}
+
+.history-filters-bar.orders-toolbar {
+  justify-content: flex-start;
+  padding: 0 16px 10px;
+}
+
+#balanceExportBar.orders-toolbar {
+  padding: 0 0 10px;
+}
+
+.orders-toolbar .btn.active {
+  background: var(--primary);
+  color: #fff;
+  border-color: var(--primary);
+}
+
+.orders-pager {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+}
+
+.orders-pager-btn {
+  min-width: 40px;
+  padding-left: 10px;
+  padding-right: 10px;
+  font-size: 1.25rem;
+  line-height: 1;
+}
+
+.orders-pager-label {
+  min-width: 3.5rem;
+  text-align: center;
+  font-size: 0.9rem;
+  color: var(--muted);
+}
+
+.history-orders-filters {
+  margin: 0 16px 10px;
+}
+
+.history-orders-count {
+  padding: 0 16px 8px;
+  margin: 0;
+}
+
 .order-return-form {
   margin-top: 10px;
   padding: 12px;
@@ -1725,6 +1812,15 @@ input[type="file"] {
   background: #f8fafc;
   display: grid;
   gap: 10px;
+}
+
+.order-return-form.hidden {
+  display: none;
+}
+
+.field-label .req {
+  color: #b91c1c;
+  font-weight: 700;
 }
 
 .owner-return-card {
@@ -1743,9 +1839,84 @@ input[type="file"] {
   align-items: flex-start;
 }
 
+.owner-returns-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 12px 0 4px;
+}
+
+.owner-returns-tabs .tab {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 13px;
+  padding: 10px 12px;
+  line-height: 1.25;
+}
+
+.owner-return-card {
+  display: grid;
+  gap: 8px;
+}
+
+.owner-return-card .btn {
+  margin-top: 4px;
+}
+
 .owner-returns {
   display: grid;
   gap: 10px;
+}
+
+.referral-link-row {
+  margin-top: 8px;
+}
+
+.referral-search-results {
+  display: grid;
+  gap: 4px;
+  margin-top: 6px;
+  padding: 6px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #fff;
+  max-height: 220px;
+  overflow: auto;
+}
+
+.referral-search-hit {
+  display: grid;
+  gap: 2px;
+  text-align: left;
+  width: 100%;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  cursor: pointer;
+  font: inherit;
+  color: inherit;
+}
+
+.referral-search-hit:hover {
+  background: #f1f5f9;
+}
+
+.referral-linked-list {
+  display: grid;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.referral-linked-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #fff;
 }
 
 .owner-orders {
@@ -1754,6 +1925,10 @@ input[type="file"] {
   display: grid;
   gap: 8px;
   background: #f8fafc;
+}
+
+.owner-orders-buckets {
+  margin: 0 0 4px;
 }
 
 .owner-card.is-collapsed .owner-orders {
@@ -1835,16 +2010,92 @@ input[type="file"] {
   margin-bottom: 8px;
 }
 
+.blacklist-search-field {
+  margin: 0 0 8px;
+}
+
+.blacklist-filter-meta {
+  margin: 0 0 10px;
+}
+
 .blacklist-card {
+  display: grid;
+  gap: 0;
+  padding: 0;
+  overflow: hidden;
+}
+
+.blacklist-card .owner-card-toggle {
   display: grid;
   grid-template-columns: 1fr auto;
   gap: 10px;
   align-items: center;
+  width: 100%;
   padding: 12px 14px;
+  border: 0;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+  color: inherit;
+  font: inherit;
 }
 
 .blacklist-card .owner-card-head {
   min-width: 0;
+}
+
+.blacklist-card-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 14px 12px;
+}
+
+.blacklist-card .blacklist-client-panel {
+  border-top: 1px solid var(--line);
+  padding: 12px 14px 14px;
+  background: #f8fafc;
+}
+
+.blacklist-card.is-collapsed .blacklist-client-panel {
+  display: none;
+}
+
+.blacklist-stats {
+  display: grid;
+  gap: 4px;
+  margin: 0 0 12px;
+  font-size: 13px;
+}
+
+.blacklist-order {
+  display: grid;
+  gap: 4px;
+  padding: 10px 0;
+  border-top: 1px solid #e2e8f0;
+}
+
+.blacklist-order:first-of-type {
+  border-top: 0;
+  padding-top: 0;
+}
+
+.blacklist-outcome {
+  display: inline-block;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.blacklist-outcome.is-received {
+  color: #15803d;
+}
+
+.blacklist-outcome.is-lost {
+  color: #b91c1c;
+}
+
+.blacklist-outcome.is-open {
+  color: #64748b;
 }
 
 .np-keys-list {

@@ -1,4 +1,4 @@
-"""Рейтинг викупу замовлень дроппера."""
+"""Рейтинг викупу замовлень дроппера / клієнта за телефоном."""
 
 from __future__ import annotations
 
@@ -10,10 +10,14 @@ from bot.accounts import AppStorage, Dropper
 logger = logging.getLogger(__name__)
 
 NotifyFn = Callable[[str, str], Awaitable[None]]
+OwnerNotifyFn = Callable[[str], Any]
 
 TIER_HIGH = "high"
 TIER_MID = "mid"
 TIER_LOW = "low"
+
+# Авточорний список: стільки незаборів/відмов по номеру
+AUTO_BLACKLIST_LOST_THRESHOLD = 5
 
 
 def order_buyout_outcome(order: dict[str, Any]) -> str | None:
@@ -169,3 +173,142 @@ async def evaluate_all_buyouts(
         except Exception:
             logger.exception("buyout eval failed dropper_id=%s", dropper.id)
     return {"checked": checked}
+
+
+def order_client_phone(order: dict[str, Any]) -> str:
+    recipient = (order.get("payload") or {}).get("recipient") or {}
+    return AppStorage.normalize_client_phone(str(recipient.get("phone") or ""))
+
+
+def format_cart_summary(cart: Any) -> str:
+    if not isinstance(cart, list):
+        return "—"
+    parts: list[str] = []
+    for item in cart[:10]:
+        if not isinstance(item, dict):
+            continue
+        code = str(item.get("code") or "").strip()
+        name = str(item.get("name") or item.get("title") or "").strip()
+        color = str(item.get("color") or "").strip()
+        try:
+            qty = int(item.get("qty") or item.get("quantity") or 1)
+        except (TypeError, ValueError):
+            qty = 1
+        bit = code or name or "товар"
+        if color:
+            bit = f"{bit} ({color})"
+        if qty > 1:
+            bit = f"{bit} ×{qty}"
+        parts.append(bit)
+    return ", ".join(parts) if parts else "—"
+
+
+def build_client_phone_profile(
+    storage: AppStorage,
+    phone: str,
+    *,
+    include_orders: bool = True,
+    orders_limit: int = 100,
+) -> dict[str, Any]:
+    digits = AppStorage.normalize_client_phone(phone)
+    orders = (
+        storage.list_orders_for_client_phone(digits, limit=500) if digits else []
+    )
+    stats = compute_buyout(orders)
+    result: dict[str, Any] = {
+        "phone_digits": digits,
+        "phone_display": f"+{digits}" if digits else "",
+        "buyout": stats,
+        "orders_total": len(orders),
+        "blacklisted": bool(digits and storage.is_phone_blacklisted(digits)),
+        "orders": [],
+    }
+    if not include_orders or not digits:
+        return result
+
+    limit = max(0, min(int(orders_limit or 100), 200))
+    dropper_cache: dict[int, Dropper | None] = {}
+    items: list[dict[str, Any]] = []
+    for order in orders[:limit]:
+        did = int(order.get("dropper_id") or 0)
+        if did not in dropper_cache:
+            dropper_cache[did] = storage.get_dropper_by_id(did) if did else None
+        dropper = dropper_cache[did]
+        payload = order.get("payload") or {}
+        recipient = payload.get("recipient") or {}
+        first = str(recipient.get("first_name") or "").strip()
+        last = str(recipient.get("last_name") or "").strip()
+        patronymic = str(recipient.get("patronymic") or "").strip()
+        client_name = " ".join(p for p in (last, first, patronymic) if p).strip()
+        outcome = order_buyout_outcome(order)
+        items.append(
+            {
+                "order_number": order.get("order_number") or "",
+                "created_at": order.get("created_at") or "",
+                "total": order.get("total"),
+                "ttn_status": order.get("ttn_status") or "",
+                "ttn_number": order.get("ttn_number") or "",
+                "outcome": outcome,
+                "dropper_name": (dropper.company_name if dropper else "") or "",
+                "dropper_chat_id": (dropper.chat_id if dropper else "") or "",
+                "cart_summary": format_cart_summary(payload.get("cart")),
+                "client_name": client_name,
+            }
+        )
+    result["orders"] = items
+    return result
+
+
+def format_auto_blacklist_notice(
+    phone_digits: str, stats: dict[str, Any]
+) -> str:
+    percent = stats.get("percent")
+    pct_s = f"{percent}%" if percent is not None else "—"
+    return (
+        "🚫 Авточорний список\n\n"
+        f"Номер: +{phone_digits}\n"
+        f"Незаборів/відмов: {stats.get('lost', 0)}\n"
+        f"Забрано: {stats.get('received', 0)} · "
+        f"завершених: {stats.get('completed', 0)}\n"
+        f"Викуп: {pct_s}\n\n"
+        f"Номер додано автоматично "
+        f"(правило: ≥{AUTO_BLACKLIST_LOST_THRESHOLD} незаборів/відмов)."
+    )
+
+
+async def maybe_auto_blacklist_client(
+    storage: AppStorage,
+    order: dict[str, Any],
+    owner_notify: OwnerNotifyFn | None = None,
+) -> dict[str, Any] | None:
+    """
+    Якщо по номеру клієнта ≥ N незаборів/відмов — додати в чорний список
+    і повідомити власника (лише при новому записі).
+    """
+    phone = order_client_phone(order)
+    if not phone:
+        return None
+    if storage.is_phone_blacklisted(phone):
+        return None
+    orders = storage.list_orders_for_client_phone(phone, limit=500)
+    stats = compute_buyout(orders)
+    lost = int(stats.get("lost") or 0)
+    if lost < AUTO_BLACKLIST_LOST_THRESHOLD:
+        return None
+    entry, created = storage.try_add_phone_blacklist(
+        phone,
+        note=f"Авто: {lost} незаборів/відмов",
+        created_by_user_id="system",
+    )
+    if not created or not entry:
+        return entry
+    if owner_notify:
+        try:
+            result = owner_notify(format_auto_blacklist_notice(phone, stats))
+            if hasattr(result, "__await__"):
+                await result
+        except Exception:
+            logger.exception(
+                "auto blacklist owner notify failed phone=%s", phone
+            )
+    return entry
