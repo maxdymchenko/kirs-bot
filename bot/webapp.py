@@ -3001,11 +3001,26 @@ def create_web_app(
         chat_id: str = Query("", max_length=64),
         user_id: str = Query("", max_length=64),
         username: str = Query("", max_length=64),
+        order_id: list[int] = Query(default=[]),
     ) -> Response:
         from bot.warehouse import list_warehouse_queue, merge_ready_ttn_pdfs
 
         _require_warehouse(chat_id=chat_id, user_id=user_id, username=username)
         items = list_warehouse_queue(storage, stage="ready_to_ship", limit=300)
+        selected = [int(x) for x in (order_id or []) if str(x).strip()]
+        if selected:
+            wanted = set(selected)
+            items = [o for o in items if int(o.get("id") or 0) in wanted]
+            if not items:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Немає вибраних замовлень у черзі «На відправлення»",
+                )
+        else:
+            raise HTTPException(
+                status_code=400,
+                detail="Виберіть хоча б одну накладну для друку",
+            )
         try:
             data = merge_ready_ttn_pdfs(storage, items)
         except ValueError as exc:

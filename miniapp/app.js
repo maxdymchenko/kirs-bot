@@ -139,6 +139,8 @@
     warehousePackingList: document.getElementById("warehousePackingList"),
     warehouseShippingList: document.getElementById("warehouseShippingList"),
     warehousePrintBtn: document.getElementById("warehousePrintBtn"),
+    warehouseSelectAllBtn: document.getElementById("warehouseSelectAllBtn"),
+    warehouseDeselectAllBtn: document.getElementById("warehouseDeselectAllBtn"),
     orderMain: document.getElementById("orderMain"),
     searchForm: document.getElementById("searchForm"),
     searchInput: document.getElementById("searchInput"),
@@ -6556,9 +6558,15 @@ ${
             <input type="checkbox" data-wh-ready="${escapeHtml(String(order.id))}" />
             Упаковано → на відправлення
           </label>`
-        : `<button type="button" class="btn secondary" data-wh-back="${escapeHtml(
-            String(order.id)
-          )}">← На пакування</button>`;
+        : `<div class="warehouse-order-actions">
+            <label class="warehouse-order-check">
+              <input type="checkbox" data-wh-print="${escapeHtml(String(order.id))}" />
+              Друкувати
+            </label>
+            <button type="button" class="btn secondary" data-wh-back="${escapeHtml(
+              String(order.id)
+            )}">← На пакування</button>
+          </div>`;
     return `
       <article class="warehouse-order-card" data-order-id="${escapeHtml(String(order.id))}">
         <div class="warehouse-order-head">
@@ -6577,11 +6585,37 @@ ${
     `;
   }
 
+  function getSelectedWarehousePrintIds() {
+    if (!els.warehouseShippingList) return [];
+    return Array.from(
+      els.warehouseShippingList.querySelectorAll("[data-wh-print]:checked")
+    )
+      .map((el) => el.getAttribute("data-wh-print"))
+      .filter(Boolean);
+  }
+
+  function syncWarehousePrintButton() {
+    if (!els.warehousePrintBtn) return;
+    const selected = getSelectedWarehousePrintIds();
+    els.warehousePrintBtn.disabled = selected.length === 0;
+  }
+
+  function setAllWarehousePrintChecks(checked) {
+    if (!els.warehouseShippingList) return;
+    els.warehouseShippingList
+      .querySelectorAll("[data-wh-print]")
+      .forEach((el) => {
+        el.checked = Boolean(checked);
+      });
+    syncWarehousePrintButton();
+  }
+
   async function loadWarehouseQueue(stage) {
     const listEl =
       stage === "ready_to_ship" ? els.warehouseShippingList : els.warehousePackingList;
     if (!listEl) return;
     listEl.innerHTML = `<div class="empty">Завантаження…</div>`;
+    if (stage === "ready_to_ship") syncWarehousePrintButton();
     try {
       const params = new URLSearchParams(warehouseAuthParams());
       params.set("stage", stage === "ready_to_ship" ? "ready_to_ship" : "packing");
@@ -6595,6 +6629,7 @@ ${
             ? "Немає замовлень на відправлення"
             : "Немає замовлень на пакування"
         }</div>`;
+        if (stage === "ready_to_ship") syncWarehousePrintButton();
         return;
       }
       listEl.innerHTML = items
@@ -6604,10 +6639,12 @@ ${
           })
         )
         .join("");
+      if (stage === "ready_to_ship") syncWarehousePrintButton();
     } catch (error) {
       listEl.innerHTML = `<div class="empty">${escapeHtml(
         error.message || "Помилка"
       )}</div>`;
+      if (stage === "ready_to_ship") syncWarehousePrintButton();
     }
   }
 
@@ -6690,12 +6727,35 @@ ${
         showToast(error.message || "Помилка");
       }
     });
+    els.warehouseShippingList.addEventListener("change", (event) => {
+      if (!event.target.closest("[data-wh-print]")) return;
+      syncWarehousePrintButton();
+    });
+  }
+
+  if (els.warehouseSelectAllBtn) {
+    els.warehouseSelectAllBtn.addEventListener("click", () => {
+      setAllWarehousePrintChecks(true);
+    });
+  }
+  if (els.warehouseDeselectAllBtn) {
+    els.warehouseDeselectAllBtn.addEventListener("click", () => {
+      setAllWarehousePrintChecks(false);
+    });
   }
 
   if (els.warehousePrintBtn) {
+    syncWarehousePrintButton();
     els.warehousePrintBtn.addEventListener("click", async () => {
+      const ids = getSelectedWarehousePrintIds();
+      if (!ids.length) {
+        showToast("Виберіть хоча б одну накладну");
+        return;
+      }
       try {
-        const url = `/api/warehouse/print-labels.pdf?${warehouseAuthParams()}`;
+        const params = new URLSearchParams(warehouseAuthParams());
+        ids.forEach((id) => params.append("order_id", id));
+        const url = `/api/warehouse/print-labels.pdf?${params}`;
         const response = await fetch(url);
         if (!response.ok) {
           let detail = "Не вдалося зібрати PDF";

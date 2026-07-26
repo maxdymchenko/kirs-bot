@@ -1891,6 +1891,21 @@ input[type="file"] {
   font-size: 0.92rem;
 }
 
+.warehouse-shipping-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.warehouse-order-actions {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
 .warehouse-loc {
   display: block;
   margin-top: 4px;

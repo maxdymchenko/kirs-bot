@@ -828,11 +828,14 @@
       </div>
 
       <div id="warehouseTabShipping" class="warehouse-panel hidden">
-        <div class="orders-toolbar" style="margin-bottom:10px">
-          <button type="button" class="btn primary" id="warehousePrintBtn">Друк накладних</button>
+        <div class="orders-toolbar warehouse-shipping-toolbar" style="margin-bottom:10px">
+          <button type="button" class="btn secondary" id="warehouseSelectAllBtn">Вибрати всі</button>
+          <button type="button" class="btn secondary" id="warehouseDeselectAllBtn">Зняти всі</button>
+          <button type="button" class="btn primary" id="warehousePrintBtn" disabled>Друк накладних</button>
         </div>
         <p class="hint" style="margin-top:0">
-          Зібрані упаковані замовлення. Кнопка обʼєднає PDF накладних в один файл (кожна накладна з нового аркуша).
+          Відмітьте накладні чекбоксом. Кнопка друку активна лише коли вибрано хоча б одну.
+          PDF обʼєднується в один файл (кожна накладна з нового аркуша).
         </p>
         <div id="warehouseShippingList" class="warehouse-order-list"></div>
       </div>
@@ -844,6 +847,6 @@
   </div>
 
   <button type="button" id="photoZoomBackdrop" class="photo-zoom-backdrop hidden" aria-label="Закрити фото"></button>
-  <script src="/static/app.js?v=20260726wh1"></script>
+  <script src="/static/app.js?v=20260726wh2"></script>
 </body>
 </html>
