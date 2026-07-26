@@ -295,6 +295,33 @@ async def main() -> None:
                 pass
 
     cleanup_task = asyncio.create_task(ttn_pdf_cleanup_loop(), name="ttn-pdf-cleanup")
+
+    async def orders_sheet_sync_loop() -> None:
+        """Ретрай дзеркала замовлень у Google Sheet (sheets_sync_status=pending)."""
+        from bot.orders_sheets import run_pending_orders_sheet_sync
+
+        await asyncio.sleep(75)
+        while not stop_event.is_set():
+            try:
+                stats = await asyncio.to_thread(
+                    run_pending_orders_sheet_sync,
+                    app_storage,
+                    catalog=catalog,
+                    limit=40,
+                )
+                if stats.get("synced") or stats.get("errors") or stats.get("checked"):
+                    logger.info("Orders sheet sync retry: %s", stats)
+            except Exception:
+                logger.exception("Orders sheet sync loop error")
+            try:
+                await asyncio.wait_for(stop_event.wait(), timeout=600)
+                break
+            except asyncio.TimeoutError:
+                pass
+
+    sheet_sync_task = asyncio.create_task(
+        orders_sheet_sync_loop(), name="orders-sheet-sync"
+    )
     stop_task = asyncio.create_task(stop_event.wait(), name="stop")
 
     done, _ = await asyncio.wait(
@@ -307,6 +334,7 @@ async def main() -> None:
             packing_task,
             stock_task,
             cleanup_task,
+            sheet_sync_task,
         },
         return_when=asyncio.FIRST_COMPLETED,
     )
@@ -320,6 +348,7 @@ async def main() -> None:
         packing_task,
         stock_task,
         cleanup_task,
+        sheet_sync_task,
     ):
         if not task.done():
             task.cancel()

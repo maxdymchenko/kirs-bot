@@ -410,6 +410,15 @@ def create_ttn_for_order(
                     "NP label save to Drive failed order=%s",
                     order.get("order_number"),
                 )
+            try:
+                from bot.orders_sheets import sync_order_to_sheet
+
+                saved = sync_order_to_sheet(storage, saved, full=False) or saved
+            except Exception:
+                logger.exception(
+                    "orders sheet sync on TTN create %s failed",
+                    saved.get("order_number"),
+                )
             return saved
         except NovaPoshtaError as exc:
             last_exc = exc
@@ -912,6 +921,16 @@ async def apply_tracking_event(
                 )
             except Exception:
                 logger.exception("order_change tracking failed")
+            try:
+                from bot.orders_sheets import sync_order_to_sheet
+
+                order = sync_order_to_sheet(storage, order, full=False) or order
+                result["order"] = order
+            except Exception:
+                logger.exception(
+                    "orders sheet sync on tracking %s failed",
+                    order.get("order_number"),
+                )
 
     if mapped == "received" and prev != "received":
         from bot.balance_settle import settle_order_on_received
@@ -954,6 +973,16 @@ async def apply_tracking_event(
                 logger.exception("notify goods debit failed")
         order = storage.get_order(order["id"]) or order
         result["order"] = order
+        try:
+            from bot.orders_sheets import sync_order_to_sheet
+
+            order = sync_order_to_sheet(storage, order, full=False) or order
+            result["order"] = order
+        except Exception:
+            logger.exception(
+                "orders sheet sync on settle %s failed",
+                order.get("order_number"),
+            )
         if entry or goods_entry or overage_entry:
             await _maybe_eval_buyout(storage, order, notify)
 
@@ -1001,6 +1030,16 @@ async def apply_tracking_event(
             logger.exception("notify return debit failed")
         order = storage.get_order(order["id"]) or order
         result["order"] = order
+        try:
+            from bot.orders_sheets import sync_order_to_sheet
+
+            order = sync_order_to_sheet(storage, order, full=False) or order
+            result["order"] = order
+        except Exception:
+            logger.exception(
+                "orders sheet sync on return/refuse %s failed",
+                order.get("order_number"),
+            )
         await _maybe_eval_buyout(storage, order, notify)
         await _maybe_auto_blacklist_phone(storage, order, owner_notify)
 

@@ -1437,6 +1437,22 @@ class AppStorage:
             ).fetchall()
         return [self._row_order(r) for r in rows]
 
+    def list_orders_by_sheets_sync_status(
+        self, status: str, *, limit: int = 50
+    ) -> list[dict[str, Any]]:
+        key = str(status or "").strip() or "pending"
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT * FROM orders
+                WHERE COALESCE(sheets_sync_status, 'pending') = ?
+                ORDER BY id ASC
+                LIMIT ?
+                """,
+                (key, max(1, min(int(limit), 200))),
+            ).fetchall()
+        return [self._row_order(r) for r in rows]
+
     def merge_order_payload(
         self, order_id: int, patch: dict[str, Any]
     ) -> dict[str, Any] | None:

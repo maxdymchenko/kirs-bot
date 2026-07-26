@@ -1550,8 +1550,27 @@ def create_web_app(
                     "extra_discount_percent": item.get("extra_discount_percent") or 0,
                     "stock": item.get("stock"),
                     "photo_url": item.get("photo_url") or "",
+                    "retail_price": item.get("retail_price") or "",
+                    "location": item.get("location") or "",
                 }
             )
+
+        # Підтягнути РРЦ / розташування з каталогу для Sheet і пакування
+        try:
+            from bot.orders_sheets import _lookup_variant_meta
+
+            for item in safe_cart:
+                if item.get("retail_price") and item.get("location"):
+                    continue
+                retail, loc = _lookup_variant_meta(
+                    catalog, str(item.get("code") or ""), str(item.get("color") or "")
+                )
+                if not item.get("retail_price") and retail:
+                    item["retail_price"] = retail
+                if not item.get("location") and loc:
+                    item["location"] = loc
+        except Exception:
+            logger.exception("cart enrich location/retail failed")
 
         # Списання наявності до створення замовлення (комплект → складові)
         try:
@@ -1730,6 +1749,22 @@ def create_web_app(
                         "ttn pdf drive save after order %s failed",
                         order.get("order_number"),
                     )
+
+        # Дзеркало в Google Sheet «Заказы» (не при hold_pdf)
+        try:
+            from bot.orders_sheets import sync_order_to_sheet
+
+            order = (
+                sync_order_to_sheet(
+                    storage, storage.get_order(order["id"]) or order, catalog=catalog, full=True
+                )
+                or order
+            )
+        except Exception:
+            logger.exception(
+                "orders sheet sync after create %s failed",
+                order.get("order_number"),
+            )
 
         return {"ok": True, "order": order}
 
@@ -2331,6 +2366,23 @@ def create_web_app(
                         "ttn pdf check on edit %s failed", saved.get("order_number")
                     )
 
+        try:
+            from bot.orders_sheets import sync_order_to_sheet
+
+            saved = (
+                sync_order_to_sheet(
+                    storage,
+                    storage.get_order(order_id) or saved,
+                    catalog=catalog,
+                    full=True,
+                )
+                or saved
+            )
+        except Exception:
+            logger.exception(
+                "orders sheet sync on edit %s failed", saved.get("order_number")
+            )
+
         changes = storage.list_order_changes(order_id, limit=100)
         return {
             "ok": True,
@@ -2533,6 +2585,21 @@ def create_web_app(
             await _notify_owners(text)
         except Exception:
             logger.exception("notify cancel to owners failed")
+
+        try:
+            from bot.orders_sheets import sync_order_to_sheet
+
+            saved = (
+                sync_order_to_sheet(
+                    storage, storage.get_order(order_id) or saved, full=True
+                )
+                or saved
+            )
+        except Exception:
+            logger.exception(
+                "orders sheet sync on cancel %s failed",
+                (saved or order).get("order_number"),
+            )
 
         changes = storage.list_order_changes(order_id, limit=100)
         return {
@@ -2804,6 +2871,19 @@ def create_web_app(
             actor_user_id=str(payload.owner_user_id or "").strip(),
             owner_notify=_notify_owners,
         )
+        try:
+            from bot.orders_sheets import sync_order_to_sheet
+
+            saved = (
+                sync_order_to_sheet(
+                    storage, storage.get_order(order_id) or saved, full=False
+                )
+                or saved
+            )
+        except Exception:
+            logger.exception(
+                "orders sheet sync on return received %s failed", order_id
+            )
         changes = storage.list_order_changes(order_id, limit=100)
         return {
             "ok": True,
@@ -2860,6 +2940,19 @@ def create_web_app(
                 )
             except Exception:
                 logger.exception("owner accept return notify failed")
+        try:
+            from bot.orders_sheets import sync_order_to_sheet
+
+            saved = (
+                sync_order_to_sheet(
+                    storage, storage.get_order(order_id) or saved, full=False
+                )
+                or saved
+            )
+        except Exception:
+            logger.exception(
+                "orders sheet sync on return accept %s failed", order_id
+            )
         changes = storage.list_order_changes(order_id, limit=100)
         return {
             "ok": True,
