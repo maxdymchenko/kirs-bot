@@ -38,6 +38,8 @@ BTN_BALANCE = "Баланс"
 BTN_HISTORY = "Історія"
 BTN_MENU = "Меню"
 BTN_CHAT_ID = "Chat ID"
+BTN_STOCK = "Наявність"
+BTN_STOCK_CANCEL = "Скасувати наявність"
 
 _REPLY_BUTTON_TEXTS = frozenset(
     {
@@ -48,8 +50,17 @@ _REPLY_BUTTON_TEXTS = frozenset(
         BTN_HISTORY,
         BTN_MENU,
         BTN_CHAT_ID,
+        BTN_STOCK,
+        BTN_STOCK_CANCEL,
     }
 )
+
+_STOCK_LINE_RE = re.compile(
+    r"^\s*(?P<code>[^\s=:]+)\s*[=:]\s*(?P<delta>[+-]?\d+)\s*$",
+    re.UNICODE,
+)
+
+_AWAITING_STOCK_KEY = "awaiting_stock_adjust"
 
 
 def register_handlers(application: Application, ctx: BotContext) -> None:
@@ -59,10 +70,18 @@ def register_handlers(application: Application, ctx: BotContext) -> None:
 
     application.add_handler(CommandHandler(["menu", "start"], order_menu_command))
     application.add_handler(CommandHandler("chatid", chat_id_command))
+    application.add_handler(CommandHandler("stock", stock_adjust_start))
     application.add_handler(
         MessageHandler(
             filters.TEXT & ~filters.COMMAND & filters.Regex(_reply_buttons_regex()),
             reply_keyboard_handler,
+        )
+    )
+    # Режим введення списку наявності (після кнопки «Наявність»)
+    application.add_handler(
+        MessageHandler(
+            filters.TEXT & ~filters.COMMAND,
+            stock_adjust_text_handler,
         )
     )
     application.add_handler(
@@ -90,10 +109,11 @@ async def setup_bot_commands(application: Application, ctx: BotContext) -> None:
         BotCommand("start", "Меню / кабінет"),
         BotCommand("menu", "Меню / кабінет"),
         BotCommand("chatid", "Показати chat_id"),
+        BotCommand("stock", "Коригування наявності"),
     ]
     for name in ctx.settings.pending_commands or []:
         key = str(name or "").strip().lstrip("/")
-        if not key or key in {"start", "menu", "chatid"}:
+        if not key or key in {"start", "menu", "chatid", "stock"}:
             continue
         commands.append(BotCommand(key, "Необроблені чати OLX"))
     try:
@@ -107,12 +127,25 @@ def build_reply_keyboard(
     role: str | None,
     *,
     need_registration: bool = False,
+    stock_mode: bool = False,
 ) -> ReplyKeyboardMarkup:
     """Постійна клавіатура над полем вводу — залежить від ролі чату."""
+    if stock_mode:
+        return ReplyKeyboardMarkup(
+            [[KeyboardButton(BTN_STOCK_CANCEL)]],
+            resize_keyboard=True,
+            is_persistent=True,
+        )
     if role == "owner":
-        rows = [[KeyboardButton(BTN_CABINET), KeyboardButton(BTN_CHAT_ID)]]
+        rows = [
+            [KeyboardButton(BTN_CABINET), KeyboardButton(BTN_STOCK)],
+            [KeyboardButton(BTN_CHAT_ID)],
+        ]
     elif role == "warehouse":
-        rows = [[KeyboardButton(BTN_WAREHOUSE), KeyboardButton(BTN_CHAT_ID)]]
+        rows = [
+            [KeyboardButton(BTN_WAREHOUSE), KeyboardButton(BTN_STOCK)],
+            [KeyboardButton(BTN_CHAT_ID)],
+        ]
     elif role == "dropper":
         rows = [
             [KeyboardButton(BTN_ORDER), KeyboardButton(BTN_BALANCE)],
@@ -128,6 +161,187 @@ def build_reply_keyboard(
         rows,
         resize_keyboard=True,
         is_persistent=True,
+    )
+
+
+def _can_adjust_stock(role: str | None) -> bool:
+    return role in {"owner", "warehouse"}
+
+
+def parse_stock_adjust_text(text: str) -> tuple[list[dict], list[str]]:
+    """Розбір рядків `010 = 5` / `010 = -5`. Повертає (adjustments, parse_errors)."""
+    adjustments: list[dict] = []
+    errors: list[str] = []
+    for raw_line in str(text or "").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        match = _STOCK_LINE_RE.match(line)
+        if not match:
+            errors.append(f"не розпізнано: {line}")
+            continue
+        code = match.group("code").strip().lstrip("'")
+        try:
+            delta = int(match.group("delta"))
+        except ValueError:
+            errors.append(f"некоректна кількість: {line}")
+            continue
+        adjustments.append({"code": code, "delta": delta})
+    return adjustments, errors
+
+
+def _stock_chat_data(context: ContextTypes.DEFAULT_TYPE) -> dict:
+    return context.chat_data
+
+
+def _set_awaiting_stock(context: ContextTypes.DEFAULT_TYPE, value: bool) -> None:
+    if value:
+        _stock_chat_data(context)[_AWAITING_STOCK_KEY] = True
+    else:
+        _stock_chat_data(context).pop(_AWAITING_STOCK_KEY, None)
+
+
+def _is_awaiting_stock(context: ContextTypes.DEFAULT_TYPE) -> bool:
+    return bool(_stock_chat_data(context).get(_AWAITING_STOCK_KEY))
+
+
+async def stock_adjust_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Увімкнути режим введення списку наявності."""
+    if not update.effective_chat or not update.message:
+        return
+    ctx: BotContext = context.bot_data["ctx"]
+    role, need_reg = _session_role(ctx, update)
+    if not _can_adjust_stock(role):
+        await update.message.reply_text(
+            "Коригування наявності доступне власнику та комірнику.",
+            reply_markup=build_reply_keyboard(role, need_registration=need_reg),
+        )
+        return
+    if ctx.catalog is None:
+        await update.message.reply_text(
+            "Каталог не підключено до бота. Спробуйте пізніше.",
+            reply_markup=build_reply_keyboard(role, need_registration=need_reg),
+        )
+        return
+
+    _set_awaiting_stock(context, True)
+    await update.message.reply_text(
+        "Надішліть список змін наявності (один рядок = один код):\n\n"
+        "`010 = 5` — прибуло 5 шт\n"
+        "`010 = -5` — списано 5 шт\n\n"
+        "Можна кілька рядків разом. Колір не вказується — "
+        "зміна йде по коду в таблиці наявності.\n\n"
+        f"Або натисніть «{BTN_STOCK_CANCEL}».",
+        parse_mode=ParseMode.MARKDOWN,
+        reply_markup=build_reply_keyboard(role, need_registration=need_reg, stock_mode=True),
+    )
+
+
+async def stock_adjust_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not update.message:
+        return
+    ctx: BotContext = context.bot_data["ctx"]
+    role, need_reg = _session_role(ctx, update)
+    _set_awaiting_stock(context, False)
+    await update.message.reply_text(
+        "Режим наявності скасовано.",
+        reply_markup=build_reply_keyboard(role, need_registration=need_reg),
+    )
+
+
+async def stock_adjust_text_handler(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> None:
+    """Приймає список кодів лише в режимі awaiting_stock."""
+    if not update.message or not update.message.text:
+        return
+    if not _is_awaiting_stock(context):
+        return
+
+    ctx: BotContext = context.bot_data["ctx"]
+    role, need_reg = _session_role(ctx, update)
+    if not _can_adjust_stock(role):
+        _set_awaiting_stock(context, False)
+        await update.message.reply_text(
+            "Немає доступу до коригування наявності.",
+            reply_markup=build_reply_keyboard(role, need_registration=need_reg),
+        )
+        return
+
+    text = update.message.text.strip()
+    adjustments, parse_errors = parse_stock_adjust_text(text)
+    if not adjustments and parse_errors:
+        await update.message.reply_text(
+            "Не вдалося розпізнати список.\n"
+            "Формат: `010 = 5` або `010 = -5` (по одному в рядку).\n\n"
+            + "\n".join(f"• {e}" for e in parse_errors[:10]),
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=build_reply_keyboard(
+                role, need_registration=need_reg, stock_mode=True
+            ),
+        )
+        return
+    if not adjustments:
+        await update.message.reply_text(
+            "Порожнє повідомлення. Надішліть рядки на кшталт `010 = 5`.",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=build_reply_keyboard(
+                role, need_registration=need_reg, stock_mode=True
+            ),
+        )
+        return
+
+    if ctx.catalog is None:
+        _set_awaiting_stock(context, False)
+        await update.message.reply_text(
+            "Каталог не підключено.",
+            reply_markup=build_reply_keyboard(role, need_registration=need_reg),
+        )
+        return
+
+    await update.message.reply_text("Записую в таблицю наявності…")
+    try:
+        import asyncio
+
+        result = await asyncio.to_thread(ctx.catalog.apply_stock_adjustments, adjustments)
+    except Exception:
+        logger.exception("stock adjust failed")
+        await update.message.reply_text(
+            "Помилка запису в Google Sheets. Спробуйте ще раз.",
+            reply_markup=build_reply_keyboard(
+                role, need_registration=need_reg, stock_mode=True
+            ),
+        )
+        return
+
+    _set_awaiting_stock(context, False)
+    lines: list[str] = []
+    applied = result.get("applied") or []
+    errors = list(result.get("errors") or [])
+    for e in parse_errors:
+        errors.append({"code": "?", "error": e})
+
+    if applied:
+        lines.append(f"✅ Оновлено ({len(applied)}):")
+        for row in applied:
+            sign = "+" if int(row["delta"]) > 0 else ""
+            color = f" · {row['color']}" if row.get("color") else ""
+            lines.append(
+                f"• {row['code']}{color}: {row['before']} → {row['after']} "
+                f"({sign}{row['delta']})"
+            )
+    if errors:
+        lines.append("")
+        lines.append(f"⚠️ Помилки ({len(errors)}):")
+        for err in errors[:20]:
+            lines.append(f"• {err.get('code', '?')}: {err.get('error', '')}")
+
+    if not lines:
+        lines.append("Нічого не змінено.")
+
+    await update.message.reply_text(
+        "\n".join(lines),
+        reply_markup=build_reply_keyboard(role, need_registration=need_reg),
     )
 
 
@@ -321,6 +535,15 @@ async def reply_keyboard_handler(update: Update, context: ContextTypes.DEFAULT_T
     if not update.message or not update.message.text:
         return
     text = update.message.text.strip()
+    if text == BTN_STOCK_CANCEL:
+        await stock_adjust_cancel(update, context)
+        return
+    if text == BTN_STOCK:
+        await stock_adjust_start(update, context)
+        return
+    # Інші кнопки меню виходять з режиму наявності
+    if _is_awaiting_stock(context):
+        _set_awaiting_stock(context, False)
     if text == BTN_CHAT_ID:
         await chat_id_command(update, context)
         return

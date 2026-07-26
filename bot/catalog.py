@@ -9,6 +9,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 from threading import Lock
+from typing import Any
 
 import gspread
 
@@ -812,6 +813,109 @@ class CatalogService:
         """Спочатку повернути старий кошик, потім списати новий."""
         self.restore_cart_stock(old_cart or [])
         return self.consume_cart_stock(new_cart or [])
+
+    def apply_stock_adjustments(
+        self, adjustments: list[dict[str, Any]]
+    ) -> dict[str, Any]:
+        """
+        Ручне коригування наявності зі списку {code, delta}.
+        delta > 0 — прибуло на склад; delta < 0 — списання.
+        Колір не вказується: пишемо в атомарні рядки коду (як у restore/consume без color).
+        Порожній stock у таблиці для прибуття трактуємо як 0.
+        """
+        items = [x for x in (adjustments or []) if isinstance(x, dict)]
+        if not items:
+            return {"ok": True, "applied": [], "errors": [], "updated_rows": 0}
+
+        with self._lock:
+            client = self._build_client()
+            ws = client.open_by_key(self.spreadsheet_id).sheet1
+            variants = self._load_variants_from_sheet(ws, client)
+
+            sheet_updates: list[tuple[int, int]] = []
+            applied: list[dict[str, Any]] = []
+            errors: list[dict[str, str]] = []
+
+            for raw in items:
+                code = str(raw.get("code") or "").strip().lstrip("'")
+                try:
+                    delta = int(raw.get("delta"))
+                except (TypeError, ValueError):
+                    errors.append(
+                        {"code": code or "?", "error": "некоректна кількість"}
+                    )
+                    continue
+                if not code:
+                    errors.append({"code": "?", "error": "порожній код"})
+                    continue
+                if delta == 0:
+                    errors.append({"code": code, "error": "кількість 0 — пропущено"})
+                    continue
+                if _is_kit_code(code):
+                    errors.append(
+                        {
+                            "code": code,
+                            "error": "комплект — вказуйте складові коди окремо",
+                        }
+                    )
+                    continue
+
+                rows = self._find_atomic_rows(variants, code, color="", product_id="")
+                if not rows:
+                    errors.append({"code": code, "error": "код не знайдено в таблиці"})
+                    continue
+
+                tracked = [v for v in rows if v.stock is not None]
+                if not tracked:
+                    # Ініціалізуємо перший рядок як 0 (прибуття на склад)
+                    rows[0].stock = 0
+                    tracked = [rows[0]]
+
+                before = sum(max(0, int(v.stock or 0)) for v in tracked)
+                try:
+                    if delta > 0:
+                        upd = self._increment_rows(tracked, delta)
+                    else:
+                        upd = self._decrement_rows(tracked, abs(delta))
+                except InsufficientStockError as exc:
+                    errors.append({"code": code, "error": str(exc)})
+                    continue
+
+                sheet_updates.extend(upd)
+                after = sum(
+                    max(0, int(v.stock or 0))
+                    for v in rows
+                    if v.stock is not None
+                )
+                applied.append(
+                    {
+                        "code": code,
+                        "delta": delta,
+                        "before": before,
+                        "after": after,
+                        "color": (tracked[0].color if tracked else "") or "",
+                    }
+                )
+
+            if sheet_updates:
+                variants, kit_updates = apply_component_stock_to_kits(variants)
+                sheet_updates.extend(kit_updates)
+                self._write_stock_column(ws, sheet_updates)
+
+            self._variants = variants
+            self._loaded_at = time.time()
+            logger.info(
+                "Ручне коригування наявності: ok=%d err=%d rows=%d",
+                len(applied),
+                len(errors),
+                len({r for r, _ in sheet_updates}),
+            )
+            return {
+                "ok": True,
+                "applied": applied,
+                "errors": errors,
+                "updated_rows": len({r for r, _ in sheet_updates}),
+            }
 
     def list_colors(self, query: str = "", limit: int = 40) -> list[str]:
         self.refresh()

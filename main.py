@@ -25,8 +25,8 @@ async def main() -> None:
     from bot.accounts import AppStorage
 
     app_storage = AppStorage()
-    ctx = BotContext(settings, app_storage=app_storage)
     catalog = CatalogService()
+    ctx = BotContext(settings, app_storage=app_storage, catalog=catalog)
 
     # Прогрев каталога (не падаем, если Sheets временно недоступен)
     try:

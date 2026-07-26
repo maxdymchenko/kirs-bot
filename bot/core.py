@@ -148,6 +148,7 @@ class BotContext:
         settings: Settings,
         storage: NotificationStorage | None = None,
         app_storage=None,
+        catalog=None,
     ):
         from bot.accounts import AppStorage
 
@@ -155,6 +156,7 @@ class BotContext:
         self.bot = Bot(token=settings.telegram_token)
         self.storage = storage or NotificationStorage()
         self.app_storage = app_storage or AppStorage()
+        self.catalog = catalog
 
     async def send_notification(
         self,
