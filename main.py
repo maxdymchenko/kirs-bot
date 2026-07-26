@@ -270,6 +270,26 @@ async def main() -> None:
                     pass
 
     stock_task = asyncio.create_task(stock_digest_loop(), name="stock-digest")
+
+    async def ttn_pdf_cleanup_loop() -> None:
+        """Раз на добу — видалити PDF накладних старші за 10 днів."""
+        from bot.ttn_store import cleanup_old_ttn_pdfs
+
+        await asyncio.sleep(90)
+        while not stop_event.is_set():
+            try:
+                stats = await asyncio.to_thread(cleanup_old_ttn_pdfs)
+                logger.info("TTN PDF cleanup: %s", stats)
+            except Exception:
+                logger.exception("TTN PDF cleanup loop error")
+            try:
+                # наступний прохід через ~24 год
+                await asyncio.wait_for(stop_event.wait(), timeout=24 * 3600)
+                break
+            except asyncio.TimeoutError:
+                pass
+
+    cleanup_task = asyncio.create_task(ttn_pdf_cleanup_loop(), name="ttn-pdf-cleanup")
     stop_task = asyncio.create_task(stop_event.wait(), name="stop")
 
     done, _ = await asyncio.wait(
@@ -281,13 +301,21 @@ async def main() -> None:
             warehouse_task,
             packing_task,
             stock_task,
+            cleanup_task,
         },
         return_when=asyncio.FIRST_COMPLETED,
     )
 
     server.should_exit = True
     stop_event.set()
-    for task in (run_task, np_task, warehouse_task, packing_task, stock_task):
+    for task in (
+        run_task,
+        np_task,
+        warehouse_task,
+        packing_task,
+        stock_task,
+        cleanup_task,
+    ):
         if not task.done():
             task.cancel()
             try:
