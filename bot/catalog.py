@@ -818,9 +818,9 @@ class CatalogService:
         self, adjustments: list[dict[str, Any]]
     ) -> dict[str, Any]:
         """
-        Ручне коригування наявності зі списку {code, delta}.
+        Ручне коригування наявності зі списку {code, color, delta}.
         delta > 0 — прибуло на склад; delta < 0 — списання.
-        Колір не вказується: пишемо в атомарні рядки коду (як у restore/consume без color).
+        Колір обовʼязковий, якщо для коду кілька варіантів у таблиці.
         Порожній stock у таблиці для прибуття трактуємо як 0.
         """
         items = [x for x in (adjustments or []) if isinstance(x, dict)]
@@ -838,36 +838,82 @@ class CatalogService:
 
             for raw in items:
                 code = str(raw.get("code") or "").strip().lstrip("'")
+                color = str(raw.get("color") or "").strip()
+                label = f"{code}" + (f" | {color}" if color else "")
                 try:
                     delta = int(raw.get("delta"))
                 except (TypeError, ValueError):
                     errors.append(
-                        {"code": code or "?", "error": "некоректна кількість"}
+                        {"code": label or "?", "error": "некоректна кількість"}
                     )
                     continue
                 if not code:
                     errors.append({"code": "?", "error": "порожній код"})
                     continue
                 if delta == 0:
-                    errors.append({"code": code, "error": "кількість 0 — пропущено"})
+                    errors.append({"code": label, "error": "кількість 0 — пропущено"})
                     continue
                 if _is_kit_code(code):
                     errors.append(
                         {
-                            "code": code,
+                            "code": label,
                             "error": "комплект — вказуйте складові коди окремо",
                         }
                     )
                     continue
 
-                rows = self._find_atomic_rows(variants, code, color="", product_id="")
-                if not rows:
-                    errors.append({"code": code, "error": "код не знайдено в таблиці"})
+                rows_all = self._find_atomic_rows(
+                    variants, code, color="", product_id=""
+                )
+                if not rows_all:
+                    errors.append(
+                        {"code": label, "error": "код не знайдено в таблиці"}
+                    )
                     continue
+
+                color_options = sorted(
+                    {
+                        str(v.color or "").strip()
+                        for v in rows_all
+                        if str(v.color or "").strip()
+                    },
+                    key=lambda c: c.casefold(),
+                )
+                distinct_colors = {_norm_text(c) for c in color_options if c}
+
+                if color:
+                    color_n = _norm_text(color)
+                    rows = [
+                        v
+                        for v in rows_all
+                        if _norm_text(v.color) == color_n
+                    ]
+                    if not rows:
+                        hint = ", ".join(color_options[:8]) or "—"
+                        errors.append(
+                            {
+                                "code": label,
+                                "error": f"колір не знайдено. Є: {hint}",
+                            }
+                        )
+                        continue
+                else:
+                    if len(distinct_colors) > 1:
+                        hint = ", ".join(color_options[:8])
+                        errors.append(
+                            {
+                                "code": label,
+                                "error": (
+                                    "у коду кілька кольорів — вкажіть "
+                                    f"`{code} | колір = N`. Є: {hint}"
+                                ),
+                            }
+                        )
+                        continue
+                    rows = rows_all
 
                 tracked = [v for v in rows if v.stock is not None]
                 if not tracked:
-                    # Ініціалізуємо перший рядок як 0 (прибуття на склад)
                     rows[0].stock = 0
                     tracked = [rows[0]]
 
@@ -878,7 +924,7 @@ class CatalogService:
                     else:
                         upd = self._decrement_rows(tracked, abs(delta))
                 except InsufficientStockError as exc:
-                    errors.append({"code": code, "error": str(exc)})
+                    errors.append({"code": label, "error": str(exc)})
                     continue
 
                 sheet_updates.extend(upd)
@@ -893,7 +939,7 @@ class CatalogService:
                         "delta": delta,
                         "before": before,
                         "after": after,
-                        "color": (tracked[0].color if tracked else "") or "",
+                        "color": (tracked[0].color if tracked else color) or "",
                     }
                 )
 
