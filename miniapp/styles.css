@@ -613,6 +613,26 @@ select {
   color: #94a3b8;
 }
 
+.owner-balance-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 0 12px 12px;
+}
+
+.owner-balance-adjust-form {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  border-top: 1px solid var(--line);
+}
+
+.owner-balance-adjust-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
 .balance-stats {
   display: grid;
   gap: 8px;

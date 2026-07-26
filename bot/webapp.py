@@ -163,6 +163,14 @@ class OwnerReferralLinkRequest(BaseModel):
     referred_chat_id: str = Field(..., min_length=1, max_length=64)
 
 
+class OwnerBalanceAdjustRequest(BaseModel):
+    owner_chat_id: str = Field("", max_length=64)
+    owner_user_id: str = Field("", max_length=64)
+    direction: str = Field(..., min_length=5, max_length=16)
+    amount: float = Field(..., gt=0, le=10_000_000)
+    note: str = Field("", max_length=500)
+
+
 class WarehouseAttachPdfRequest(BaseModel):
     chat_id: str = Field("", max_length=64)
     user_id: str = Field("", max_length=64)
@@ -850,6 +858,67 @@ def create_web_app(
             "items": items,
             "referral_history": enriched,
             "rule": "Реф.% рахується від дроп-ціни замовлення приведеного дроппера.",
+        }
+
+    @app.post("/api/owner/droppers/{chat_id}/balance/adjust")
+    async def owner_balance_adjust(
+        chat_id: str,
+        payload: OwnerBalanceAdjustRequest,
+    ) -> dict:
+        """Ручне нарахування (+) або списання (−) по балансу дроппера."""
+        import uuid
+
+        from bot.credit_holidays import evaluate_credit_holidays
+
+        _require_owner(payload.owner_chat_id, payload.owner_user_id)
+        dropper = storage.get_dropper_by_chat(chat_id.strip())
+        if not dropper:
+            raise HTTPException(status_code=404, detail="Дроппера не знайдено")
+
+        direction = str(payload.direction or "").strip().lower()
+        if direction not in {"credit", "debit"}:
+            raise HTTPException(
+                status_code=400,
+                detail="direction: credit або debit",
+            )
+        amount_abs = round(abs(float(payload.amount)), 2)
+        if amount_abs <= 0:
+            raise HTTPException(status_code=400, detail="Сума має бути більшою за 0")
+
+        note = str(payload.note or "").strip()
+        if direction == "credit":
+            signed = amount_abs
+            entry_type = "manual_credit"
+            title = "Ручне нарахування"
+            default_note = "Оплата / нарахування від власника"
+        else:
+            signed = -amount_abs
+            entry_type = "manual_debit"
+            title = "Ручне списання"
+            default_note = "Списання / борг від власника"
+
+        entry = storage.add_ledger_entry(
+            dropper_id=dropper.id,
+            amount=signed,
+            entry_type=entry_type,
+            title=title,
+            note=note or default_note,
+            related_order_id=f"manual-{uuid.uuid4().hex}",
+        )
+        if not entry:
+            raise HTTPException(status_code=500, detail="Не вдалося записати в ledger")
+
+        evaluate_credit_holidays(storage, dropper)
+        balance = storage.get_balance(dropper.id)
+        from bot.balance_settle import compute_conditional_balance
+
+        cond = compute_conditional_balance(storage, dropper.id, factual=balance)
+        return {
+            "ok": True,
+            "entry": entry,
+            "balance": balance,
+            "conditional_balance": cond.get("conditional_balance"),
+            "dropper": (storage.get_dropper_by_chat(chat_id) or dropper).to_dict(),
         }
 
     @app.get("/api/owner/blacklist")

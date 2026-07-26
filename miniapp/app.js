@@ -5640,6 +5640,29 @@ ${
                 </div>
                 <span class="owner-card-chevron" aria-hidden="true"></span>
               </button>
+              <div class="owner-balance-actions">
+                <button type="button" class="btn secondary" data-balance-adjust="credit" data-chat="${escapeHtml(
+                  d.chat_id || ""
+                )}">Ручне нарахування</button>
+                <button type="button" class="btn secondary" data-balance-adjust="debit" data-chat="${escapeHtml(
+                  d.chat_id || ""
+                )}">Списання</button>
+              </div>
+              <div class="owner-balance-adjust-form hidden" data-balance-adjust-form>
+                <div class="meta" data-adjust-title></div>
+                <label class="field">
+                  <span class="field-label">Сума, ₴</span>
+                  <input type="number" class="setting-input" data-adjust-amount min="0.01" step="0.01" inputmode="decimal" />
+                </label>
+                <label class="field">
+                  <span class="field-label">Коментар</span>
+                  <input type="text" class="setting-input" data-adjust-note maxlength="500" placeholder="Наприклад: оплата на картку" />
+                </label>
+                <div class="owner-balance-adjust-toolbar">
+                  <button type="button" class="btn primary" data-adjust-submit>Зберегти</button>
+                  <button type="button" class="btn secondary" data-adjust-cancel>Скасувати</button>
+                </div>
+              </div>
             </article>`;
             })
             .join("")
@@ -7283,6 +7306,49 @@ ${
 
   if (els.ownerBalances) {
     els.ownerBalances.addEventListener("click", (event) => {
+      const adjustBtn = event.target.closest("[data-balance-adjust]");
+      if (adjustBtn && els.ownerBalances.contains(adjustBtn)) {
+        event.preventDefault();
+        event.stopPropagation();
+        const card = adjustBtn.closest(".owner-card");
+        const form = card?.querySelector("[data-balance-adjust-form]");
+        if (!card || !form) return;
+        const direction = adjustBtn.getAttribute("data-balance-adjust") || "credit";
+        form.dataset.direction = direction;
+        form.dataset.chat = adjustBtn.getAttribute("data-chat") || "";
+        const title = form.querySelector("[data-adjust-title]");
+        if (title) {
+          title.textContent =
+            direction === "debit"
+              ? "Списання з балансу (борг / коригування −)"
+              : "Ручне нарахування (оплата / коригування +)";
+        }
+        const amountInput = form.querySelector("[data-adjust-amount]");
+        const noteInput = form.querySelector("[data-adjust-note]");
+        if (amountInput) amountInput.value = "";
+        if (noteInput) noteInput.value = "";
+        form.classList.remove("hidden");
+        amountInput?.focus();
+        return;
+      }
+
+      const cancelBtn = event.target.closest("[data-adjust-cancel]");
+      if (cancelBtn && els.ownerBalances.contains(cancelBtn)) {
+        event.preventDefault();
+        event.stopPropagation();
+        const form = cancelBtn.closest("[data-balance-adjust-form]");
+        form?.classList.add("hidden");
+        return;
+      }
+
+      const submitBtn = event.target.closest("[data-adjust-submit]");
+      if (submitBtn && els.ownerBalances.contains(submitBtn)) {
+        event.preventDefault();
+        event.stopPropagation();
+        submitOwnerBalanceAdjust(submitBtn.closest(".owner-card"));
+        return;
+      }
+
       const toggle = event.target.closest(".owner-card-toggle");
       if (!toggle || !els.ownerBalances.contains(toggle)) return;
       const card = toggle.closest(".owner-card");
@@ -7293,6 +7359,54 @@ ${
         loadOwnerDropperOrders(card);
       }
     });
+  }
+
+  async function submitOwnerBalanceAdjust(card) {
+    if (!card) return;
+    const form = card.querySelector("[data-balance-adjust-form]");
+    if (!form) return;
+    const chatId = form.dataset.chat || card.getAttribute("data-balance-chat") || "";
+    const direction = form.dataset.direction || "credit";
+    const amountInput = form.querySelector("[data-adjust-amount]");
+    const noteInput = form.querySelector("[data-adjust-note]");
+    const amount = Number(amountInput?.value || 0);
+    if (!chatId) {
+      showToast("Немає chat_id дроппера");
+      return;
+    }
+    if (!Number.isFinite(amount) || amount <= 0) {
+      showToast("Вкажіть суму більше 0");
+      amountInput?.focus();
+      return;
+    }
+    try {
+      const response = await fetch(
+        `/api/owner/droppers/${encodeURIComponent(chatId)}/balance/adjust`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            ...ownerAuthBody(),
+            direction,
+            amount,
+            note: (noteInput?.value || "").trim(),
+          }),
+        }
+      );
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(typeof data.detail === "string" ? data.detail : "Помилка");
+      }
+      showToast(
+        direction === "debit"
+          ? `Списано ${formatMoney(amount)}`
+          : `Нараховано ${formatMoney(amount)}`
+      );
+      form.classList.add("hidden");
+      await renderOwnerBalances();
+    } catch (error) {
+      showToast(error.message || "Помилка");
+    }
   }
 
   if (els.ownerBroadcastOpen) {
