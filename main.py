@@ -216,6 +216,43 @@ async def main() -> None:
                 except asyncio.TimeoutError:
                     pass
 
+    async def to_order_digest_loop() -> None:
+        """О 9:00 Київ — список кодів «Замовити» власнику."""
+        from bot.to_order import (
+            run_to_order_digest_pass,
+            seconds_until_next_to_order_hour,
+        )
+
+        await asyncio.sleep(50)
+        while not stop_event.is_set():
+            try:
+                delay = seconds_until_next_to_order_hour(allow_current_hour=True)
+                if delay > 0:
+                    logger.info(
+                        "To-order digest: next 09:00 in %.0f min", delay / 60.0
+                    )
+                    try:
+                        await asyncio.wait_for(stop_event.wait(), timeout=delay)
+                        break
+                    except asyncio.TimeoutError:
+                        pass
+                stats = await run_to_order_digest_pass(
+                    app_storage, owner_notify=_np_owner_notify
+                )
+                logger.info("To-order digest: %s", stats)
+                delay = seconds_until_next_to_order_hour(allow_current_hour=False)
+                try:
+                    await asyncio.wait_for(stop_event.wait(), timeout=delay)
+                    break
+                except asyncio.TimeoutError:
+                    pass
+            except Exception:
+                logger.exception("To-order digest loop error")
+                try:
+                    await asyncio.wait_for(stop_event.wait(), timeout=300)
+                except asyncio.TimeoutError:
+                    pass
+
     run_task = asyncio.create_task(run_modules(modules, ctx), name="modules")
     np_task = asyncio.create_task(np_maintenance_loop(), name="np-maintenance")
     warehouse_task = asyncio.create_task(
@@ -223,6 +260,9 @@ async def main() -> None:
     )
     packing_task = asyncio.create_task(
         packing_digest_loop(), name="packing-digest"
+    )
+    to_order_task = asyncio.create_task(
+        to_order_digest_loop(), name="to-order-digest"
     )
 
     async def stock_digest_loop() -> None:
@@ -332,6 +372,7 @@ async def main() -> None:
             np_task,
             warehouse_task,
             packing_task,
+            to_order_task,
             stock_task,
             cleanup_task,
             sheet_sync_task,
@@ -346,6 +387,7 @@ async def main() -> None:
         np_task,
         warehouse_task,
         packing_task,
+        to_order_task,
         stock_task,
         cleanup_task,
         sheet_sync_task,

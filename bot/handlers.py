@@ -40,6 +40,8 @@ BTN_MENU = "Меню"
 BTN_CHAT_ID = "Chat ID"
 BTN_STOCK = "Наявність"
 BTN_STOCK_CANCEL = "Скасувати наявність"
+BTN_TO_ORDER = "Замовити"
+BTN_TO_ORDER_CANCEL = "Скасувати список"
 
 _REPLY_BUTTON_TEXTS = frozenset(
     {
@@ -52,11 +54,14 @@ _REPLY_BUTTON_TEXTS = frozenset(
         BTN_CHAT_ID,
         BTN_STOCK,
         BTN_STOCK_CANCEL,
+        BTN_TO_ORDER,
+        BTN_TO_ORDER_CANCEL,
     }
 )
 
 # Рядки наявності: 010=розовое золото=-2  |  010 = 4  |  010 | Золотой = 5
 _AWAITING_STOCK_KEY = "awaiting_stock_adjust"
+_AWAITING_TO_ORDER_KEY = "awaiting_to_order"
 
 
 def register_handlers(application: Application, ctx: BotContext) -> None:
@@ -67,17 +72,18 @@ def register_handlers(application: Application, ctx: BotContext) -> None:
     application.add_handler(CommandHandler(["menu", "start"], order_menu_command))
     application.add_handler(CommandHandler("chatid", chat_id_command))
     application.add_handler(CommandHandler("stock", stock_adjust_start))
+    application.add_handler(CommandHandler(["toorder", "orderlist"], to_order_start))
     application.add_handler(
         MessageHandler(
             filters.TEXT & ~filters.COMMAND & filters.Regex(_reply_buttons_regex()),
             reply_keyboard_handler,
         )
     )
-    # Режим введення списку наявності (після кнопки «Наявність»)
+    # Режим наявності / список «Замовити» / «код - заказан»
     application.add_handler(
         MessageHandler(
             filters.TEXT & ~filters.COMMAND,
-            stock_adjust_text_handler,
+            text_modes_handler,
         )
     )
     application.add_handler(
@@ -106,10 +112,11 @@ async def setup_bot_commands(application: Application, ctx: BotContext) -> None:
         BotCommand("menu", "Меню / кабінет"),
         BotCommand("chatid", "Показати chat_id"),
         BotCommand("stock", "Коригування наявності"),
+        BotCommand("toorder", "Список «Замовити»"),
     ]
     for name in ctx.settings.pending_commands or []:
         key = str(name or "").strip().lstrip("/")
-        if not key or key in {"start", "menu", "chatid", "stock"}:
+        if not key or key in {"start", "menu", "chatid", "stock", "toorder", "orderlist"}:
             continue
         commands.append(BotCommand(key, "Необроблені чати OLX"))
     try:
@@ -124,6 +131,7 @@ def build_reply_keyboard(
     *,
     need_registration: bool = False,
     stock_mode: bool = False,
+    to_order_mode: bool = False,
 ) -> ReplyKeyboardMarkup:
     """Постійна клавіатура над полем вводу — залежить від ролі чату."""
     if stock_mode:
@@ -132,10 +140,16 @@ def build_reply_keyboard(
             resize_keyboard=True,
             is_persistent=True,
         )
+    if to_order_mode:
+        return ReplyKeyboardMarkup(
+            [[KeyboardButton(BTN_TO_ORDER_CANCEL)]],
+            resize_keyboard=True,
+            is_persistent=True,
+        )
     if role == "owner":
         rows = [
             [KeyboardButton(BTN_CABINET), KeyboardButton(BTN_STOCK)],
-            [KeyboardButton(BTN_CHAT_ID)],
+            [KeyboardButton(BTN_TO_ORDER), KeyboardButton(BTN_CHAT_ID)],
         ]
     elif role == "warehouse":
         rows = [
@@ -162,6 +176,10 @@ def build_reply_keyboard(
 
 def _can_adjust_stock(role: str | None) -> bool:
     return role in {"owner", "warehouse"}
+
+
+def _can_manage_to_order(role: str | None) -> bool:
+    return role == "owner"
 
 
 def parse_stock_adjust_text(text: str) -> tuple[list[dict], list[str]]:
@@ -210,12 +228,25 @@ def _stock_chat_data(context: ContextTypes.DEFAULT_TYPE) -> dict:
 def _set_awaiting_stock(context: ContextTypes.DEFAULT_TYPE, value: bool) -> None:
     if value:
         _stock_chat_data(context)[_AWAITING_STOCK_KEY] = True
+        _stock_chat_data(context).pop(_AWAITING_TO_ORDER_KEY, None)
     else:
         _stock_chat_data(context).pop(_AWAITING_STOCK_KEY, None)
 
 
 def _is_awaiting_stock(context: ContextTypes.DEFAULT_TYPE) -> bool:
     return bool(_stock_chat_data(context).get(_AWAITING_STOCK_KEY))
+
+
+def _set_awaiting_to_order(context: ContextTypes.DEFAULT_TYPE, value: bool) -> None:
+    if value:
+        _stock_chat_data(context)[_AWAITING_TO_ORDER_KEY] = True
+        _stock_chat_data(context).pop(_AWAITING_STOCK_KEY, None)
+    else:
+        _stock_chat_data(context).pop(_AWAITING_TO_ORDER_KEY, None)
+
+
+def _is_awaiting_to_order(context: ContextTypes.DEFAULT_TYPE) -> bool:
+    return bool(_stock_chat_data(context).get(_AWAITING_TO_ORDER_KEY))
 
 
 async def stock_adjust_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -265,6 +296,152 @@ async def stock_adjust_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE
     await update.message.reply_text(
         "Режим наявності скасовано.",
         reply_markup=build_reply_keyboard(role, need_registration=need_reg),
+    )
+
+
+async def to_order_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Увімкнути режим списку закупівель «Замовити»."""
+    if not update.effective_chat or not update.message:
+        return
+    ctx: BotContext = context.bot_data["ctx"]
+    role, need_reg = _session_role(ctx, update)
+    if not _can_manage_to_order(role):
+        await update.message.reply_text(
+            "Список «Замовити» доступний лише власнику.",
+            reply_markup=build_reply_keyboard(role, need_registration=need_reg),
+        )
+        return
+    if ctx.app_storage is None:
+        await update.message.reply_text(
+            "Сховище не підключено.",
+            reply_markup=build_reply_keyboard(role, need_registration=need_reg),
+        )
+        return
+
+    from bot.to_order import format_pending_list
+
+    _set_awaiting_to_order(context, True)
+    items = ctx.app_storage.list_to_order_pending()
+    await update.message.reply_text(
+        format_pending_list(items)
+        + "\n\nНадішліть код (або кілька рядків кодів) — додаю в список.\n"
+        "Після замовлення: `1231 - заказан`\n\n"
+        f"«{BTN_TO_ORDER_CANCEL}» — вийти з режиму (список лишається).",
+        parse_mode=ParseMode.MARKDOWN,
+        reply_markup=build_reply_keyboard(
+            role, need_registration=need_reg, to_order_mode=True
+        ),
+    )
+
+
+async def to_order_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not update.message:
+        return
+    ctx: BotContext = context.bot_data["ctx"]
+    role, need_reg = _session_role(ctx, update)
+    _set_awaiting_to_order(context, False)
+    await update.message.reply_text(
+        "Режим списку «Замовити» вимкнено. Щоденне нагадування о 9:00 лишається.",
+        reply_markup=build_reply_keyboard(role, need_registration=need_reg),
+    )
+
+
+async def text_modes_handler(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> None:
+    """Маршрутизатор текстових режимів: наявність / замовити / «код - заказан»."""
+    if not update.message or not update.message.text:
+        return
+
+    if _is_awaiting_stock(context):
+        await stock_adjust_text_handler(update, context)
+        return
+
+    ctx: BotContext = context.bot_data["ctx"]
+    role, need_reg = _session_role(ctx, update)
+    text = update.message.text.strip()
+
+    from bot.to_order import parse_ordered_code, parse_to_order_codes, format_pending_list
+
+    ordered_code = parse_ordered_code(text)
+    if ordered_code and _can_manage_to_order(role) and ctx.app_storage is not None:
+        user_id = str(update.effective_user.id) if update.effective_user else ""
+        saved = ctx.app_storage.mark_to_order_ordered(
+            ordered_code, ordered_by_user_id=user_id
+        )
+        kb = build_reply_keyboard(
+            role,
+            need_registration=need_reg,
+            to_order_mode=_is_awaiting_to_order(context),
+        )
+        if saved:
+            left = ctx.app_storage.list_to_order_pending()
+            await update.message.reply_text(
+                f"✅ {saved['product_code']} — знято зі списку.\n"
+                f"Залишилось: {len(left)}",
+                reply_markup=kb,
+            )
+        else:
+            await update.message.reply_text(
+                f"Коду `{ordered_code}` немає в списку «Замовити».",
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=kb,
+            )
+        return
+
+    if not _is_awaiting_to_order(context):
+        return
+
+    if not _can_manage_to_order(role) or ctx.app_storage is None:
+        _set_awaiting_to_order(context, False)
+        await update.message.reply_text(
+            "Немає доступу до списку «Замовити».",
+            reply_markup=build_reply_keyboard(role, need_registration=need_reg),
+        )
+        return
+
+    codes = parse_to_order_codes(text)
+    if not codes:
+        await update.message.reply_text(
+            "Надішліть код товару (по одному в рядку) або `код - заказан`.",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=build_reply_keyboard(
+                role, need_registration=need_reg, to_order_mode=True
+            ),
+        )
+        return
+
+    user_id = str(update.effective_user.id) if update.effective_user else ""
+    added: list[str] = []
+    exists: list[str] = []
+    for code in codes:
+        try:
+            _entry, created = ctx.app_storage.add_to_order(
+                code, created_by_user_id=user_id
+            )
+        except ValueError:
+            continue
+        if created:
+            added.append(code)
+        else:
+            exists.append(code)
+
+    lines: list[str] = []
+    if added:
+        lines.append(f"✅ Додано ({len(added)}): " + ", ".join(added))
+    if exists:
+        lines.append(f"ℹ️ Вже в списку: " + ", ".join(exists))
+    if not lines:
+        lines.append("Нічого не додано.")
+    items = ctx.app_storage.list_to_order_pending()
+    lines.append("")
+    lines.append(format_pending_list(items))
+    await update.message.reply_text(
+        "\n".join(lines),
+        parse_mode=ParseMode.MARKDOWN,
+        reply_markup=build_reply_keyboard(
+            role, need_registration=need_reg, to_order_mode=True
+        ),
     )
 
 
@@ -562,12 +739,20 @@ async def reply_keyboard_handler(update: Update, context: ContextTypes.DEFAULT_T
     if text == BTN_STOCK_CANCEL:
         await stock_adjust_cancel(update, context)
         return
+    if text == BTN_TO_ORDER_CANCEL:
+        await to_order_cancel(update, context)
+        return
     if text == BTN_STOCK:
         await stock_adjust_start(update, context)
         return
-    # Інші кнопки меню виходять з режиму наявності
+    if text == BTN_TO_ORDER:
+        await to_order_start(update, context)
+        return
+    # Інші кнопки меню виходять з режимів введення
     if _is_awaiting_stock(context):
         _set_awaiting_stock(context, False)
+    if _is_awaiting_to_order(context):
+        _set_awaiting_to_order(context, False)
     if text == BTN_CHAT_ID:
         await chat_id_command(update, context)
         return

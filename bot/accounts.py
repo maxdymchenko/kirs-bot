@@ -279,6 +279,27 @@ class AppStorage:
 
             conn.execute(
                 """
+                CREATE TABLE IF NOT EXISTS to_order_queue (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    product_code TEXT NOT NULL,
+                    note TEXT NOT NULL DEFAULT '',
+                    status TEXT NOT NULL DEFAULT 'pending',
+                    created_at TEXT NOT NULL,
+                    created_by_user_id TEXT NOT NULL DEFAULT '',
+                    ordered_at TEXT,
+                    ordered_by_user_id TEXT NOT NULL DEFAULT ''
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_to_order_status
+                ON to_order_queue(status, id)
+                """
+            )
+
+            conn.execute(
+                """
                 CREATE TABLE IF NOT EXISTS staff (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     telegram_user_id TEXT NOT NULL UNIQUE,
@@ -2082,6 +2103,124 @@ class AppStorage:
             )
             conn.commit()
             return cur.rowcount > 0
+
+    @staticmethod
+    def normalize_to_order_code(code: str) -> str:
+        return " ".join(str(code or "").strip().split())
+
+    def _row_to_order(self, row: sqlite3.Row) -> dict[str, Any]:
+        return {
+            "id": int(row["id"]),
+            "product_code": row["product_code"] or "",
+            "note": row["note"] or "",
+            "status": row["status"] or "pending",
+            "created_at": row["created_at"],
+            "created_by_user_id": row["created_by_user_id"] or "",
+            "ordered_at": row["ordered_at"],
+            "ordered_by_user_id": row["ordered_by_user_id"] or "",
+        }
+
+    def list_to_order_pending(self, *, limit: int = 500) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT * FROM to_order_queue
+                WHERE status = 'pending'
+                ORDER BY id ASC
+                LIMIT ?
+                """,
+                (max(1, min(int(limit), 1000)),),
+            ).fetchall()
+        return [self._row_to_order(r) for r in rows]
+
+    def get_to_order_pending_by_code(self, code: str) -> dict[str, Any] | None:
+        key = self.normalize_to_order_code(code)
+        if not key:
+            return None
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT * FROM to_order_queue
+                WHERE status = 'pending'
+                  AND lower(product_code) = lower(?)
+                ORDER BY id ASC
+                LIMIT 1
+                """,
+                (key,),
+            ).fetchone()
+        return self._row_to_order(row) if row else None
+
+    def add_to_order(
+        self,
+        code: str,
+        *,
+        note: str = "",
+        created_by_user_id: str = "",
+    ) -> tuple[dict[str, Any], bool]:
+        """Додати код у чергу. Повертає (entry, created). Дублікат pending — created=False."""
+        key = self.normalize_to_order_code(code)
+        if not key:
+            raise ValueError("Порожній код товару")
+        existing = self.get_to_order_pending_by_code(key)
+        if existing:
+            return existing, False
+        now = _now()
+        with self._connect() as conn:
+            cur = conn.execute(
+                """
+                INSERT INTO to_order_queue (
+                    product_code, note, status, created_at, created_by_user_id
+                ) VALUES (?, ?, 'pending', ?, ?)
+                """,
+                (
+                    key,
+                    str(note or "").strip()[:500],
+                    now,
+                    str(created_by_user_id or "").strip()[:64],
+                ),
+            )
+            conn.commit()
+            row = conn.execute(
+                "SELECT * FROM to_order_queue WHERE id = ?",
+                (cur.lastrowid,),
+            ).fetchone()
+        return self._row_to_order(row), True
+
+    def mark_to_order_ordered(
+        self,
+        code: str,
+        *,
+        ordered_by_user_id: str = "",
+    ) -> dict[str, Any] | None:
+        """Позначити pending-код як замовлений. None, якщо не знайдено."""
+        key = self.normalize_to_order_code(code)
+        if not key:
+            return None
+        existing = self.get_to_order_pending_by_code(key)
+        if not existing:
+            return None
+        now = _now()
+        with self._connect() as conn:
+            conn.execute(
+                """
+                UPDATE to_order_queue
+                SET status = 'ordered',
+                    ordered_at = ?,
+                    ordered_by_user_id = ?
+                WHERE id = ?
+                """,
+                (
+                    now,
+                    str(ordered_by_user_id or "").strip()[:64],
+                    int(existing["id"]),
+                ),
+            )
+            conn.commit()
+            row = conn.execute(
+                "SELECT * FROM to_order_queue WHERE id = ?",
+                (int(existing["id"]),),
+            ).fetchone()
+        return self._row_to_order(row) if row else existing
 
     def is_phone_blacklisted(self, phone: str) -> bool:
         digits = self.normalize_client_phone(phone)
