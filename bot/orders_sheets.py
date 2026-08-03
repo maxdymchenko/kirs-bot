@@ -70,15 +70,15 @@ TTN_STATUS_LABELS = {
 
 
 def _fmt_money(value: Any) -> str:
+    """Суми для Sheet: десятковий роздільник — кома (напр. 510,23)."""
     try:
         n = float(str(value or "").replace(" ", "").replace(",", ".") or 0)
     except (TypeError, ValueError):
         return ""
     if abs(n) < 1e-9:
         return ""
-    if abs(n - round(n)) < 1e-6:
-        return str(int(round(n)))
-    return f"{n:.2f}".rstrip("0").rstrip(".")
+    # завжди 2 знаки після коми — як у зразку листа (660,00)
+    return f"{n:.2f}".replace(".", ",")
 
 
 def _norm_text(value: str) -> str:
