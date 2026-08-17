@@ -468,34 +468,27 @@ def find_marketplace_order(order_id: str, source_id: str = "auto") -> dict[str, 
     raise RuntimeError(f"Заказ {oid} не найден ни на одном магазине")
 
 
+def _real_location(raw: Any) -> str:
+    """Колонка J таблицы наличия: пусто и заглушка «Уточнение» не копируем."""
+    text = _trim(raw)
+    if not text:
+        return ""
+    folded = text.casefold()
+    if folded in {"-", "—", "–", "н/д", "нет", "немає"}:
+        return ""
+    if folded.startswith("уточнен"):
+        return ""
+    return text
+
+
 def _lookup_location(catalog: Any, code: str, color: str) -> str:
+    """Расположение из столбца J по коду товара. Нет значения в J — пустая ячейка."""
     if catalog is None or not _trim(code):
         return ""
     from bot.orders_sheets import _lookup_variant_meta
 
     _retail, location = _lookup_variant_meta(catalog, code, color)
-    return _trim(location)
-
-
-def _line_sale_amount(item: dict[str, Any], order_sum: Any, *, only_row: bool) -> str:
-    """Колонка I: сума позиції, якщо одна позиція — сума всього замовлення."""
-    qty = item.get("qty") or 1
-    try:
-        qty_n = max(1, int(float(qty)))
-    except (TypeError, ValueError):
-        qty_n = 1
-    line = _fmt_money(item.get("retail"))
-    if line and qty_n > 1:
-        try:
-            unit = float(str(item.get("retail") or "").replace(" ", "").replace(",", "."))
-            line = _fmt_money(unit * qty_n)
-        except (TypeError, ValueError):
-            pass
-    if line:
-        return line
-    if only_row:
-        return _fmt_money(order_sum)
-    return _fmt_money(order_sum) if order_sum else ""
+    return _real_location(location)
 
 
 def build_sheet_rows(
@@ -508,15 +501,12 @@ def build_sheet_rows(
     if not items:
         items = [{"name": "", "code": "", "color": "", "qty": 1, "retail": ""}]
     note = _trim(comment)
-    only_row = len(items) == 1
+    sale = _fmt_money(mapped.get("order_sum"))
     rows = []
     for item in items:
         code = _trim(item.get("code"))
         color = _trim(item.get("color"))
         location = _lookup_location(catalog, code, color)
-        sale = _line_sale_amount(item, mapped.get("order_sum"), only_row=only_row)
-        if not sale:
-            sale = _fmt_money(mapped.get("order_sum"))
         rows.append(
             [
                 mapped.get("date") or "",
