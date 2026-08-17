@@ -48,13 +48,42 @@ SOURCES = [
 ]
 
 
+def _as_text(value: Any, *keys: str, _depth: int = 0) -> str:
+    """Строка для листа: словари не сериализуем, берём человекочитаемое поле."""
+    if _depth > 4 or value is None or isinstance(value, bool):
+        return ""
+    if isinstance(value, dict):
+        search = keys or (
+            "name_ua",
+            "city_name",
+            "full_address",
+            "address",
+            "title",
+            "name",
+            "number",
+            "label",
+        )
+        for key in search:
+            text = _as_text(value.get(key), _depth=_depth + 1)
+            if text:
+                return text
+        return ""
+    if isinstance(value, (list, tuple)):
+        for item in value:
+            text = _as_text(item, *keys, _depth=_depth + 1)
+            if text:
+                return text
+        return ""
+    return str(value).strip()
+
+
 def _trim(value: Any) -> str:
-    return str(value or "").strip()
+    return _as_text(value)
 
 
 def _pick(*values: Any) -> str:
     for value in values:
-        text = _trim(value)
+        text = _as_text(value)
         if text:
             return text
     return ""
@@ -104,7 +133,21 @@ def _payment_label(raw: Any) -> str:
         )
     ):
         return "НАЛОЖКА"
-    if any(x in t for x in ("карт", "card", "online", "оплач")):
+    if any(
+        x in t
+        for x in (
+            "карт",
+            "card",
+            "online",
+            "оплач",
+            "apple",
+            "google pay",
+            "gpay",
+            "privat",
+            "liqpay",
+            "portmone",
+        )
+    ):
         return "КАРТА"
     return _trim(raw).upper()
 
@@ -218,8 +261,15 @@ def _map_prom(order: dict[str, Any], source: dict[str, str]) -> dict[str, Any]:
         )
         or "НП",
         "client": _client_line(
-            city=_pick(addr_obj.get("city"), delivery_data.get("city_name")),
-            place=_pick(addr_obj.get("warehouse"), delivery_data.get("warehouse"), addr_text),
+            city=_pick(
+                _as_text(addr_obj.get("city"), "name_ua", "city_name", "title", "name"),
+                delivery_data.get("city_name"),
+            ),
+            place=_pick(
+                _as_text(addr_obj.get("warehouse"), "name", "number", "title"),
+                _as_text(delivery_data.get("warehouse"), "name", "number", "title"),
+                addr_text,
+            ),
             name=name,
             phone=_pick(order.get("phone"), order.get("client_phone")),
         ),
@@ -300,7 +350,10 @@ def _map_rozetka(content: dict[str, Any], source: dict[str, str]) -> dict[str, A
         )
         or "НП",
         "client": _client_line(
-            city=_pick(delivery.get("city"), delivery.get("city_title")),
+            city=_pick(
+                _as_text(delivery.get("city"), "name_ua", "city_name", "title", "name"),
+                delivery.get("city_title"),
+            ),
             place=_pick(place, delivery.get("place_number"), delivery.get("delivery_service_name")),
             name=name,
             phone=_pick(
@@ -348,7 +401,12 @@ def _map_kasta(order: dict[str, Any], source: dict[str, str]) -> dict[str, Any]:
     delivery = order.get("delivery_properties") if isinstance(order.get("delivery_properties"), dict) else {}
     city_obj = addr.get("city") if isinstance(addr.get("city"), dict) else {}
     wh = addr.get("warehouse") if isinstance(addr.get("warehouse"), dict) else {}
-    items_src = _as_list(order.get("ordered_items")) or _as_list(order.get("items"))
+    items_src = (
+        _as_list(order.get("ordered_items"))
+        or _as_list(order.get("items"))
+        or _as_list(order.get("cancelled_items"))
+        or _as_list(order.get("returned_items"))
+    )
     items = []
     for p in items_src:
         if not isinstance(p, dict):
@@ -359,12 +417,21 @@ def _map_kasta(order: dict[str, Any], source: dict[str, str]) -> dict[str, Any]:
             barcode[0] if isinstance(barcode, list) and barcode else "",
             p.get("unique_sku_id"),
         )
+        try:
+            qty = int(float(p.get("quantity") or 0))
+        except (TypeError, ValueError):
+            qty = 0
+        if qty <= 0:
+            try:
+                qty = int(float(p.get("original_quantity") or 1))
+            except (TypeError, ValueError):
+                qty = 1
         items.append(
             {
                 "name": _pick(p.get("kind"), p.get("name"), p.get("title")),
                 "code": code,
                 "color": _pick(p.get("color"), p.get("kasta_color"), p.get("size")),
-                "qty": max(1, int(p.get("quantity") or p.get("original_quantity") or 1)),
+                "qty": max(1, qty),
                 "retail": p.get("paid_price") or p.get("new_price"),
             }
         )
