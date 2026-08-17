@@ -42,3 +42,17 @@ services:
         sync: false
       - key: NOVA_POSHTA_API_KEY
         sync: false
+      - key: ORDERS_EXT_TOKEN
+        sync: false
+      - key: ROZETKA_API_TOKEN
+        sync: false
+      - key: KASTA_API_TOKEN
+        sync: false
+      - key: PROM_KIRS_TOKEN
+        sync: false
+      - key: PROM_SUMKA_TOKEN
+        sync: false
+      - key: PROM_BRAVO_TOKEN
+        sync: false
+      - key: PROM_PRO100_TOKEN
+        sync: false

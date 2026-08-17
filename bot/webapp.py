@@ -9,6 +9,7 @@ import re
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -272,6 +273,13 @@ class GeneralSettingsUpdateRequest(BaseModel):
     orders_sheet_title: str = Field("Заказы", max_length=80)
 
 
+class ExtOrderWriteRequest(BaseModel):
+    orderId: str = Field("", max_length=64)
+    externalId: str = Field("", max_length=64)
+    sourceId: str = Field("auto", max_length=32)
+    comment: str = Field("", max_length=1000)
+
+
 def _apply_dropper_discount(price_raw: str, percent: float) -> tuple[str, str | None]:
     """Повертає (ціна_для_показу, оригінал_або_None)."""
     if not percent or percent <= 0:
@@ -295,6 +303,12 @@ def create_web_app(
     app_storage: AppStorage | None = None,
 ) -> FastAPI:
     app = FastAPI(title="Kirs Mini App")
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
     np_client = NovaPoshtaClient()
     app_settings = settings
     storage = app_storage or AppStorage()
@@ -426,6 +440,59 @@ def create_web_app(
             "notifications_max_id": notif_max_id,
             "notifications_unprocessed": unprocessed,
         }
+
+    def _require_ext_token(request: Request) -> None:
+        expected = (os.getenv("ORDERS_EXT_TOKEN") or "").strip()
+        if not expected:
+            raise HTTPException(
+                status_code=503,
+                detail="ORDERS_EXT_TOKEN не задано на Render",
+            )
+        header = request.headers.get("authorization") or ""
+        token = header[7:].strip() if header.lower().startswith("bearer ") else ""
+        if token != expected:
+            raise HTTPException(status_code=401, detail="Неверный токен расширения")
+
+    @app.get("/api/ext/sources")
+    async def ext_sources(request: Request) -> dict:
+        _require_ext_token(request)
+        from bot.marketplace_ext import SOURCES, enabled_sources
+
+        enabled_ids = {s["id"] for s in enabled_sources()}
+        return {
+            "ok": True,
+            "sources": [
+                {"id": "auto", "label": "Авто (все магазины)"},
+                *[
+                    {
+                        "id": s["id"],
+                        "label": s["label"],
+                        "configured": s["id"] in enabled_ids,
+                    }
+                    for s in SOURCES
+                ],
+            ],
+        }
+
+    @app.post("/api/ext/order/write")
+    async def ext_order_write(payload: ExtOrderWriteRequest, request: Request) -> dict:
+        _require_ext_token(request)
+        from bot.marketplace_ext import write_marketplace_order
+
+        order_id = (payload.orderId or payload.externalId or "").strip()
+        try:
+            return await asyncio.to_thread(
+                write_marketplace_order,
+                storage,
+                order_id=order_id,
+                source_id=payload.sourceId or "auto",
+                comment=payload.comment or "",
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except Exception as exc:
+            logger.exception("ext order write failed")
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     @app.get("/api/session")
     async def session(
