@@ -108,19 +108,41 @@ def _payment_label(raw: Any) -> str:
     return _trim(raw).upper()
 
 
-def _carrier_label(raw: Any) -> str:
-    t = _trim(raw).lower()
+def _carrier_label(*raws: Any) -> str:
+    t = " ".join(_trim(x).lower() for x in raws if _trim(x))
     if not t:
         return ""
-    if "rozetka" in t or "rmp" in t or "rz-delivery" in t:
-        return "Rozetka"
-    if "meest" in t:
+    if any(
+        m in t
+        for m in (
+            "rozetka",
+            "розетк",
+            "rmp",
+            "rz-delivery",
+            "rz_delivery",
+            "w2w",
+            "warehouse to warehouse",
+        )
+    ):
+        return "Розетка"
+    if any(
+        m in t
+        for m in (
+            "novaposhta",
+            "nova_poshta",
+            "nova-poshta",
+            "nova poshta",
+        )
+    ) or ("нов" in t and ("почт" in t or "пошт" in t)) or t in {
+        "np",
+        "нп",
+    } or t.startswith("np ") or t.startswith("нп "):
+        return "НП"
+    if "meest" in t or "микст" in t:
         return "Meest"
     if "укрпошт" in t or "ukrposhta" in t:
         return "Укрпошта"
-    if "нова" in t or t in {"np", "novaposhta"} or "нова пошта" in t:
-        return "НП"
-    return _trim(raw)
+    return ""
 
 
 def _person_name(obj: dict[str, Any] | None) -> str:
@@ -188,11 +210,10 @@ def _map_prom(order: dict[str, Any], source: dict[str, str]) -> dict[str, Any]:
         "date": _fmt_date(order.get("date_created") or order.get("date")),
         "payment": _payment_label(_pick(payment.get("name"), payment.get("type"), order.get("payment_type"))),
         "carrier": _carrier_label(
-            _pick(
-                delivery_data.get("type"),
-                delivery_data.get("provider"),
-                delivery.get("name") if isinstance(delivery, dict) else "",
-            )
+            delivery_data.get("type"),
+            delivery_data.get("provider"),
+            delivery.get("name") if isinstance(delivery, dict) else "",
+            delivery.get("shipping_service") if isinstance(delivery, dict) else "",
         )
         or "НП",
         "client": _client_line(
@@ -271,7 +292,10 @@ def _map_rozetka(content: dict[str, Any], source: dict[str, str]) -> dict[str, A
             _pick(content.get("payment_type_name"), content.get("payment_type"))
         ),
         "carrier": _carrier_label(
-            _pick(service.get("name"), delivery.get("delivery_service_name"), content.get("ttn"))
+            service.get("name"),
+            service.get("type"),
+            delivery.get("delivery_service_name"),
+            content.get("ttn"),
         )
         or "НП",
         "client": _client_line(
@@ -354,7 +378,7 @@ def _map_kasta(order: dict[str, Any], source: dict[str, str]) -> dict[str, Any]:
         "payment": _payment_label(
             _pick(order.get("requested_payment_method"), order.get("card_payment_state"))
         ),
-        "carrier": _carrier_label(_pick(delivery.get("type"), order.get("courier_type"))) or "НП",
+        "carrier": _carrier_label(delivery.get("type"), order.get("courier_type")) or "НП",
         "client": _client_line(
             city=_pick(city_obj.get("name")),
             place=_pick(wh.get("name"), addr.get("street")),
