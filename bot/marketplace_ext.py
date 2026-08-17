@@ -18,6 +18,7 @@ from bot.accounts import AppStorage
 from bot.orders_sheets import (
     append_order_rows,
     find_sheet_rows_by_order_number,
+    replace_order_rows,
     _fmt_money,
     _open_orders_worksheet,
 )
@@ -569,22 +570,25 @@ def write_marketplace_order(
     ws = _open_orders_worksheet(storage)
     existing = find_sheet_rows_by_order_number(ws, mapped["order_id"])
     if existing:
+        written = replace_order_rows(ws, existing, rows)
         return {
             "ok": True,
             "already": True,
+            "updated": True,
             "source": {"id": mapped["source_id"], "label": mapped["source_label"]},
             "orderId": mapped["order_id"],
             "preview": preview_rows(rows),
-            "rows": existing,
+            "rows": written,
             "message": (
-                f"Заказ {mapped['order_id']} уже есть в таблице "
-                f"(строки {', '.join(str(x) for x in existing)})"
+                f"Перезаписано заказ {mapped['order_id']} "
+                f"в строках {', '.join(str(x) for x in written)}"
             ),
         }
     written = append_order_rows(ws, rows)
     return {
         "ok": True,
         "already": False,
+        "updated": False,
         "source": {"id": mapped["source_id"], "label": mapped["source_label"]},
         "orderId": mapped["order_id"],
         "preview": preview_rows(rows),

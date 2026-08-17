@@ -469,6 +469,55 @@ def update_rows_values(
     ws.batch_update(data, value_input_option="USER_ENTERED")
 
 
+def replace_order_rows(
+    ws: gspread.Worksheet,
+    existing: list[int],
+    rows: list[list[Any]],
+) -> list[int]:
+    """Перезаписати замовлення в тих самих рядках таблиці.
+
+    Колонки J / P / Q (дроп-ціна, чек, розрахунок) зберігаємо, якщо вже заповнені.
+    Якщо позицій стало більше — зайві рядки в кінець листа.
+    Якщо менше — зайві старі рядки очищаємо повністю.
+    """
+    if not rows:
+        return []
+    existing = [int(n) for n in existing if n]
+    patched = [list(r) for r in rows]
+    for r in patched:
+        while len(r) < 18:
+            r.append("")
+
+    keep = min(len(existing), len(patched))
+    if keep:
+        fetched = ws.batch_get([f"A{n}:R{n}" for n in existing[:keep]])
+        for i, block in enumerate(fetched):
+            old = block[0] if block else []
+            while len(old) < 18:
+                old.append("")
+            for col in (9, 15, 16):
+                prev = str(old[col] or "").strip()
+                if prev:
+                    patched[i][col] = old[col]
+
+    written: list[int] = []
+    if existing:
+        update_rows_values(ws, existing[:keep], patched[:keep])
+        written.extend(existing[:keep])
+        leftover = existing[keep:]
+        if leftover:
+            ws.batch_update(
+                [
+                    {"range": f"A{n}:R{n}", "values": [[""] * 18]}
+                    for n in leftover
+                ],
+                value_input_option="USER_ENTERED",
+            )
+    if len(patched) > keep:
+        written.extend(append_order_rows(ws, patched[keep:]))
+    return written
+
+
 def update_lifecycle_columns(
     ws: gspread.Worksheet,
     row_numbers: list[int],
