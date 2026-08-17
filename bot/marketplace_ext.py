@@ -203,6 +203,7 @@ def _map_prom(order: dict[str, Any], source: dict[str, str]) -> dict[str, Any]:
         ),
         "ttn": _pick(delivery_data.get("declaration_number"), order.get("declaration_id"), order.get("ttn")),
         "status": _pick(order.get("status_name"), order.get("status")),
+        "order_sum": order.get("full_price") or order.get("price") or order.get("price_with_special_offer"),
         "items": items,
     }
 
@@ -285,6 +286,10 @@ def _map_rozetka(content: dict[str, Any], source: dict[str, str]) -> dict[str, A
         ),
         "ttn": _pick(content.get("ttn"), delivery.get("ttn")),
         "status": _pick(content.get("status_text"), str(content.get("status") or "")),
+        "order_sum": content.get("cost_with_discount")
+        or content.get("cost")
+        or content.get("amount_with_discount")
+        or content.get("amount"),
         "items": items,
     }
 
@@ -358,6 +363,13 @@ def _map_kasta(order: dict[str, Any], source: dict[str, str]) -> dict[str, Any]:
         ),
         "ttn": _pick(delivery.get("declaration_number"), order.get("declaration_number")),
         "status": _pick(order.get("status"), last_st.get("type")),
+        "order_sum": last_st.get("amount")
+        or first_st.get("amount")
+        or sum(
+            float(str(it.get("retail") or 0).replace(",", ".") or 0)
+            * int(it.get("qty") or 1)
+            for it in items
+        ),
         "items": items,
     }
 
@@ -432,13 +444,55 @@ def find_marketplace_order(order_id: str, source_id: str = "auto") -> dict[str, 
     raise RuntimeError(f"Заказ {oid} не найден ни на одном магазине")
 
 
-def build_sheet_rows(mapped: dict[str, Any], comment: str = "") -> list[list[Any]]:
+def _lookup_location(catalog: Any, code: str, color: str) -> str:
+    if catalog is None or not _trim(code):
+        return ""
+    from bot.orders_sheets import _lookup_variant_meta
+
+    _retail, location = _lookup_variant_meta(catalog, code, color)
+    return _trim(location)
+
+
+def _line_sale_amount(item: dict[str, Any], order_sum: Any, *, only_row: bool) -> str:
+    """Колонка I: сума позиції, якщо одна позиція — сума всього замовлення."""
+    qty = item.get("qty") or 1
+    try:
+        qty_n = max(1, int(float(qty)))
+    except (TypeError, ValueError):
+        qty_n = 1
+    line = _fmt_money(item.get("retail"))
+    if line and qty_n > 1:
+        try:
+            unit = float(str(item.get("retail") or "").replace(" ", "").replace(",", "."))
+            line = _fmt_money(unit * qty_n)
+        except (TypeError, ValueError):
+            pass
+    if line:
+        return line
+    if only_row:
+        return _fmt_money(order_sum)
+    return _fmt_money(order_sum) if order_sum else ""
+
+
+def build_sheet_rows(
+    mapped: dict[str, Any],
+    comment: str = "",
+    *,
+    catalog: Any = None,
+) -> list[list[Any]]:
     items = mapped.get("items") or []
     if not items:
         items = [{"name": "", "code": "", "color": "", "qty": 1, "retail": ""}]
     note = _trim(comment)
+    only_row = len(items) == 1
     rows = []
     for item in items:
+        code = _trim(item.get("code"))
+        color = _trim(item.get("color"))
+        location = _lookup_location(catalog, code, color)
+        sale = _line_sale_amount(item, mapped.get("order_sum"), only_row=only_row)
+        if not sale:
+            sale = _fmt_money(mapped.get("order_sum"))
         rows.append(
             [
                 mapped.get("date") or "",
@@ -446,10 +500,10 @@ def build_sheet_rows(mapped: dict[str, Any], comment: str = "") -> list[list[Any
                 mapped.get("payment") or "",
                 mapped.get("carrier") or "",
                 _trim(item.get("name")),
-                _trim(item.get("code")),
-                _trim(item.get("color")),
+                code,
+                color,
                 item.get("qty") or 1,
-                _fmt_money(item.get("retail")),
+                sale,
                 "",
                 mapped.get("source_label") or "",
                 mapped.get("client") or "",
@@ -458,7 +512,7 @@ def build_sheet_rows(mapped: dict[str, Any], comment: str = "") -> list[list[Any
                 note,
                 "",
                 "",
-                "",
+                location,
             ]
         )
     return rows
@@ -494,9 +548,10 @@ def write_marketplace_order(
     order_id: str,
     source_id: str = "auto",
     comment: str = "",
+    catalog: Any = None,
 ) -> dict[str, Any]:
     mapped = find_marketplace_order(order_id, source_id)
-    rows = build_sheet_rows(mapped, comment)
+    rows = build_sheet_rows(mapped, comment, catalog=catalog)
     ws = _open_orders_worksheet(storage)
     existing = find_sheet_rows_by_order_number(ws, mapped["order_id"])
     if existing:

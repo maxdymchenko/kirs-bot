@@ -487,6 +487,7 @@ def create_web_app(
                 order_id=order_id,
                 source_id=payload.sourceId or "auto",
                 comment=payload.comment or "",
+                catalog=catalog,
             )
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
