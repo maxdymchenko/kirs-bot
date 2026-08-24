@@ -6517,10 +6517,51 @@ ${
     }
   }
 
+  const USER_AGREEMENT_URL = "/static/docs/user-agreement.html";
+
+  function openUserAgreement(event) {
+    if (event) {
+      event.preventDefault();
+      event.stopPropagation();
+    }
+    const absolute = new URL(USER_AGREEMENT_URL, window.location.origin).href;
+    try {
+      if (window.Telegram?.WebApp?.openLink) {
+        window.Telegram.WebApp.openLink(absolute);
+        return;
+      }
+    } catch (_) {
+      /* fall through */
+    }
+    window.open(absolute, "_blank", "noopener,noreferrer");
+  }
+
+  document.querySelectorAll("a.inline-doc-link").forEach((link) => {
+    link.setAttribute("href", USER_AGREEMENT_URL);
+    link.addEventListener("click", openUserAgreement);
+  });
+
+  const regAgreementAccepted = document.getElementById("regAgreementAccepted");
+  const registerSubmit = document.getElementById("registerSubmit");
+  function syncRegisterSubmitEnabled() {
+    if (!registerSubmit) return;
+    registerSubmit.disabled = !(regAgreementAccepted && regAgreementAccepted.checked);
+  }
+  if (regAgreementAccepted) {
+    regAgreementAccepted.addEventListener("change", syncRegisterSubmitEnabled);
+    syncRegisterSubmitEnabled();
+  }
+
   if (els.registerForm) {
     els.registerForm.addEventListener("submit", async (event) => {
       event.preventDefault();
       els.registerError.classList.add("hidden");
+      if (!regAgreementAccepted?.checked) {
+        els.registerError.textContent =
+          "Потрібно погодитись з Користувацькою угодою";
+        els.registerError.classList.remove("hidden");
+        return;
+      }
       const payload = {
         chat_id: currentTelegramChatId(),
         company_name: document.getElementById("regCompany").value.trim(),
@@ -6529,6 +6570,7 @@ ${
         comment: document.getElementById("regComment").value.trim(),
         user_id: currentTelegramUser().user_id,
         username: currentTelegramUser().username,
+        agreement_accepted: true,
       };
       try {
         const response = await fetch("/api/droppers/register", {

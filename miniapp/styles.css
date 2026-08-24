@@ -1340,6 +1340,17 @@ textarea {
   flex-shrink: 0;
 }
 
+.inline-doc-link {
+  color: var(--accent, #1a5fb4);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  font-weight: 600;
+}
+
+.inline-doc-link:active {
+  opacity: 0.85;
+}
+
 .requisites-box {
   background: #fff6d6;
   border: 1px solid #f0d98a;
