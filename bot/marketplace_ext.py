@@ -549,14 +549,16 @@ def _real_location(raw: Any) -> str:
     return text
 
 
-def _lookup_location(catalog: Any, code: str, color: str) -> str:
-    """Расположение из столбца J по коду товара. Нет значения в J — пустая ячейка."""
+def _lookup_item_catalog_meta(
+    catalog: Any, code: str, color: str
+) -> tuple[str, str]:
+    """Расположение (столбец J) и Название для CRM (столбец C) по коду товара."""
     if catalog is None or not _trim(code):
-        return ""
+        return "", ""
     from bot.orders_sheets import _lookup_variant_meta
 
-    _retail, location = _lookup_variant_meta(catalog, code, color)
-    return _real_location(location)
+    _retail, location, name = _lookup_variant_meta(catalog, code, color)
+    return _real_location(location), _trim(name)
 
 
 def build_sheet_rows(
@@ -574,14 +576,15 @@ def build_sheet_rows(
     for item in items:
         code = _trim(item.get("code"))
         color = _trim(item.get("color"))
-        location = _lookup_location(catalog, code, color)
+        location, catalog_name = _lookup_item_catalog_meta(catalog, code, color)
+        item_name = catalog_name or _trim(item.get("name"))
         rows.append(
             [
                 mapped.get("date") or "",
                 mapped.get("order_id") or "",
                 mapped.get("payment") or "",
                 mapped.get("carrier") or "",
-                _trim(item.get("name")),
+                item_name,
                 code,
                 color,
                 item.get("qty") or 1,

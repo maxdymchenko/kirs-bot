@@ -225,37 +225,65 @@ def sheet_settlement_label(storage: AppStorage, order: dict[str, Any]) -> str:
     return "очікує"
 
 
-def _lookup_variant_meta(catalog: Any, code: str, color: str) -> tuple[str, str]:
-    """Повертає (retail_price, location)."""
-    if catalog is None:
-        return "", ""
+def _digits_only(code: str) -> str:
+    """Только цифры без ведущих нулей для нечеткого сопоставления кодов."""
+    digits = re.sub(r"\D+", "", str(code or ""))
+    return digits.lstrip("0") or digits
+
+
+def _codes_match_lenient(v_code: str, query_code: str, catalog: Any = None) -> bool:
+    """Сопоставление кодов: точное, без ведущих нулей или только цифры (игнорируя буквы)."""
+    v_s = str(v_code or "").strip()
+    q_s = str(query_code or "").strip()
+    if not v_s or not q_s:
+        return False
+    if _norm_text(v_s) == _norm_text(q_s):
+        return True
+    if v_s.lstrip("0") == q_s.lstrip("0"):
+        return True
+    if catalog is not None:
+        try:
+            if catalog._codes_equal(v_s, q_s):
+                return True
+        except Exception:
+            pass
+    # Сопоставление по цифрам (буквы игнорируются)
+    v_digits = _digits_only(v_s)
+    q_digits = _digits_only(q_s)
+    if v_digits and q_digits and v_digits == q_digits:
+        return True
+    return False
+
+
+def _lookup_variant_meta(
+    catalog: Any, code: str, color: str
+) -> tuple[str, str, str]:
+    """Повертає (retail_price, location, name)."""
+    if catalog is None or not str(code or "").strip():
+        return "", "", ""
     try:
         variants = catalog.all_variants()
     except Exception:
         logger.exception("catalog all_variants failed for sheet enrich")
-        return "", ""
-    code_n = _norm_text(code)
+        return "", "", ""
     color_n = _norm_text(color)
     matches = []
     for v in variants:
-        if _norm_text(getattr(v, "code", "")) != code_n and str(
-            getattr(v, "code", "") or ""
-        ).lstrip("0") != str(code or "").lstrip("0"):
-            # soft: normalize leading zeros via catalog helper if available
-            try:
-                if not catalog._codes_equal(getattr(v, "code", ""), code):
-                    continue
-            except Exception:
-                continue
+        if not _codes_match_lenient(getattr(v, "code", ""), code, catalog):
+            continue
         matches.append(v)
     if not matches:
-        return "", ""
+        return "", "", ""
     if color_n:
         by_color = [v for v in matches if _norm_text(getattr(v, "color", "")) == color_n]
         if by_color:
             matches = by_color
     v = matches[0]
-    return str(getattr(v, "retail_price", "") or ""), str(getattr(v, "location", "") or "")
+    return (
+        str(getattr(v, "retail_price", "") or ""),
+        str(getattr(v, "location", "") or ""),
+        str(getattr(v, "name", "") or "").strip(),
+    )
 
 
 def build_sheet_rows(
@@ -310,12 +338,16 @@ def build_sheet_rows(
             continue
         code = str(item.get("code") or "").strip()
         color = str(item.get("color") or "").strip()
+        name = str(item.get("name") or "").strip()
         retail = str(item.get("retail_price") or "").strip()
         location = str(item.get("location") or "").strip()
-        if not retail or not location:
-            r2, loc2 = _lookup_variant_meta(catalog, code, color)
-            retail = retail or r2
-            location = location or loc2
+
+        r2, loc2, name2 = _lookup_variant_meta(catalog, code, color)
+        retail = retail or r2
+        location = location or loc2
+        if name2:
+            name = name2
+
         qty = max(1, int(item.get("qty") or 1))
         drop = _fmt_money(item.get("drop_price"))
         retail_s = _fmt_money(retail) if retail else str(retail or "")
@@ -325,7 +357,7 @@ def build_sheet_rows(
                 order_no,
                 payment,
                 carrier,
-                str(item.get("name") or "").strip(),
+                name,
                 code,
                 color,
                 qty,
