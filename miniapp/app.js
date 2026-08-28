@@ -5715,7 +5715,7 @@ ${
               <button type="button" class="owner-card-toggle" aria-expanded="false">
                 <div class="owner-card-head">
                   <div class="owner-card-title-row">
-                    <div class="owner-card-title">${escapeHtml(d.company_name || "")}</div>
+                    <div class="owner-card-title">${escapeHtml(dropperDisplayName(d) || "")}</div>
                     ${buyoutBadgeHtml(row.buyout)}
                   </div>
                   <div class="meta">Баланс: <b>${escapeHtml(formatMoney(row.balance || 0))}</b></div>
@@ -6037,6 +6037,16 @@ ${
 
   let ownerDroppersCache = [];
 
+  function dropperDisplayName(d) {
+    if (!d) return "";
+    const registered = String(d.company_name || d.chat_id || "").trim();
+    const custom = String(d.owner_title || "").trim();
+    if (custom && custom !== registered) {
+      return `${custom} (${registered})`;
+    }
+    return registered;
+  }
+
   function renderReferralLinkedList(refs) {
     const list = Array.isArray(refs) ? refs : [];
     if (!list.length) {
@@ -6047,7 +6057,7 @@ ${
         (r) => `
       <div class="referral-linked-item" data-referred-chat="${escapeHtml(r.chat_id || "")}">
         <div>
-          <div class="meta"><b>${escapeHtml(r.company_name || "")}</b></div>
+          <div class="meta"><b>${escapeHtml(dropperDisplayName(r) || "")}</b></div>
           <div class="meta-soft">${escapeHtml(r.phone || "")} · ${escapeHtml(r.chat_id || "")}</div>
         </div>
         <button type="button" class="btn secondary" data-referral-unlink title="Відвʼязати">✕</button>
@@ -6075,9 +6085,9 @@ ${
       .filter((d) => {
         if (!d || d.chat_id === referrerChat) return false;
         if (linked.has(d.chat_id)) return false;
-        const hay = `${d.company_name || ""} ${d.contact_name || ""} ${d.phone || ""} ${
-          d.chat_id || ""
-        }`.toLowerCase();
+        const hay = `${d.owner_title || ""} ${d.company_name || ""} ${d.contact_name || ""} ${
+          d.phone || ""
+        } ${d.chat_id || ""}`.toLowerCase();
         return hay.includes(q);
       })
       .slice(0, 8);
@@ -6093,7 +6103,7 @@ ${
       <button type="button" class="referral-search-hit" data-referral-pick="${escapeHtml(
         d.chat_id || ""
       )}">
-        <b>${escapeHtml(d.company_name || "")}</b>
+        <b>${escapeHtml(dropperDisplayName(d) || "")}</b>
         <span class="meta-soft">${escapeHtml(d.phone || "")} · ${escapeHtml(d.chat_id || "")}</span>
       </button>`
       )
@@ -6127,7 +6137,17 @@ ${
             </label>
             <button type="button" class="owner-card-toggle" aria-expanded="false">
               <div class="owner-card-head">
-                <h3 class="owner-card-title">${escapeHtml(d.company_name)}</h3>
+                <div class="owner-card-title-row">
+                  <h3 class="owner-card-title">${escapeHtml(dropperDisplayName(d))}</h3>
+                  <span class="owner-title-edit-btn" data-edit-dropper-title data-chat="${escapeHtml(
+                    d.chat_id
+                  )}" role="button" tabindex="0" title="Змінити назву для себе" aria-label="Змінити назву">
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                      <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path>
+                      <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path>
+                    </svg>
+                  </span>
+                </div>
                 <p class="meta">${escapeHtml(d.contact_name)} · ${escapeHtml(d.phone)}</p>
                 <p class="meta">chat_id: <b>${escapeHtml(d.chat_id)}</b></p>
                 <p class="meta">
@@ -6391,7 +6411,7 @@ ${
           .map(
             (d) =>
               `<option value="${escapeHtml(d.chat_id)}">${escapeHtml(
-                d.company_name || d.chat_id
+                dropperDisplayName(d) || d.chat_id
               )}</option>`
           )
           .join("");
@@ -7715,6 +7735,51 @@ ${
       if (event.target.closest("[data-broadcast-pick], .owner-card-pick")) {
         return;
       }
+
+      const editTitleBtn = event.target.closest("[data-edit-dropper-title]");
+      if (editTitleBtn && els.ownerDroppers.contains(editTitleBtn)) {
+        event.stopPropagation();
+        event.preventDefault();
+        const card = editTitleBtn.closest("[data-dropper-chat]");
+        if (!card) return;
+        const chatId =
+          editTitleBtn.getAttribute("data-chat") || card.getAttribute("data-dropper-chat");
+        const cached = ownerDroppersCache.find((x) => String(x.chat_id) === String(chatId));
+        const currentCustom = (cached && cached.owner_title) || "";
+        const currentRegistered = (cached && cached.company_name) || "";
+
+        const promptVal = window.prompt(
+          `Вкажіть вашу власну назву для «${currentRegistered}» (залиште порожнім, щоб показувати лише оригінал):`,
+          currentCustom
+        );
+        if (promptVal === null) return;
+        const newTitle = promptVal.trim();
+        editTitleBtn.style.pointerEvents = "none";
+        try {
+          const updated = await saveDropperSetting(chatId, { owner_title: newTitle });
+          if (cached) {
+            cached.owner_title =
+              updated && updated.owner_title !== undefined ? updated.owner_title : newTitle;
+          }
+          const titleEl = card.querySelector(".owner-card-title");
+          if (titleEl) {
+            titleEl.textContent = dropperDisplayName(
+              cached || {
+                company_name: currentRegistered,
+                owner_title: newTitle,
+                chat_id: chatId,
+              }
+            );
+          }
+          showToast("Назву дроппера оновлено");
+        } catch (err) {
+          showToast(err.message || "Не вдалося оновити назву");
+        } finally {
+          editTitleBtn.style.pointerEvents = "";
+        }
+        return;
+      }
+
       const toggle = event.target.closest(".owner-card-toggle");
       if (toggle && els.ownerDroppers.contains(toggle)) {
         const card = toggle.closest(".owner-card");

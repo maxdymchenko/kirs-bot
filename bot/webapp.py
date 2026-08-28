@@ -155,6 +155,7 @@ class DropperSettingsUpdateRequest(BaseModel):
     referral_program_enabled: bool | None = None
     referral_months: int | None = None
     owner_comment: str | None = None
+    owner_title: str | None = None
     credit_holidays_days: int | None = None
 
 
@@ -669,6 +670,7 @@ def create_web_app(
                 {
                     "chat_id": r.chat_id,
                     "company_name": r.company_name,
+                    "owner_title": r.owner_title,
                     "phone": r.phone,
                     "referral_expires_at": r.referral_expires_at or "",
                 }
@@ -678,7 +680,14 @@ def create_web_app(
             data["balance"] = storage.get_balance(d.id)
             if d.referred_by_dropper_id:
                 ref = storage.get_dropper_by_id(d.referred_by_dropper_id)
-                data["referred_by_name"] = ref.company_name if ref else ""
+                if ref:
+                    data["referred_by_name"] = (
+                        f"{ref.owner_title} ({ref.company_name})"
+                        if ref.owner_title and ref.owner_title != ref.company_name
+                        else ref.company_name
+                    )
+                else:
+                    data["referred_by_name"] = ""
             else:
                 data["referred_by_name"] = ""
             items.append(data)
@@ -1121,6 +1130,7 @@ def create_web_app(
             referral_program_enabled=payload.referral_program_enabled,
             referral_months=payload.referral_months,
             owner_comment=payload.owner_comment,
+            owner_title=payload.owner_title,
             credit_holidays_days=payload.credit_holidays_days,
         )
         if not dropper:

@@ -72,6 +72,7 @@ class Dropper:
     extra_discount_percent: float
     orders_disabled: bool
     owner_comment: str
+    owner_title: str
     credit_holidays_days: int
     credit_debt_started_at: str | None
     credit_holidays_blocked: bool
@@ -108,6 +109,7 @@ class Dropper:
             "extra_discount_percent": self.extra_discount_percent,
             "orders_disabled": self.orders_disabled,
             "owner_comment": self.owner_comment,
+            "owner_title": self.owner_title,
             "credit_holidays_days": self.credit_holidays_days,
             "credit_debt_started_at": self.credit_debt_started_at,
             "credit_holidays_blocked": self.credit_holidays_blocked,
@@ -130,11 +132,12 @@ class Dropper:
         }
 
     def to_public_dict(self) -> dict[str, Any]:
-        """Без owner_comment — для відповідей дропперу.
+        """Без owner_comment і owner_title — для відповідей дропперу.
         Якщо реферальна програма вимкнена — не віддаємо код/%/строк, щоб у UI не було згадок.
         """
         data = self.to_dict()
         data.pop("owner_comment", None)
+        data.pop("owner_title", None)
         if not self.referral_program_enabled:
             data["referral_code"] = ""
             data["referral_percent"] = 0
@@ -216,6 +219,7 @@ class AppStorage:
                 ("referred_by_dropper_id", "referred_by_dropper_id INTEGER"),
                 ("referral_percent", "referral_percent REAL NOT NULL DEFAULT 0"),
                 ("owner_comment", "owner_comment TEXT NOT NULL DEFAULT ''"),
+                ("owner_title", "owner_title TEXT NOT NULL DEFAULT ''"),
                 ("credit_holidays_days", "credit_holidays_days INTEGER NOT NULL DEFAULT 0"),
                 ("credit_debt_started_at", "credit_debt_started_at TEXT"),
                 ("credit_holidays_blocked", "credit_holidays_blocked INTEGER NOT NULL DEFAULT 0"),
@@ -456,6 +460,7 @@ class AppStorage:
             extra_discount_percent=float(self._row_get(row, "extra_discount_percent", 0) or 0),
             orders_disabled=bool(self._row_get(row, "orders_disabled", 0)),
             owner_comment=str(self._row_get(row, "owner_comment", "") or ""),
+            owner_title=str(self._row_get(row, "owner_title", "") or ""),
             credit_holidays_days=int(self._row_get(row, "credit_holidays_days", 0) or 0),
             credit_debt_started_at=(
                 str(self._row_get(row, "credit_debt_started_at") or "").strip() or None
@@ -867,6 +872,7 @@ class AppStorage:
         referral_program_enabled: bool | None = None,
         referral_months: int | None = None,
         owner_comment: str | None = None,
+        owner_title: str | None = None,
         credit_holidays_days: int | None = None,
         notify_shipping_events: bool | None = None,
     ) -> Dropper | None:
@@ -906,6 +912,8 @@ class AppStorage:
             fields["referral_program_enabled"] = 1 if referral_program_enabled else 0
         if owner_comment is not None:
             fields["owner_comment"] = str(owner_comment).strip()[:2000]
+        if owner_title is not None:
+            fields["owner_title"] = str(owner_title).strip()[:150]
         if credit_holidays_days is not None:
             fields["credit_holidays_days"] = max(0, int(credit_holidays_days))
         if notify_shipping_events is not None:
