@@ -1,6 +1,6 @@
 """Дайджест у групу упаковки: 12:00 і 14:00 (Київ).
 
-12:00 — усі замовлення в черзі «На пакування» (розбивка за розташуванням — пізніше).
+12:00 — усі замовлення в черзі «На пакування» (розбивка за градацією розташування на складі).
 14:00 — лише ті, що зʼявились після полудня (не були в списку 12:00).
 Якщо замовлень немає — повідомлення не надсилаємо.
 """
@@ -46,6 +46,81 @@ def _orders_word(n: int) -> str:
     return "замовлень"
 
 
+def _clean_location(raw: Any) -> str:
+    """Колонка J / розташування: пусто і заглушки типу «Уточнення» відсікаємо."""
+    if raw is None:
+        return ""
+    text = str(raw).strip()
+    if not text:
+        return ""
+    folded = text.casefold()
+    if folded in {"-", "—", "–", "н/д", "нет", "немає", "null", "none"}:
+        return ""
+    if folded.startswith("уточнен"):
+        return ""
+    return text
+
+
+def _extract_packing_items(
+    orders: list[dict[str, Any]],
+    catalog: Any = None,
+) -> tuple[list[dict[str, Any]], int]:
+    """Витягує всі товарні позиції для пакування з розкладкою по локаціях."""
+    all_items: list[dict[str, Any]] = []
+    total_qty = 0
+
+    for order in orders:
+        order_num = str(order.get("order_number") or order.get("id") or "—").strip()
+        payload = order.get("payload") if isinstance(order.get("payload"), dict) else {}
+        cart = payload.get("cart") if isinstance(payload.get("cart"), list) else []
+
+        if not cart:
+            all_items.append(
+                {
+                    "order_number": order_num,
+                    "name": "",
+                    "code": "",
+                    "color": "",
+                    "qty": 1,
+                    "location": "",
+                }
+            )
+            total_qty += 1
+            continue
+
+        for item in cart:
+            if not isinstance(item, dict):
+                continue
+            code = str(item.get("code") or "").strip()
+            name = str(item.get("name") or "").strip()
+            color = str(item.get("color") or "").strip()
+            qty = max(1, int(item.get("qty") or 1))
+            loc = _clean_location(item.get("location"))
+
+            if not loc and catalog is not None and code:
+                try:
+                    from bot.orders_sheets import _lookup_variant_meta
+
+                    _, loc_cat = _lookup_variant_meta(catalog, code, color)
+                    loc = _clean_location(loc_cat)
+                except Exception:
+                    pass
+
+            all_items.append(
+                {
+                    "order_number": order_num,
+                    "name": name,
+                    "code": code,
+                    "color": color,
+                    "qty": qty,
+                    "location": loc,
+                }
+            )
+            total_qty += qty
+
+    return all_items, total_qty
+
+
 def _slot_key(day: datetime, hour: int) -> str:
     return f"{day.date().isoformat()}T{hour:02d}"
 
@@ -59,22 +134,114 @@ def packing_orders(storage: AppStorage, *, limit: int = 500) -> list[dict[str, A
     return list_warehouse_queue(storage, stage="packing", limit=limit)
 
 
-def format_noon_digest(orders: list[dict[str, Any]]) -> str:
+def format_packing_digest_messages(
+    orders: list[dict[str, Any]],
+    locations_order: list[str] | None = None,
+    *,
+    catalog: Any = None,
+    is_noon: bool = True,
+    max_len: int = 3800,
+) -> list[str]:
+    """Формує структуровані повідомлення дайджесту пакування за градацією локацій."""
     count = len(orders)
-    return (
-        f"📦 На пакування (12:00)\n\n"
-        f"Замовлень: {count} {_orders_word(count)}.\n\n"
-        "Розбивка за розташуванням на складі — незабаром."
+    if not count:
+        return []
+
+    items, total_qty = _extract_packing_items(orders, catalog)
+    loc_order = [str(x).strip() for x in (locations_order or []) if str(x).strip()]
+
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for item in items:
+        loc = item["location"]
+        grouped.setdefault(loc, []).append(item)
+
+    order_map = {name.casefold(): idx for idx, name in enumerate(loc_order)}
+
+    def _sort_key(loc_name: str) -> tuple[int, int, str]:
+        if not loc_name:
+            return (2, 0, "")
+        folded = loc_name.casefold()
+        if folded in order_map:
+            return (0, order_map[folded], loc_name)
+        return (1, 0, folded)
+
+    sorted_locs = sorted(grouped.keys(), key=_sort_key)
+
+    title = "📦 На пакування (12:00)" if is_noon else "📦 Доповнення до пакування (14:00)"
+    subtitle = (
+        f"Замовлень: {count} {_orders_word(count)} · Всього: {total_qty} шт."
+        if is_noon
+        else f"Нових замовлень після 12:00: {count} {_orders_word(count)} · Всього: {total_qty} шт."
     )
 
+    blocks: list[str] = [f"{title}\n{subtitle}"]
 
-def format_afternoon_digest(orders: list[dict[str, Any]]) -> str:
-    count = len(orders)
-    return (
-        f"📦 Доповнення до пакування (14:00)\n\n"
-        f"Нових замовлень після 12:00: {count} {_orders_word(count)}.\n"
-        "Ці позиції не входили до списку о 12:00."
+    for loc in sorted_locs:
+        loc_items = grouped[loc]
+        loc_qty = sum(it["qty"] for it in loc_items)
+        loc_header = (
+            f"📍 {loc} ({loc_qty} шт):"
+            if loc
+            else f"📍 Без локації / Уточнення ({loc_qty} шт):"
+        )
+
+        lines = [loc_header]
+        for it in loc_items:
+            code = it["code"]
+            color = it["color"]
+            name = it["name"]
+            qty = it["qty"]
+            ord_num = it["order_number"]
+
+            details = []
+            if code:
+                details.append(f"Код: {code}")
+            if color:
+                details.append(color)
+            elif name and not code:
+                details.append(name[:40])
+
+            desc = " · ".join(details) if details else (name[:40] or "Товар")
+            lines.append(f"• {desc} — {qty} шт (№ {ord_num})")
+
+        blocks.append("\n".join(lines))
+
+    messages: list[str] = []
+    current_chunk = blocks[0]
+
+    for block in blocks[1:]:
+        if len(current_chunk) + len(block) + 2 > max_len:
+            messages.append(current_chunk.strip())
+            current_chunk = block
+        else:
+            current_chunk += "\n\n" + block
+
+    if current_chunk.strip():
+        messages.append(current_chunk.strip())
+
+    return messages
+
+
+def format_noon_digest(
+    orders: list[dict[str, Any]],
+    locations_order: list[str] | None = None,
+    catalog: Any = None,
+) -> str:
+    msgs = format_packing_digest_messages(
+        orders, locations_order, catalog=catalog, is_noon=True
     )
+    return "\n\n".join(msgs)
+
+
+def format_afternoon_digest(
+    orders: list[dict[str, Any]],
+    locations_order: list[str] | None = None,
+    catalog: Any = None,
+) -> str:
+    msgs = format_packing_digest_messages(
+        orders, locations_order, catalog=catalog, is_noon=False
+    )
+    return "\n\n".join(msgs)
 
 
 def _load_state(storage: AppStorage) -> dict[str, Any]:
@@ -168,6 +335,7 @@ async def run_packing_digest_pass(
     now: datetime | None = None,
     hour: int | None = None,
     force: bool = False,
+    catalog: Any = None,
 ) -> dict[str, Any]:
     now = now_kyiv(now)
     slot_hour = int(hour if hour is not None else now.hour)
@@ -196,10 +364,17 @@ async def run_packing_digest_pass(
 
     orders = packing_orders(storage)
     day = _day_key(now)
+    locations_order = storage.get_warehouse_locations_order()
 
     if slot_hour == HOUR_NOON:
         selected = orders
-        text = format_noon_digest(selected) if selected else ""
+        messages = (
+            format_packing_digest_messages(
+                selected, locations_order, catalog=catalog, is_noon=True
+            )
+            if selected
+            else []
+        )
         # навіть якщо 0 — зберігаємо порожній список, щоб 14:00 знала базу
         state.setdefault("noon_ids_by_day", {})[day] = [
             int(o["id"]) for o in selected if o.get("id") is not None
@@ -214,11 +389,17 @@ async def run_packing_digest_pass(
             for o in orders
             if o.get("id") is not None and int(o["id"]) not in noon_ids
         ]
-        text = format_afternoon_digest(selected) if selected else ""
+        messages = (
+            format_packing_digest_messages(
+                selected, locations_order, catalog=catalog, is_noon=False
+            )
+            if selected
+            else []
+        )
 
     stats["count"] = len(selected)
 
-    if not selected:
+    if not selected or not messages:
         # немає замовлень — без повідомлення, слот позначаємо виконаним
         state["sent"] = [*(state.get("sent") or []), key]
         _save_state(storage, state)
@@ -227,15 +408,17 @@ async def run_packing_digest_pass(
         return stats
 
     try:
-        result = notify(target, text)
-        if hasattr(result, "__await__"):
-            await result
+        for msg in messages:
+            result = notify(target, msg)
+            if hasattr(result, "__await__"):
+                await result
         state["sent"] = [*(state.get("sent") or []), key]
         _save_state(storage, state)
-        stats["sent"] = 1
+        stats["sent"] = len(messages)
     except Exception:
         stats["errors"] = 1
         logger.exception(
             "packing digest notify failed hour=%s chat=%s", slot_hour, target
         )
     return stats
+

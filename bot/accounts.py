@@ -2261,6 +2261,19 @@ class AppStorage:
                 "1RYNXnGbXdB0ve7pBy4KD-SdaKAaoLipiKC9vOeGfczE/edit"
             ),
             "orders_sheet_title": "Заказы",
+            "warehouse_locations_order": [
+                "1ком",
+                "2ком",
+                "2эт 1ком",
+                "2эт 2ком",
+                "3ком",
+                "4ком",
+                "5ком",
+                "офис проходная",
+                "склад большая комната",
+                "склад дальняя",
+                "склад проходная",
+            ],
         }
 
     @staticmethod
@@ -2333,6 +2346,16 @@ class AppStorage:
                 for row in (self._normalize_payment_requisite(x) for x in raw_req)
                 if row
             ]
+        raw_locs = merged.get("warehouse_locations_order")
+        if not isinstance(raw_locs, list):
+            merged["warehouse_locations_order"] = list(defaults.get("warehouse_locations_order") or [])
+        else:
+            locs_clean: list[str] = []
+            for item in raw_locs:
+                s = str(item or "").strip()
+                if s and s not in locs_clean:
+                    locs_clean.append(s[:100])
+            merged["warehouse_locations_order"] = locs_clean
         return merged
 
     def save_general_settings(self, payload: dict[str, Any]) -> dict[str, Any]:
@@ -2405,9 +2428,21 @@ class AppStorage:
         if not sheet_id:
             sheet_id = str(current.get("orders_spreadsheet_id") or "")
 
+        if "warehouse_locations_order" in payload:
+            raw_locs = payload.get("warehouse_locations_order")
+            locs_save: list[str] = []
+            if isinstance(raw_locs, list):
+                for item in raw_locs:
+                    s = str(item or "").strip()
+                    if s and s not in locs_save:
+                        locs_save.append(s[:100])
+        else:
+            locs_save = list(current.get("warehouse_locations_order") or [])
+
         saved = {
             "np_api_keys": np_keys,
             "payment_requisites": payment_requisites,
+            "warehouse_locations_order": locs_save,
             "sender_city": {
                 "label": str(city_in.get("label") or "").strip()[:200],
                 "city_ref": str(city_in.get("city_ref") or "").strip()[:64],
@@ -2459,6 +2494,13 @@ class AppStorage:
             for k in keys
             if isinstance(k, dict) and k.get("enabled") and str(k.get("api_key") or "").strip()
         ]
+
+    def get_warehouse_locations_order(self) -> list[str]:
+        settings = self.get_general_settings()
+        locs = settings.get("warehouse_locations_order")
+        if isinstance(locs, list):
+            return [str(x).strip() for x in locs if str(x).strip()]
+        return []
 
     def get_enabled_payment_requisites(self) -> list[dict[str, Any]]:
         """Лише реквізити з галочкою — те, що бачать дроппери."""

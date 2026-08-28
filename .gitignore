@@ -9,6 +9,7 @@ env/
 # Секреты
 .env
 Доступы.txt
+Environment Variables.txt
 *.json
 !package.json
 !tsconfig.json

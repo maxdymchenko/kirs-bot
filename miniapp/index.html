@@ -270,6 +270,22 @@
           </div>
 
           <div class="form-section">
+            <h3 class="section-title">Градація розташування на складі (маршрут збору)</h3>
+            <p class="hint">
+              Встановіть черговість складів / кімнат. Дайджест пакування о 12:00 та 14:00 для комірника буде згруповано та відсортовано за цим маршрутом, щоб збирати замовлення по порядку без зайвих переміщень.
+            </p>
+            <div id="warehouseLocationsList" class="locations-priority-list"></div>
+            <div class="locations-actions-row">
+              <input id="newLocationInput" type="text" placeholder="Назва кімнати / складу..." maxlength="100" />
+              <button type="button" class="btn primary" id="addLocationBtn">+ Додати</button>
+            </div>
+            <div id="catalogLocationsChipsWrap" class="quick-chips-wrap hidden">
+              <span class="hint" style="margin-bottom:6px; display:block">Додати з таблиці наявності:</span>
+              <div id="catalogLocationsChipsList" class="chips-row"></div>
+            </div>
+          </div>
+
+          <div class="form-section">
             <h3 class="section-title">Google Sheets (замовлення)</h3>
             <p class="hint">Лист «Заказы». Структура фіксована — у таблицю пізніше писатимемо всі замовлення.</p>
             <label class="field">

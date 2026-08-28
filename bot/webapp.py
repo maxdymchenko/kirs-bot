@@ -265,6 +265,7 @@ class GeneralSettingsUpdateRequest(BaseModel):
     owner_user_id: str = Field("", max_length=64)
     np_api_keys: list[dict] = Field(default_factory=list)
     payment_requisites: list[dict] = Field(default_factory=list)
+    warehouse_locations_order: list[str] = Field(default_factory=list)
     sender_city: dict = Field(default_factory=dict)
     sender_warehouse: dict = Field(default_factory=dict)
     parcel_defaults: dict = Field(default_factory=dict)
@@ -3045,8 +3046,25 @@ def create_web_app(
             webhook_url = f"{base}/api/np/webhook"
             if webhook_token:
                 webhook_url = f"{webhook_url}?token={webhook_token}"
+
+        catalog_locations: list[str] = []
+        if catalog is not None:
+            try:
+                from bot.marketplace_ext import _real_location
+
+                seen_locs: set[str] = set()
+                for v in catalog.all_variants():
+                    loc = _real_location(getattr(v, "location", ""))
+                    if loc and loc not in seen_locs:
+                        seen_locs.add(loc)
+                        catalog_locations.append(loc)
+                catalog_locations.sort()
+            except Exception:
+                logger.exception("Failed to collect catalog locations for owner settings")
+
         return {
             "settings": settings,
+            "catalog_locations": catalog_locations,
             "enabled_np_keys_count": len(enabled),
             "np_webhook_url": webhook_url,
             "np_webhook_token_set": bool(webhook_token),
@@ -3083,6 +3101,7 @@ def create_web_app(
             {
                 "np_api_keys": payload.np_api_keys,
                 "payment_requisites": payload.payment_requisites,
+                "warehouse_locations_order": payload.warehouse_locations_order,
                 "sender_city": payload.sender_city,
                 "sender_warehouse": payload.sender_warehouse,
                 "parcel_defaults": payload.parcel_defaults,
@@ -3100,6 +3119,7 @@ def create_web_app(
             "enabled_payment_requisites_count": len(
                 [r for r in saved.get("payment_requisites", []) if r.get("enabled")]
             ),
+            "warehouse_locations_count": len(saved.get("warehouse_locations_order") or []),
         }
 
     @app.get("/api/warehouse/queue")

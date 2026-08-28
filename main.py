@@ -201,6 +201,7 @@ async def main() -> None:
                     _np_notify,
                     chat_id=chat_id,
                     hour=hour,
+                    catalog=catalog,
                 )
                 logger.info("Packing digest: %s", stats)
                 delay, hour = seconds_until_next_digest_slot(allow_current_hour=False)

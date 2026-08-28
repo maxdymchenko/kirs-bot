@@ -114,6 +114,11 @@
     parcelDescription: document.getElementById("parcelDescription"),
     ordersSheetUrl: document.getElementById("ordersSheetUrl"),
     ordersSheetColumnsHint: document.getElementById("ordersSheetColumnsHint"),
+    warehouseLocationsList: document.getElementById("warehouseLocationsList"),
+    newLocationInput: document.getElementById("newLocationInput"),
+    addLocationBtn: document.getElementById("addLocationBtn"),
+    catalogLocationsChipsWrap: document.getElementById("catalogLocationsChipsWrap"),
+    catalogLocationsChipsList: document.getElementById("catalogLocationsChipsList"),
     balanceView: document.getElementById("balanceView"),
     balanceHero: document.getElementById("balanceHero"),
     balanceConditional: document.getElementById("balanceConditional"),
@@ -5019,6 +5024,8 @@ ${
   let generalSettingsState = {
     np_api_keys: [],
     payment_requisites: [],
+    warehouse_locations_order: [],
+    catalog_locations: [],
     sheet_columns: [],
   };
 
@@ -5197,7 +5204,82 @@ ${
     });
   }
 
-  function fillGeneralSettingsForm(settings, sheetColumns) {
+  function renderWarehouseLocations() {
+    if (!els.warehouseLocationsList) return;
+    const locs = generalSettingsState.warehouse_locations_order || [];
+    if (!locs.length) {
+      els.warehouseLocationsList.innerHTML = `<p class="hint" style="margin:4px 0">Список черговості порожній. Додайте кімнати вручну або натисніть на підказки нижче.</p>`;
+    } else {
+      els.warehouseLocationsList.innerHTML = locs
+        .map(
+          (loc, idx) => `
+      <div class="location-priority-item" data-loc-index="${idx}">
+        <span class="location-rank-badge">#${idx + 1}</span>
+        <span class="location-title" title="${escapeHtml(loc)}">${escapeHtml(loc)}</span>
+        <div class="location-btn-group">
+          <button type="button" class="loc-btn" data-loc-move="up" data-loc-idx="${idx}" title="Підняти вище" ${
+            idx === 0 ? "disabled" : ""
+          }>▲</button>
+          <button type="button" class="loc-btn" data-loc-move="down" data-loc-idx="${idx}" title="Опустити нижче" ${
+            idx === locs.length - 1 ? "disabled" : ""
+          }>▼</button>
+          <button type="button" class="loc-btn del" data-loc-remove="${idx}" title="Видалити">✕</button>
+        </div>
+      </div>`
+        )
+        .join("");
+    }
+    renderCatalogLocationChips();
+  }
+
+  function renderCatalogLocationChips() {
+    if (!els.catalogLocationsChipsWrap || !els.catalogLocationsChipsList) return;
+    const currentLocs = new Set(
+      (generalSettingsState.warehouse_locations_order || []).map((x) =>
+        String(x).trim().toLowerCase()
+      )
+    );
+    const available = (generalSettingsState.catalog_locations || []).filter(
+      (loc) => loc && !currentLocs.has(String(loc).trim().toLowerCase())
+    );
+    if (!available.length) {
+      els.catalogLocationsChipsWrap.classList.add("hidden");
+      els.catalogLocationsChipsList.innerHTML = "";
+      return;
+    }
+    els.catalogLocationsChipsWrap.classList.remove("hidden");
+    els.catalogLocationsChipsList.innerHTML = available
+      .map(
+        (loc) =>
+          `<button type="button" class="chip-tag" data-add-catalog-loc="${escapeHtml(
+            loc
+          )}">+ ${escapeHtml(loc)}</button>`
+      )
+      .join("");
+  }
+
+  function collectWarehouseLocationsFromDom() {
+    return (generalSettingsState.warehouse_locations_order || [])
+      .map((x) => String(x).trim())
+      .filter(Boolean);
+  }
+
+  function addLocationToGradation(rawName) {
+    const name = String(rawName || "").trim();
+    if (!name) return;
+    const list = [...(generalSettingsState.warehouse_locations_order || [])];
+    const exists = list.some((x) => x.toLowerCase() === name.toLowerCase());
+    if (exists) {
+      showToast(`«${name}» вже є в списку`);
+      return;
+    }
+    list.push(name);
+    generalSettingsState.warehouse_locations_order = list;
+    renderWarehouseLocations();
+    if (els.newLocationInput) els.newLocationInput.value = "";
+  }
+
+  function fillGeneralSettingsForm(settings, sheetColumns, catalogLocations) {
     generalSettingsState.np_api_keys = (settings.np_api_keys || []).map((k) => newNpKeyRow(k));
     if (!generalSettingsState.np_api_keys.length) {
       generalSettingsState.np_api_keys = [newNpKeyRow({ label: "Кабінет 1" })];
@@ -5210,9 +5292,18 @@ ${
         newPaymentRequisiteRow({ label: "ФОП / рахунок 1", kind: "fop" }),
       ];
     }
+    generalSettingsState.warehouse_locations_order = Array.isArray(
+      settings.warehouse_locations_order
+    )
+      ? [...settings.warehouse_locations_order]
+      : [];
+    if (Array.isArray(catalogLocations)) {
+      generalSettingsState.catalog_locations = [...catalogLocations];
+    }
     generalSettingsState.sheet_columns = sheetColumns || [];
     renderNpApiKeys();
     renderPaymentRequisites();
+    renderWarehouseLocations();
 
     const city = settings.sender_city || {};
     const wh = settings.sender_warehouse || {};
@@ -5267,7 +5358,11 @@ ${
       if (!response.ok) {
         throw new Error(typeof data.detail === "string" ? data.detail : "Помилка налаштувань");
       }
-      fillGeneralSettingsForm(data.settings || {}, data.sheet_columns || []);
+      fillGeneralSettingsForm(
+        data.settings || {},
+        data.sheet_columns || [],
+        data.catalog_locations || []
+      );
       if (els.npWebhookHint) {
         const url = String(data.np_webhook_url || "").trim();
         if (url) {
@@ -5294,6 +5389,7 @@ ${
       ...ownerAuthBody(),
       np_api_keys: collectNpApiKeysFromDom(),
       payment_requisites: collectPaymentRequisitesFromDom(),
+      warehouse_locations_order: collectWarehouseLocationsFromDom(),
       sender_city: {
         label: els.senderCity?.value?.trim() || "",
         city_ref: els.senderCityRef?.value?.trim() || "",
@@ -7126,15 +7222,21 @@ ${
         if (!response.ok) {
           throw new Error(typeof data.detail === "string" ? data.detail : "Помилка збереження");
         }
-        fillGeneralSettingsForm(data.settings || {}, generalSettingsState.sheet_columns || []);
+        fillGeneralSettingsForm(
+          data.settings || {},
+          generalSettingsState.sheet_columns || [],
+          generalSettingsState.catalog_locations || []
+        );
         activePaymentRequisites = (data.settings?.payment_requisites || []).filter(
           (r) => r.enabled
         );
         renderRequisitesDetails();
         if (els.generalSettingsOk) {
-          els.generalSettingsOk.textContent = `Збережено. Основних кабінетів НП: ${
-            data.enabled_np_keys_count || 0
-          }. Активних реквізитів: ${data.enabled_payment_requisites_count || 0}`;
+          els.generalSettingsOk.textContent = `Збережено. Локацій: ${
+            data.warehouse_locations_count ?? generalSettingsState.warehouse_locations_order?.length ?? 0
+          }. Кабінетів НП: ${data.enabled_np_keys_count || 0}. Активних реквізитів: ${
+            data.enabled_payment_requisites_count || 0
+          }`;
           els.generalSettingsOk.classList.remove("hidden");
         }
         showToast("Загальні налаштування збережено");
@@ -7143,6 +7245,69 @@ ${
           els.generalSettingsError.textContent = error.message || "Помилка";
           els.generalSettingsError.classList.remove("hidden");
         }
+      }
+    });
+  }
+
+  if (els.warehouseLocationsList) {
+    els.warehouseLocationsList.addEventListener("click", (event) => {
+      const upBtn = event.target.closest('[data-loc-move="up"]');
+      if (upBtn) {
+        const idx = Number(upBtn.getAttribute("data-loc-idx"));
+        if (idx > 0) {
+          const list = [...(generalSettingsState.warehouse_locations_order || [])];
+          const [item] = list.splice(idx, 1);
+          list.splice(idx - 1, 0, item);
+          generalSettingsState.warehouse_locations_order = list;
+          renderWarehouseLocations();
+        }
+        return;
+      }
+      const downBtn = event.target.closest('[data-loc-move="down"]');
+      if (downBtn) {
+        const idx = Number(downBtn.getAttribute("data-loc-idx"));
+        const list = [...(generalSettingsState.warehouse_locations_order || [])];
+        if (idx < list.length - 1) {
+          const [item] = list.splice(idx, 1);
+          list.splice(idx + 1, 0, item);
+          generalSettingsState.warehouse_locations_order = list;
+          renderWarehouseLocations();
+        }
+        return;
+      }
+      const delBtn = event.target.closest("[data-loc-remove]");
+      if (delBtn) {
+        const idx = Number(delBtn.getAttribute("data-loc-remove"));
+        const list = [...(generalSettingsState.warehouse_locations_order || [])];
+        list.splice(idx, 1);
+        generalSettingsState.warehouse_locations_order = list;
+        renderWarehouseLocations();
+        return;
+      }
+    });
+  }
+
+  if (els.addLocationBtn) {
+    els.addLocationBtn.addEventListener("click", () => {
+      addLocationToGradation(els.newLocationInput?.value);
+    });
+  }
+
+  if (els.newLocationInput) {
+    els.newLocationInput.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") {
+        event.preventDefault();
+        addLocationToGradation(els.newLocationInput?.value);
+      }
+    });
+  }
+
+  if (els.catalogLocationsChipsList) {
+    els.catalogLocationsChipsList.addEventListener("click", (event) => {
+      const chip = event.target.closest("[data-add-catalog-loc]");
+      if (chip) {
+        const loc = chip.getAttribute("data-add-catalog-loc");
+        addLocationToGradation(loc);
       }
     });
   }
