@@ -360,8 +360,75 @@ async def main() -> None:
             except asyncio.TimeoutError:
                 pass
 
+    async def sheet_tracking_loop() -> None:
+        """О 10:00 і 19:00 Київ — опитування статусів ТТН з перевізників та оновлення стовпця N у Google Sheet."""
+        from bot.sheet_tracking import (
+            run_sheet_tracking_sync,
+            seconds_until_next_tracking_slot,
+        )
+
+        await asyncio.sleep(40)
+        while not stop_event.is_set():
+            try:
+                delay, hour = seconds_until_next_tracking_slot(allow_current_hour=True)
+                if delay > 0:
+                    logger.info(
+                        "Sheet tracking sync: next %02d:00 in %.0f min",
+                        hour,
+                        delay / 60.0,
+                    )
+                    try:
+                        await asyncio.wait_for(stop_event.wait(), timeout=delay)
+                        break
+                    except asyncio.TimeoutError:
+                        pass
+                stats = await asyncio.to_thread(run_sheet_tracking_sync, app_storage)
+                if stats.get("updated_statuses", 0) > 0 or stats.get("checked_ttns", 0) > 0:
+                    logger.info("Sheet tracking sync (%02d:00): %s", hour, stats)
+                delay, hour = seconds_until_next_tracking_slot(allow_current_hour=False)
+                try:
+                    await asyncio.wait_for(stop_event.wait(), timeout=delay)
+                    break
+                except asyncio.TimeoutError:
+                    pass
+            except Exception:
+                logger.exception("Sheet tracking loop error")
+                try:
+                    await asyncio.wait_for(stop_event.wait(), timeout=300)
+                except asyncio.TimeoutError:
+                    pass
+
+    sheet_tracking_task = asyncio.create_task(
+        sheet_tracking_loop(), name="sheet-tracking"
+    )
     sheet_sync_task = asyncio.create_task(
         orders_sheet_sync_loop(), name="orders-sheet-sync"
+    )
+
+    async def prom_sync_loop() -> None:
+        """Щогодинна синхронізація залишків та цін з Prom.ua (Пром Кірс)."""
+        from bot.prom_sync import run_prom_sync_pass
+
+        await asyncio.sleep(60)
+        while not stop_event.is_set():
+            try:
+                stats = await asyncio.to_thread(
+                    run_prom_sync_pass,
+                    app_storage,
+                    catalog,
+                )
+                if not stats.get("skipped") and (stats.get("updated_items", 0) > 0 or stats.get("errors")):
+                    logger.info("Prom.ua sync pass: %s", stats)
+            except Exception:
+                logger.exception("Prom sync loop error")
+            try:
+                await asyncio.wait_for(stop_event.wait(), timeout=3600)
+                break
+            except asyncio.TimeoutError:
+                pass
+
+    prom_sync_task = asyncio.create_task(
+        prom_sync_loop(), name="prom-sync"
     )
     stop_task = asyncio.create_task(stop_event.wait(), name="stop")
 
@@ -376,7 +443,9 @@ async def main() -> None:
             to_order_task,
             stock_task,
             cleanup_task,
+            sheet_tracking_task,
             sheet_sync_task,
+            prom_sync_task,
         },
         return_when=asyncio.FIRST_COMPLETED,
     )
@@ -391,7 +460,9 @@ async def main() -> None:
         to_order_task,
         stock_task,
         cleanup_task,
+        sheet_tracking_task,
         sheet_sync_task,
+        prom_sync_task,
     ):
         if not task.done():
             task.cancel()

@@ -197,23 +197,102 @@ def _kit_components(code: str) -> list[str]:
     return parts
 
 
+_MULTI_COLOR_KEYWORDS = {
+    "разные цвета",
+    "разные цвет",
+    "разный цвет",
+    "разные",
+    "разный",
+    "різні кольори",
+    "різні колір",
+    "різний колір",
+    "різні",
+    "різний",
+    "всі кольори",
+    "все цвета",
+    "микс",
+    "мікс",
+    "mix",
+    "multi",
+    "мульти",
+    "разноцветный",
+    "разноцветные",
+    "різнокольоровий",
+    "різнокольорові",
+    "в ассортименте",
+    "в асортименті",
+    "ассортимент",
+    "асортимент",
+    "без выбора цвета",
+    "без вибору кольору",
+}
+
+
+def _is_multi_color(color: str) -> bool:
+    """Визначає, чи є колір збірним / загальним ('Разные цвета', 'Микс' тощо)."""
+    c = _norm_text(color)
+    if not c:
+        return False
+    if c in _MULTI_COLOR_KEYWORDS:
+        return True
+    return any(
+        c.startswith(prefix)
+        for prefix in (
+            "разн",
+            "різн",
+            "микс",
+            "мікс",
+            "mix",
+            "в ассортимент",
+            "в асортимент",
+            "разноцвет",
+            "різнокольор",
+        )
+    )
+
+
 def _atomic_stock_by_code(variants: list[ProductVariant]) -> dict[str, int | None]:
     """
     Наявність «простих» товарів (не комплектів) за кодом.
-    Сума по всіх рядках з цим кодом (різні кольори).
+    Враховує суму за унікальними кольорами (дублі одного кольору не дублюються,
+    рядки «різні кольори» не сумуються двічі).
     None = у таблиці немає числа по цьому коду.
     """
-    buckets: dict[str, list[int]] = {}
+    by_code: dict[str, list[ProductVariant]] = {}
     for v in variants:
         if _is_kit_code(v.code):
-            continue
-        if v.stock is None:
             continue
         key = _code_raw(v.code)
         if not key:
             continue
-        buckets.setdefault(key, []).append(int(v.stock))
-    return {key: sum(vals) for key, vals in buckets.items()}
+        by_code.setdefault(key, []).append(v)
+
+    result: dict[str, int | None] = {}
+    for key, items in by_code.items():
+        concrete_by_color: dict[str, int] = {}
+        multi_stocks: list[int] = []
+        has_any_stock = False
+
+        for v in items:
+            if v.stock is not None:
+                has_any_stock = True
+                stock_val = max(0, int(v.stock))
+                c_norm = _norm_text(v.color)
+                if _is_multi_color(v.color):
+                    multi_stocks.append(stock_val)
+                else:
+                    concrete_by_color[c_norm] = stock_val
+
+        if not has_any_stock:
+            result[key] = None
+        elif concrete_by_color:
+            result[key] = sum(concrete_by_color.values())
+        elif multi_stocks:
+            result[key] = max(multi_stocks)
+        else:
+            result[key] = 0
+
+    return result
 
 
 def _lookup_atomic_stock(
@@ -222,7 +301,6 @@ def _lookup_atomic_stock(
     raw = _code_raw(code)
     if raw in stock_map:
         return stock_map[raw]
-    # Fallback лише якщо точного коду немає (різний регістр / зайві пробіли вже в raw)
     norm = _normalize_code(code).casefold()
     if not norm:
         return None
@@ -233,21 +311,72 @@ def _lookup_atomic_stock(
     ]
     if not matches:
         return None
-    # Якщо кілька кодів зійшлись після зрізання нулів — беремо мінімум (безпечніше)
-    return min(int(x) for x in matches)
+    return min(int(x) for x in matches if x is not None) if any(x is not None for x in matches) else None
 
 
-def apply_component_stock_to_kits(
+def sync_catalog_stocks(
     variants: list[ProductVariant],
 ) -> tuple[list[ProductVariant], list[tuple[int, int]]]:
     """
-    Якщо складова = 0 → комплект з цим кодом теж 0.
-    Якщо складові знову в наявності → комплект = min(складових).
-    Повертає (variants, [(sheet_row, new_stock), ...]) для запису в таблицю.
+    Повна синхронізація залишків:
+    1. Дублі однакового коду і кольору — синхронізуються до однакового залишку.
+    2. «Різні кольори» — автоматично дорівнюють сумі залишків конкретних кольорів цього коду.
+    3. Комплекти ('405+625') — дорівнюють min(складових) (0 якщо хоча б одна складова 0).
+    Повертає (variants, [(sheet_row, new_stock), ...]).
     """
-    stock_map = _atomic_stock_by_code(variants)
     sheet_updates: list[tuple[int, int]] = []
 
+    # 1. Синхронізація дублів за (code, color) для простих товарів
+    atomic_by_code_color: dict[tuple[str, str], list[ProductVariant]] = {}
+    for v in variants:
+        if _is_kit_code(v.code):
+            continue
+        key = (_code_raw(v.code), _norm_text(v.color))
+        if not key[0]:
+            continue
+        atomic_by_code_color.setdefault(key, []).append(v)
+
+    for (c_raw, col_norm), rows in atomic_by_code_color.items():
+        if len(rows) > 1:
+            tracked = [v for v in rows if v.stock is not None]
+            if tracked:
+                target_stock = tracked[0].stock
+                for v in rows:
+                    if v.stock != target_stock:
+                        v.stock = target_stock
+                        if v.sheet_row > 0:
+                            sheet_updates.append((v.sheet_row, target_stock))
+
+    # 2. Перерахунок «Різні кольори» = сума конкретних кольорів
+    by_code: dict[str, list[ProductVariant]] = {}
+    for v in variants:
+        if _is_kit_code(v.code):
+            continue
+        key = _code_raw(v.code)
+        if not key:
+            continue
+        by_code.setdefault(key, []).append(v)
+
+    for key, items in by_code.items():
+        concrete_colors: dict[str, int] = {}
+        multi_rows: list[ProductVariant] = []
+        for v in items:
+            if _is_multi_color(v.color):
+                multi_rows.append(v)
+            else:
+                if v.stock is not None:
+                    concrete_colors[_norm_text(v.color)] = max(0, int(v.stock))
+
+        if multi_rows and concrete_colors:
+            total_concrete = sum(concrete_colors.values())
+            for v in multi_rows:
+                if v.stock != total_concrete:
+                    v.stock = total_concrete
+                    if v.sheet_row > 0:
+                        sheet_updates.append((v.sheet_row, total_concrete))
+
+    # 3. Комплекти
+    stock_map = _atomic_stock_by_code(variants)
     for v in variants:
         parts = _kit_components(v.code)
         if not parts:
@@ -271,7 +400,6 @@ def apply_component_stock_to_kits(
         elif part_stocks and not unknown:
             new_stock = min(part_stocks)
         elif part_stocks and unknown:
-            # Є відомі складові >0, але не всі — не чіпаємо, окрім випадку 0 вище
             continue
         else:
             continue
@@ -282,6 +410,13 @@ def apply_component_stock_to_kits(
                 sheet_updates.append((v.sheet_row, new_stock))
 
     return variants, sheet_updates
+
+
+def apply_component_stock_to_kits(
+    variants: list[ProductVariant],
+) -> tuple[list[ProductVariant], list[tuple[int, int]]]:
+    """Аліас для сумісності з попередніми викликами."""
+    return sync_catalog_stocks(variants)
 
 
 def _norm_text(value: str) -> str:
@@ -430,7 +565,13 @@ class CatalogService:
         b = _code_raw(right)
         if a and b and a == b:
             return True
-        return _normalize_code(left).casefold() == _normalize_code(right).casefold()
+        if _normalize_code(left).casefold() == _normalize_code(right).casefold():
+            return True
+        d_a = re.sub(r"\D+", "", str(left or "")).lstrip("0")
+        d_b = re.sub(r"\D+", "", str(right or "")).lstrip("0")
+        if d_a and d_b and d_a == d_b:
+            return True
+        return False
 
     def _find_atomic_rows(
         self,
@@ -456,44 +597,71 @@ class CatalogService:
         return rows
 
     def _available_on_rows(self, rows: list[ProductVariant]) -> int | None:
-        """Сума числових залишків; None якщо жоден рядок не трекає наявність."""
-        vals = [int(v.stock) for v in rows if v.stock is not None]
-        if not vals:
+        """Сума числових залишків за унікальними кольорами (дублі одного кольору не сумуються двічі)."""
+        tracked = [v for v in rows if v.stock is not None]
+        if not tracked:
             return None
-        return sum(vals)
+        by_color: dict[str, int] = {}
+        multi_stocks: list[int] = []
+        for v in tracked:
+            stock_val = max(0, int(v.stock or 0))
+            if _is_multi_color(v.color):
+                multi_stocks.append(stock_val)
+            else:
+                by_color[_norm_text(v.color)] = stock_val
+        if by_color:
+            return sum(by_color.values())
+        if multi_stocks:
+            return max(multi_stocks)
+        return 0
 
     def _decrement_rows(
-        self, rows: list[ProductVariant], qty: int
+        self, rows: list[ProductVariant], qty: int, *, allow_insufficient: bool = False
     ) -> list[tuple[int, int]]:
-        """Списати qty з рядків із числовим stock. Повертає [(sheet_row, new_stock)]."""
+        """
+        Списати qty з рядків:
+        - Усі дублі однакового кольору оновлюються синхронно до однакового нового залишку.
+        - Якщо передано рядки різних кольорів — списуємо по черзі з кольору з найбільшим залишком.
+        """
         need = max(0, int(qty or 0))
         if need <= 0:
             return []
         tracked = [v for v in rows if v.stock is not None]
         if not tracked:
             return []
-        available = sum(max(0, int(v.stock or 0)) for v in tracked)
-        if available < need:
+        available = self._available_on_rows(tracked) or 0
+        if available < need and not allow_insufficient:
             raise InsufficientStockError(
                 f"Недостатньо залишку (потрібно {need}, є {available})"
             )
-        # Спочатку рядки з більшим залишком
-        tracked.sort(key=lambda v: int(v.stock or 0), reverse=True)
+
+        by_color: dict[str, list[ProductVariant]] = {}
+        for v in tracked:
+            by_color.setdefault(_norm_text(v.color), []).append(v)
+
+        color_groups = sorted(
+            by_color.values(),
+            key=lambda grp: max(0, int(grp[0].stock or 0)),
+            reverse=True,
+        )
+
         updates: list[tuple[int, int]] = []
         left = need
-        for v in tracked:
+        for grp in color_groups:
             if left <= 0:
                 break
-            have = max(0, int(v.stock or 0))
+            have = max(0, int(grp[0].stock or 0))
             if have <= 0:
                 continue
             take = min(have, left)
             new_stock = have - take
-            v.stock = new_stock
-            if v.sheet_row > 0:
-                updates.append((v.sheet_row, new_stock))
+            for v in grp:
+                v.stock = new_stock
+                if v.sheet_row > 0:
+                    updates.append((v.sheet_row, new_stock))
             left -= take
-        if left > 0:
+
+        if left > 0 and not allow_insufficient:
             raise InsufficientStockError(
                 f"Недостатньо залишку (не списано {left} шт.)"
             )
@@ -553,7 +721,11 @@ class CatalogService:
             )
 
     def _consume_item(
-        self, variants: list[ProductVariant], item: dict
+        self,
+        variants: list[ProductVariant],
+        item: dict,
+        *,
+        allow_insufficient: bool = False,
     ) -> list[tuple[int, int]]:
         code = str(item.get("code") or "").strip().lstrip("'")
         qty = max(1, int(item.get("qty") or 1))
@@ -574,7 +746,11 @@ class CatalogService:
                     if not any(v.stock is not None for v in rows):
                         rows = self._find_atomic_rows(variants, part, color="", product_id="")
                     if any(v.stock is not None for v in rows):
-                        updates.extend(self._decrement_rows(rows, qty))
+                        updates.extend(
+                            self._decrement_rows(
+                                rows, qty, allow_insufficient=allow_insufficient
+                            )
+                        )
                 return updates
 
             rows = [
@@ -588,14 +764,22 @@ class CatalogService:
                 if by_id:
                     rows = by_id
             if any(v.stock is not None for v in rows):
-                updates.extend(self._decrement_rows(rows, qty))
+                updates.extend(
+                    self._decrement_rows(
+                        rows, qty, allow_insufficient=allow_insufficient
+                    )
+                )
             return updates
 
         rows = self._find_atomic_rows(
             variants, code, color=color, product_id=product_id
         )
         if any(v.stock is not None for v in rows):
-            updates.extend(self._decrement_rows(rows, qty))
+            updates.extend(
+                self._decrement_rows(
+                    rows, qty, allow_insufficient=allow_insufficient
+                )
+            )
         return updates
 
     def _load_variants_from_sheet(
@@ -669,7 +853,9 @@ class CatalogService:
                 return
             self._refresh_unlocked(sync_kits=True)
 
-    def consume_cart_stock(self, cart: list[dict]) -> dict:
+    def consume_cart_stock(
+        self, cart: list[dict], *, allow_insufficient: bool = False
+    ) -> dict:
         """
         Списати залишки після продажу.
         Комплект → мінус по кожній складовій, потім перерахунок комплектів.
@@ -684,13 +870,18 @@ class CatalogService:
             ws = client.open_by_key(self.spreadsheet_id).sheet1
             variants = self._load_variants_from_sheet(ws, client)
 
-            # Перевірка до списання
-            for item in items:
-                self._check_item_stock(variants, item)
+            # Перевірка до списання (якщо не allow_insufficient)
+            if not allow_insufficient:
+                for item in items:
+                    self._check_item_stock(variants, item)
 
             sheet_updates: list[tuple[int, int]] = []
             for item in items:
-                sheet_updates.extend(self._consume_item(variants, item))
+                sheet_updates.extend(
+                    self._consume_item(
+                        variants, item, allow_insufficient=allow_insufficient
+                    )
+                )
 
             variants, kit_updates = apply_component_stock_to_kits(variants)
             sheet_updates.extend(kit_updates)
@@ -701,9 +892,10 @@ class CatalogService:
             self._variants = variants
             self._loaded_at = time.time()
             logger.info(
-                "Списання наявності: items=%d sheet_rows=%d",
+                "Списання наявності: items=%d sheet_rows=%d allow_insufficient=%s",
                 len(items),
                 len({r for r, _ in sheet_updates}),
+                allow_insufficient,
             )
             return {
                 "ok": True,
@@ -760,20 +952,36 @@ class CatalogService:
     def _increment_rows(
         self, rows: list[ProductVariant], qty: int
     ) -> list[tuple[int, int]]:
+        """
+        Повернути qty на склад:
+        - Якщо передано рядки для конкретного кольору (з дублями) — збільшує на qty і оновлює всі дублі до однакового залишку.
+        - Якщо передано кілька кольорів — додає до групи кольору з найбільшим номером рядка в таблиці.
+        """
         need = max(0, int(qty or 0))
         if need <= 0:
             return []
         tracked = [v for v in rows if v.stock is not None]
         if not tracked:
             return []
-        # Повертаємо на рядок з найбільшим sheet_row / перший tracked
-        tracked.sort(key=lambda v: int(v.sheet_row or 0), reverse=True)
-        target = tracked[0]
-        new_stock = max(0, int(target.stock or 0)) + need
-        target.stock = new_stock
-        if target.sheet_row > 0:
-            return [(target.sheet_row, new_stock)]
-        return []
+
+        by_color: dict[str, list[ProductVariant]] = {}
+        for v in tracked:
+            by_color.setdefault(_norm_text(v.color), []).append(v)
+
+        target_group = max(
+            by_color.values(),
+            key=lambda grp: max(int(v.sheet_row or 0) for v in grp),
+        )
+
+        current_stock = max(0, int(target_group[0].stock or 0))
+        new_stock = current_stock + need
+        updates: list[tuple[int, int]] = []
+        for v in target_group:
+            v.stock = new_stock
+            if v.sheet_row > 0:
+                updates.append((v.sheet_row, new_stock))
+
+        return updates
 
     def restore_cart_stock(self, cart: list[dict]) -> dict:
         """Повернути залишки після скасування/редагування замовлення."""

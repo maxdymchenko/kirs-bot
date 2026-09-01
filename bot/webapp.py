@@ -273,6 +273,10 @@ class GeneralSettingsUpdateRequest(BaseModel):
     orders_spreadsheet_url: str = Field("", max_length=500)
     orders_spreadsheet_id: str = Field("", max_length=128)
     orders_sheet_title: str = Field("Заказы", max_length=80)
+    prom_api_token: str = Field("", max_length=200)
+    prom_sync_stock: bool = Field(False)
+    prom_sync_retail_price: bool = Field(False)
+    prom_sync_drop_price: bool = Field(False)
 
 
 class ExtOrderWriteRequest(BaseModel):
@@ -3118,6 +3122,10 @@ def create_web_app(
                 "orders_spreadsheet_url": payload.orders_spreadsheet_url,
                 "orders_spreadsheet_id": payload.orders_spreadsheet_id,
                 "orders_sheet_title": payload.orders_sheet_title,
+                "prom_api_token": payload.prom_api_token,
+                "prom_sync_stock": payload.prom_sync_stock,
+                "prom_sync_retail_price": payload.prom_sync_retail_price,
+                "prom_sync_drop_price": payload.prom_sync_drop_price,
             }
         )
         return {

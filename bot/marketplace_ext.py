@@ -566,12 +566,14 @@ def build_sheet_rows(
     comment: str = "",
     *,
     catalog: Any = None,
+    carrier_status: str = "",
 ) -> list[list[Any]]:
     items = mapped.get("items") or []
     if not items:
         items = [{"name": "", "code": "", "color": "", "qty": 1, "retail": ""}]
     note = _trim(comment)
     sale = _fmt_money(mapped.get("order_sum"))
+    status_label = _trim(carrier_status) or _trim(mapped.get("status"))
     rows = []
     for item in items:
         code = _trim(item.get("code"))
@@ -593,7 +595,7 @@ def build_sheet_rows(
                 mapped.get("source_label") or "",
                 mapped.get("client") or "",
                 mapped.get("ttn") or "",
-                mapped.get("status") or "",
+                status_label,
                 note,
                 "",
                 "",
@@ -636,7 +638,18 @@ def write_marketplace_order(
     catalog: Any = None,
 ) -> dict[str, Any]:
     mapped = find_marketplace_order(order_id, source_id)
-    rows = build_sheet_rows(mapped, comment, catalog=catalog)
+    ttn = _trim(mapped.get("ttn"))
+    carrier_status = ""
+    if ttn:
+        try:
+            from bot.sheet_tracking import lookup_single_ttn_status
+
+            carrier_status = lookup_single_ttn_status(storage, ttn)
+        except Exception:
+            pass
+    rows = build_sheet_rows(
+        mapped, comment, catalog=catalog, carrier_status=carrier_status
+    )
     ws = _open_orders_worksheet(storage)
     existing = find_sheet_rows_by_order_number(ws, mapped["order_id"])
     if existing:
@@ -655,6 +668,24 @@ def write_marketplace_order(
             ),
         }
     written = append_order_rows(ws, rows)
+
+    # Списання залишків з таблиці наявності для нового замовлення
+    stock_res = None
+    if catalog and hasattr(catalog, "consume_cart_stock"):
+        try:
+            stock_res = catalog.consume_cart_stock(
+                mapped.get("items") or [], allow_insufficient=True
+            )
+        except Exception:
+            logger.exception(
+                "Не вдалося списати залишки для замовлення маркетплейсу %s",
+                mapped.get("order_id"),
+            )
+
+    msg = f"Записано {len(rows)} стр. заказа {mapped['order_id']}"
+    if stock_res and stock_res.get("updated_rows"):
+        msg += f" (списано остатки в {stock_res['updated_rows']} стр. наличия)"
+
     return {
         "ok": True,
         "already": False,
@@ -663,5 +694,6 @@ def write_marketplace_order(
         "orderId": mapped["order_id"],
         "preview": preview_rows(rows),
         "rows": written,
-        "message": f"Записано {len(rows)} стр. заказа {mapped['order_id']}",
+        "stock": stock_res,
+        "message": msg,
     }

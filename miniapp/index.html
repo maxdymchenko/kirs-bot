@@ -286,6 +286,47 @@
           </div>
 
           <div class="form-section">
+            <h3 class="section-title">Синхронізація з Prom.ua (Пром Кірс)</h3>
+            <p class="hint">
+              Щогодинне оновлення залишків і цін на Prom.ua за ID товарів зі стовпця A таблиці наявності.
+            </p>
+            <label class="field">
+              <span class="field-label">API Токен Prom.ua</span>
+              <input id="promApiToken" type="password" placeholder="Введіть API токен з кабінету Prom..." autocomplete="off" />
+            </label>
+            <label class="setting-row toggle-row" style="margin-top:12px">
+              <span class="toggle-text">
+                Синхронізація залишків та наявності
+                <span class="setting-hint">
+                  Передає точну кількість товару зі стовпця F. Якщо залишок 0 або менше — статус «немає в наявності».
+                </span>
+              </span>
+              <input type="checkbox" id="promSyncStock" class="toggle-input" />
+              <span class="toggle-ui" aria-hidden="true"></span>
+            </label>
+            <label class="setting-row toggle-row" style="margin-top:12px">
+              <span class="toggle-text">
+                Оновлювати роздрібну ціну
+                <span class="setting-hint">
+                  Оновлює роздрібну ціну товару на Prom.ua зі стовпця H (Роздріб).
+                </span>
+              </span>
+              <input type="checkbox" id="promSyncRetailPrice" class="toggle-input" />
+              <span class="toggle-ui" aria-hidden="true"></span>
+            </label>
+            <label class="setting-row toggle-row" style="margin-top:12px">
+              <span class="toggle-text">
+                Оновлювати оптову / дроп-ціну
+                <span class="setting-hint">
+                  Оновлює оптову ціну товару на Prom.ua зі стовпця G (Дроп ціна) у блок «Показати оптові ціни» (від 5 шт.).
+                </span>
+              </span>
+              <input type="checkbox" id="promSyncDropPrice" class="toggle-input" />
+              <span class="toggle-ui" aria-hidden="true"></span>
+            </label>
+          </div>
+
+          <div class="form-section">
             <h3 class="section-title">Google Sheets (замовлення)</h3>
             <p class="hint">Лист «Заказы». Структура фіксована — у таблицю пізніше писатимемо всі замовлення.</p>
             <label class="field">

@@ -114,6 +114,10 @@
     parcelDescription: document.getElementById("parcelDescription"),
     ordersSheetUrl: document.getElementById("ordersSheetUrl"),
     ordersSheetColumnsHint: document.getElementById("ordersSheetColumnsHint"),
+    promApiToken: document.getElementById("promApiToken"),
+    promSyncStock: document.getElementById("promSyncStock"),
+    promSyncRetailPrice: document.getElementById("promSyncRetailPrice"),
+    promSyncDropPrice: document.getElementById("promSyncDropPrice"),
     warehouseLocationsList: document.getElementById("warehouseLocationsList"),
     newLocationInput: document.getElementById("newLocationInput"),
     addLocationBtn: document.getElementById("addLocationBtn"),
@@ -5344,6 +5348,10 @@ ${
         ? `<b>Колонки листа «Заказы»:</b> ${escapeHtml(cols.join(" · "))}`
         : "Колонки підвантажаться після збереження/відкриття.";
     }
+    if (els.promApiToken) els.promApiToken.value = settings.prom_api_token || "";
+    if (els.promSyncStock) els.promSyncStock.checked = Boolean(settings.prom_sync_stock);
+    if (els.promSyncRetailPrice) els.promSyncRetailPrice.checked = Boolean(settings.prom_sync_retail_price);
+    if (els.promSyncDropPrice) els.promSyncDropPrice.checked = Boolean(settings.prom_sync_drop_price);
   }
 
   async function loadGeneralSettings() {
@@ -5409,6 +5417,10 @@ ${
         description: els.parcelDescription?.value?.trim() || "Товар",
       },
       orders_spreadsheet_url: els.ordersSheetUrl?.value?.trim() || "",
+      prom_api_token: els.promApiToken?.value?.trim() || "",
+      prom_sync_stock: Boolean(els.promSyncStock?.checked),
+      prom_sync_retail_price: Boolean(els.promSyncRetailPrice?.checked),
+      prom_sync_drop_price: Boolean(els.promSyncDropPrice?.checked),
     };
   }
 

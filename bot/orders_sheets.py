@@ -86,9 +86,13 @@ def _norm_text(value: str) -> str:
 
 
 def sheet_status_label(order: dict[str, Any]) -> str:
+    payload = order.get("payload") or {}
+    np_text = str(payload.get("np_status_text") or "").strip()
+    if np_text:
+        return np_text
+
     if str(order.get("status") or "") == "cancelled":
         return "скасовано"
-    payload = order.get("payload") or {}
     ret = payload.get("dropper_return") if isinstance(payload.get("dropper_return"), dict) else None
     if ret and str(ret.get("status") or "") == "accepted":
         return "повернення підтверджено"
@@ -98,6 +102,8 @@ def sheet_status_label(order: dict[str, Any]) -> str:
             return "повернення: очікує отримання"
         if st == "awaiting_confirm":
             return "повернення: очікує підтвердження"
+    if payload.get("np_error") and not str(order.get("ttn_number") or payload.get("ttn_number") or "").strip():
+        return "помилка створення ТТН"
     ttn = str(order.get("ttn_status") or "").strip()
     return TTN_STATUS_LABELS.get(ttn, ttn or "—")
 

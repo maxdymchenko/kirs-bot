@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import calendar
 import logging
+import os
 import secrets
 import sqlite3
 from dataclasses import dataclass
@@ -2282,6 +2283,10 @@ class AppStorage:
                 "склад дальняя",
                 "склад проходная",
             ],
+            "prom_api_token": os.getenv("PROM_KIRS_TOKEN", ""),
+            "prom_sync_stock": False,
+            "prom_sync_retail_price": False,
+            "prom_sync_drop_price": False,
         }
 
     @staticmethod
@@ -2478,6 +2483,26 @@ class AppStorage:
                 or "Заказы"
             ).strip()[:80]
             or "Заказы",
+            "prom_api_token": str(
+                payload.get("prom_api_token")
+                if "prom_api_token" in payload
+                else current.get("prom_api_token") or ""
+            ).strip()[:200],
+            "prom_sync_stock": bool(
+                payload.get("prom_sync_stock")
+                if "prom_sync_stock" in payload
+                else current.get("prom_sync_stock")
+            ),
+            "prom_sync_retail_price": bool(
+                payload.get("prom_sync_retail_price")
+                if "prom_sync_retail_price" in payload
+                else current.get("prom_sync_retail_price")
+            ),
+            "prom_sync_drop_price": bool(
+                payload.get("prom_sync_drop_price")
+                if "prom_sync_drop_price" in payload
+                else current.get("prom_sync_drop_price")
+            ),
         }
         now = _now()
         with self._connect() as conn:
