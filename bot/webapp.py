@@ -300,6 +300,7 @@ class ExtManualOrderRequest(BaseModel):
     ttn: str = Field("", max_length=64)
     source: str = Field("Телефон", max_length=64)
     comment: str = Field("", max_length=1000)
+    retail: str = Field("", max_length=32)
     requireTtn: bool = False
 
 
@@ -562,6 +563,7 @@ def create_web_app(
                 ttn=payload.ttn or "",
                 source=payload.source or "Телефон",
                 comment=payload.comment or "",
+                retail=payload.retail or "",
                 catalog=catalog,
             )
         except ValueError as exc:

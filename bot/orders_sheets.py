@@ -51,6 +51,7 @@ COL_NOTE = 15
 COL_RECEIPT = 16
 COL_SETTLEMENT = 17
 COL_LOCATION = 18
+SHEET_COL_COUNT = len(ORDER_SHEET_HEADERS)
 
 TTN_STATUS_LABELS = {
     "none": "немає ТТН",
@@ -624,7 +625,57 @@ def append_order_rows(
         # fallback: last rows
         all_vals = ws.col_values(COL_ORDER_NO)
         start = max(2, len(all_vals) - len(rows) + 1)
-    return list(range(start, start + len(rows)))
+    written = list(range(start, start + len(rows)))
+    _paint_rows_white(ws, written)
+    return written
+
+
+def _consecutive_row_spans(row_numbers: list[int]) -> list[tuple[int, int]]:
+    """Inclusive 1-based (start, end) spans of consecutive rows."""
+    nums = sorted({int(n) for n in row_numbers if int(n) >= 2})
+    if not nums:
+        return []
+    spans: list[tuple[int, int]] = []
+    start = prev = nums[0]
+    for n in nums[1:]:
+        if n == prev + 1:
+            prev = n
+            continue
+        spans.append((start, prev))
+        start = prev = n
+    spans.append((start, prev))
+    return spans
+
+
+def _paint_rows_white(ws: gspread.Worksheet, row_numbers: list[int]) -> None:
+    """Нові рядки без заливки з рядка вище — завжди білий фон A:R."""
+    spans = _consecutive_row_spans(row_numbers)
+    if not spans:
+        return
+    requests = [
+        {
+            "repeatCell": {
+                "range": {
+                    "sheetId": ws.id,
+                    "startRowIndex": start - 1,
+                    "endRowIndex": end,
+                    "startColumnIndex": 0,
+                    "endColumnIndex": SHEET_COL_COUNT,
+                },
+                "cell": {
+                    "userEnteredFormat": {
+                        "backgroundColor": {"red": 1, "green": 1, "blue": 1}
+                    }
+                },
+                "fields": "userEnteredFormat.backgroundColor",
+            }
+        }
+        for start, end in spans
+    ]
+    try:
+        ws.spreadsheet.batch_update({"requests": requests})
+    except Exception:
+        logger.exception("failed to paint new order rows white")
 
 
 def update_rows_values(

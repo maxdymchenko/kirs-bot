@@ -346,6 +346,15 @@ _COLOR_ATTR_RE = re.compile(
     r"колір|цвет|colour|color|окрас|відтін|оттен",
     re.IGNORECASE,
 )
+_COLOR_ATTR_EXACT = {
+    "цвет",
+    "колір",
+    "color",
+    "colour",
+    "окрас",
+    "цвет товара",
+    "колір товару",
+}
 _COLOR_NAME_KEYS = (
     "option_name",
     "attribute_name",
@@ -373,6 +382,34 @@ _COLOR_VALUE_KEYS = (
 
 def _looks_like_color_attr(name: Any) -> bool:
     return bool(_COLOR_ATTR_RE.search(str(name or "")))
+
+
+def _color_attr_rank(name: Any) -> int:
+    """0 = саме «Цвет/Колір», 1 = інша колірна характеристика, 99 = не колір."""
+    text = " ".join(str(name or "").casefold().split())
+    if not text:
+        return 99
+    if text in _COLOR_ATTR_EXACT:
+        return 0
+    if not _COLOR_ATTR_RE.search(text):
+        return 99
+    if any(
+        part in text
+        for part in (
+            "корпус",
+            "ремін",
+            "ремеш",
+            "циферблат",
+            "оправа",
+            "лінз",
+            "линз",
+            "волос",
+            "тла",
+            "фона",
+        )
+    ):
+        return 2
+    return 1
 
 
 def _parse_maybe_json(raw: Any) -> Any:
@@ -500,7 +537,7 @@ def _fetch_rozetka_item(token: str, item_id: Any) -> dict[str, Any]:
         return {}
     url = (
         f"https://api-seller.rozetka.com.ua/items/{iid}"
-        "?expand=details,options,group_item"
+        "?expand=details,options,group_item,parent_category"
     )
     status, data = _get_json(url, _rozetka_headers(token))
     if status < 200 or status >= 300 or not isinstance(data, dict):
@@ -509,46 +546,126 @@ def _fetch_rozetka_item(token: str, item_id: Any) -> dict[str, Any]:
     return content if isinstance(content, dict) else {}
 
 
+def _rozetka_item_category_id(content: dict[str, Any]) -> str:
+    for key in (
+        "catalog_id",
+        "category_id",
+        "market_category_id",
+        "rz_market_category_id",
+        "parent_category_id",
+    ):
+        val = content.get(key)
+        if isinstance(val, list) and val:
+            val = val[-1]
+        text = _trim(val)
+        if text.isdigit():
+            return text
+    for key in ("catalog_category", "category", "market_category"):
+        obj = content.get(key)
+        if isinstance(obj, dict):
+            text = _trim(obj.get("id") or obj.get("category_id"))
+            if text.isdigit():
+                return text
+    parent = content.get("parent_category")
+    if isinstance(parent, list) and parent:
+        last = parent[-1]
+        if isinstance(last, dict):
+            last = last.get("id")
+        text = _trim(last)
+        if text.isdigit():
+            return text
+    return ""
+
+
+def _rozetka_option_rows(data: Any) -> list[dict[str, Any]]:
+    if not isinstance(data, dict):
+        return []
+    content = data.get("content")
+    rows: list[Any] = []
+    if isinstance(content, list):
+        rows = content
+    elif isinstance(content, dict):
+        for key in ("options", "attributes", "items", "marketCategorys"):
+            if isinstance(content.get(key), list):
+                rows = content.get(key) or []
+                break
+    return [row for row in rows if isinstance(row, dict)]
+
+
+def _rozetka_option_page_count(data: Any) -> int:
+    if not isinstance(data, dict):
+        return 1
+    meta = data.get("_meta") if isinstance(data.get("_meta"), dict) else {}
+    content = data.get("content")
+    if not meta and isinstance(content, dict) and isinstance(content.get("_meta"), dict):
+        meta = content.get("_meta") or {}
+    try:
+        return max(1, int(meta.get("pageCount") or 1))
+    except (TypeError, ValueError):
+        return 1
+
+
+def _iter_rozetka_option_entries(rows: list[dict[str, Any]]):
+    for row in rows:
+        name = row.get("name") or row.get("name_ua") or row.get("title") or ""
+        oid = row.get("id") or row.get("option_id") or row.get("attribute_id")
+        yield name, oid, row.get("value_id"), row.get("value_name") or row.get("value")
+        nested = row.get("values") or row.get("options")
+        if not isinstance(nested, list):
+            continue
+        for val in nested:
+            if not isinstance(val, dict):
+                continue
+            vid = val.get("value_id") or val.get("id")
+            vname = val.get("value_name") or val.get("name") or val.get("value")
+            yield name, oid, vid, vname
+
+
 _ROZETKA_COLOR_ATTR_IDS: dict[str, set[str]] = {}
 _ROZETKA_COLOR_VALUE_NAMES: dict[str, dict[str, str]] = {}
 
 
 def _rozetka_color_attr_index(token: str, category_id: Any) -> tuple[set[str], dict[str, str]]:
-    """id характеристики «Колір» та value_id → назва для категорії Rozetka."""
+    """id характеристики «Цвет/Колір» та value_id → назва для категорії Rozetka."""
     cid = _trim(category_id)
     empty: tuple[set[str], dict[str, str]] = (set(), {})
     if not cid:
         return empty
     if cid in _ROZETKA_COLOR_ATTR_IDS:
         return _ROZETKA_COLOR_ATTR_IDS[cid], _ROZETKA_COLOR_VALUE_NAMES.get(cid) or {}
-    url = (
-        "https://api-seller.rozetka.com.ua/market-categories/category-options"
-        f"?category_id={cid}"
-    )
-    status, data = _get_json(url, _rozetka_headers(token))
+    ranked: list[tuple[int, str, Any, Any]] = []
+    page = 1
+    page_count = 1
+    while page <= min(page_count, 30):
+        url = (
+            "https://api-seller.rozetka.com.ua/market-categories/category-options"
+            f"?category_id={cid}&page={page}"
+        )
+        status, data = _get_json(url, _rozetka_headers(token))
+        if status < 200 or status >= 300:
+            break
+        rows = _rozetka_option_rows(data)
+        if not rows:
+            break
+        for name, oid, vid, vname in _iter_rozetka_option_entries(rows):
+            rank = _color_attr_rank(name)
+            if rank >= 99 or oid is None:
+                continue
+            ranked.append((rank, str(oid), vid, vname))
+        page_count = _rozetka_option_page_count(data)
+        if page >= page_count:
+            break
+        page += 1
+    best = min((rank for rank, *_rest in ranked), default=99)
     ids: set[str] = set()
     value_names: dict[str, str] = {}
-    content: Any = data.get("content") if isinstance(data, dict) else None
-    rows: list[Any] = []
-    if isinstance(content, list):
-        rows = content
-    elif isinstance(content, dict):
-        for key in ("options", "attributes", "marketCategorys", "items"):
-            if isinstance(content.get(key), list):
-                rows = content.get(key) or []
-                break
-    for row in rows:
-        if not isinstance(row, dict):
+    for rank, oid, vid, vname in ranked:
+        if rank != best:
             continue
-        if not _looks_like_color_attr(row.get("name")):
-            continue
-        oid = row.get("id")
-        if oid is not None:
-            ids.add(str(oid))
-        vid = row.get("value_id")
-        vname = _usable_color_text(row.get("value_name"))
-        if vid is not None and vname:
-            value_names[str(vid)] = vname
+        ids.add(oid)
+        text = _usable_color_text(vname)
+        if vid is not None and text:
+            value_names[str(vid).strip()] = text
     _ROZETKA_COLOR_ATTR_IDS[cid] = ids
     _ROZETKA_COLOR_VALUE_NAMES[cid] = value_names
     return ids, value_names
@@ -563,42 +680,50 @@ def _color_from_details_ids(
     for key, val in details.items():
         if str(key) not in attr_ids:
             continue
-        text = _usable_color_text(val)
-        if text:
-            return text
+        if isinstance(val, list):
+            for item in val:
+                mapped = value_names.get(str(item).strip())
+                if mapped:
+                    return mapped
+                text = _usable_color_text(item)
+                if text:
+                    return text
+            continue
         mapped = value_names.get(str(val).strip())
         if mapped:
             return mapped
+        text = _usable_color_text(val)
+        if text:
+            return text
     return ""
+
+
+def _color_from_rozetka_card(content: dict[str, Any], token: str) -> str:
+    """Колір саме з характеристики «Цвет / Колір» картки товару Rozetka."""
+    cat_id = _rozetka_item_category_id(content)
+    attr_ids, value_names = _rozetka_color_attr_index(token, cat_id)
+    color = _color_from_details_ids(
+        content.get("details"), attr_ids, value_names
+    ) or _color_from_details_ids(content.get("options"), attr_ids, value_names)
+    if color:
+        return color
+    return _extract_rozetka_color(
+        content.get("details"),
+        content.get("options"),
+        content.get("color"),
+        content.get("color_name"),
+    )
 
 
 def _fill_rozetka_item_colors(mapped: dict[str, Any], token: str) -> None:
     for item in mapped.get("items") or []:
         if not isinstance(item, dict):
             continue
-        if _trim(item.get("color")):
-            continue
         content = _fetch_rozetka_item(token, item.get("item_id"))
         if not content:
             continue
-        blobs = [
-            content.get("color"),
-            content.get("color_name"),
-            content.get("details"),
-            content.get("options"),
-            content.get("group_item"),
-        ]
-        color = _extract_rozetka_color(*blobs)
-        if not color:
-            cat_id = content.get("catalog_id")
-            cat = content.get("catalog_category")
-            if isinstance(cat, dict):
-                cat_id = cat_id or cat.get("id")
-            attr_ids, value_names = _rozetka_color_attr_index(token, cat_id)
-            color = _color_from_details_ids(
-                content.get("details"), attr_ids, value_names
-            ) or _color_from_details_ids(content.get("options"), attr_ids, value_names)
-        extra_vals = _rozetka_attr_values(*blobs)
+        color = _color_from_rozetka_card(content, token)
+        extra_vals = [color] if color else []
         if color:
             item["color"] = color
         prev = (
@@ -606,7 +731,9 @@ def _fill_rozetka_item_colors(mapped: dict[str, Any], token: str) -> None:
             if isinstance(item.get("color_candidates"), list)
             else []
         )
-        item["color_candidates"] = list(dict.fromkeys([*prev, *extra_vals]))
+        item["color_candidates"] = list(
+            dict.fromkeys([*extra_vals, *[x for x in prev if _usable_color_text(x)]])
+        )
 
 
 def _fetch_prom_product(token: str, product_id: Any) -> dict[str, Any]:
@@ -1076,19 +1203,26 @@ def build_sheet_rows(
         code = _trim(item.get("code"))
         color = _trim(item.get("color"))
         product_id = _trim(item.get("product_id"))
-        if not color and product_id:
-            color = _lookup_unique_catalog_color(
-                catalog, code, product_id=product_id
+        if color:
+            matched = _match_catalog_color(
+                catalog, code, [color], product_id=product_id
             )
-        if not color:
-            color = _match_catalog_color(
-                catalog,
-                code,
-                item.get("color_candidates") or [],
-                product_id=product_id,
-            )
-        if not color:
-            color = _lookup_unique_catalog_color(catalog, code)
+            if matched:
+                color = matched
+        else:
+            if product_id:
+                color = _lookup_unique_catalog_color(
+                    catalog, code, product_id=product_id
+                )
+            if not color:
+                color = _match_catalog_color(
+                    catalog,
+                    code,
+                    item.get("color_candidates") or [],
+                    product_id=product_id,
+                )
+            if not color:
+                color = _lookup_unique_catalog_color(catalog, code)
         (
             location,
             catalog_name,
@@ -1102,7 +1236,11 @@ def build_sheet_rows(
         if (not code or _looks_like_prom_id(code)) and catalog_code:
             code = catalog_code
         item_name = catalog_name or _trim(item.get("name"))
-        sale = catalog_retail or _fmt_money(item.get("retail"))
+        item_retail = _fmt_money(item.get("retail"))
+        if item.get("prefer_item_retail") and item_retail:
+            sale = item_retail
+        else:
+            sale = catalog_retail or item_retail
         if not sale and len(items) == 1:
             sale = order_sum
         drop = catalog_drop
@@ -1287,6 +1425,7 @@ def write_manual_order(
     ttn: str = "",
     source: str = "Телефон",
     comment: str = "",
+    retail: str = "",
     catalog: Any = None,
 ) -> dict[str, Any]:
     code = _trim(code)
@@ -1303,6 +1442,7 @@ def write_manual_order(
     phone = _trim(phone)
     city = _trim(city)
     warehouse = _trim(warehouse)
+    retail_s = _fmt_money(retail)
 
     ttn_details: dict[str, Any] = {}
     if ttn:
@@ -1358,7 +1498,8 @@ def write_manual_order(
                 "code": code,
                 "color": color,
                 "qty": qty,
-                "retail": "",
+                "retail": retail_s,
+                "prefer_item_retail": bool(retail_s),
             }
         ],
     }
