@@ -7,6 +7,8 @@ from __future__ import annotations
 
 import logging
 import os
+import json
+import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from typing import Any
@@ -16,10 +18,15 @@ import requests
 
 from bot.accounts import AppStorage
 from bot.orders_sheets import (
+    COL_ORDER_NO,
     append_order_rows,
     find_sheet_rows_by_order_number,
     replace_order_rows,
+    _find_catalog_variants,
     _fmt_money,
+    _is_generic_sheet_color,
+    _lookup_unique_catalog_color,
+    _match_catalog_color,
     _open_orders_worksheet,
 )
 
@@ -153,39 +160,39 @@ def _payment_label(raw: Any) -> str:
 
 
 def _carrier_label(*raws: Any) -> str:
-    t = " ".join(_trim(x).lower() for x in raws if _trim(x))
+    """Визначити службу доставки. W2W у Prom — це відділення НП, не Розетка."""
+    parts = [_trim(x).lower().replace("-", "_") for x in raws if _trim(x)]
+    t = " ".join(parts)
     if not t:
         return ""
-    if any(
+    tokens = set(re.split(r"[^\w]+", t))
+
+    is_np = (
+        "novaposhta" in t
+        or "nova_poshta" in t
+        or "nova poshta" in t
+        or ("нов" in t and ("почт" in t or "пошт" in t))
+        or tokens & {"np", "нп"}
+        or t.startswith("np ")
+        or t.startswith("нп ")
+    )
+    if is_np:
+        return "НП"
+    if "укрпошт" in t or "ukrposhta" in t or "ukr_poshta" in t:
+        return "Укрпошта"
+    if "meest" in t or "микст" in t:
+        return "Meest"
+    is_rozetka = any(
         m in t
         for m in (
             "rozetka",
             "розетк",
-            "rmp",
-            "rz-delivery",
             "rz_delivery",
-            "w2w",
-            "warehouse to warehouse",
+            "rz delivery",
         )
-    ):
+    ) or "rmp" in tokens
+    if is_rozetka:
         return "Розетка"
-    if any(
-        m in t
-        for m in (
-            "novaposhta",
-            "nova_poshta",
-            "nova-poshta",
-            "nova poshta",
-        )
-    ) or ("нов" in t and ("почт" in t or "пошт" in t)) or t in {
-        "np",
-        "нп",
-    } or t.startswith("np ") or t.startswith("нп "):
-        return "НП"
-    if "meest" in t or "микст" in t:
-        return "Meest"
-    if "укрпошт" in t or "ukrposhta" in t:
-        return "Укрпошта"
     return ""
 
 
@@ -210,6 +217,33 @@ def _get_json(url: str, headers: dict[str, str]) -> tuple[int, Any]:
     except ValueError:
         data = {"message": (res.text or "")[:300]}
     return res.status_code, data
+
+
+def _looks_like_prom_id(value: Any) -> bool:
+    text = _trim(value)
+    return bool(text.isdigit() and len(text) >= 8)
+
+
+def _prom_warehouse_code(p: dict[str, Any], prom_id: str = "") -> str:
+    """Складський код (стовпець B), не числовий ID товару Prom."""
+    pid = prom_id or _trim(p.get("id"))
+    for key in ("external_id", "article", "sku"):
+        text = _trim(p.get(key))
+        if not text or text == pid or _looks_like_prom_id(text):
+            continue
+        return text
+    return ""
+
+
+def _prom_order_product(p: dict[str, Any]) -> dict[str, Any]:
+    inner = p.get("product")
+    if isinstance(inner, dict):
+        merged = dict(inner)
+        for key, val in p.items():
+            if key != "product" and val not in (None, ""):
+                merged[key] = val
+        return merged
+    return p
 
 
 def _map_prom(order: dict[str, Any], source: dict[str, str]) -> dict[str, Any]:
@@ -238,13 +272,18 @@ def _map_prom(order: dict[str, Any], source: dict[str, str]) -> dict[str, Any]:
     for p in _as_list(order.get("products")):
         if not isinstance(p, dict):
             continue
+        p = _prom_order_product(p)
+        product_name = _pick(p.get("name"), p.get("product_name"))
+        prom_id = _pick(p.get("id"), p.get("product_id"))
         items.append(
             {
-                "name": _pick(p.get("name"), p.get("product_name")),
-                "code": _pick(p.get("sku"), p.get("external_id"), p.get("article"), p.get("id")),
+                "name": product_name,
+                "code": _prom_warehouse_code(p, prom_id),
+                "product_id": prom_id,
                 "color": _pick(p.get("color"), p.get("model"), p.get("variant")),
+                "color_candidates": [product_name] if product_name else [],
                 "qty": max(1, int(p.get("quantity") or 1)),
-                "retail": p.get("price"),
+                "retail": p.get("price") if p.get("price") not in (None, "") else p.get("total_price"),
             }
         )
     return {
@@ -254,8 +293,8 @@ def _map_prom(order: dict[str, Any], source: dict[str, str]) -> dict[str, Any]:
         "date": _fmt_date(order.get("date_created") or order.get("date")),
         "payment": _payment_label(_pick(payment.get("name"), payment.get("type"), order.get("payment_type"))),
         "carrier": _carrier_label(
-            delivery_data.get("type"),
             delivery_data.get("provider"),
+            delivery_data.get("type"),
             delivery.get("name") if isinstance(delivery, dict) else "",
             delivery.get("shipping_service") if isinstance(delivery, dict) else "",
         )
@@ -295,7 +334,323 @@ def _fetch_prom(source: dict[str, str], token: str, order_id: str) -> dict[str, 
         order = data if isinstance(data, dict) else None
     if not order or not order.get("id"):
         return None
-    return _map_prom(order, source)
+    mapped = _map_prom(order, source)
+    try:
+        _fill_prom_item_meta(mapped, token)
+    except Exception:
+        logger.exception("prom product enrich failed for %s", mapped.get("order_id"))
+    return mapped
+
+
+_COLOR_ATTR_RE = re.compile(
+    r"колір|цвет|colour|color|окрас|відтін|оттен",
+    re.IGNORECASE,
+)
+_COLOR_NAME_KEYS = (
+    "option_name",
+    "attribute_name",
+    "name",
+    "name_ua",
+    "title",
+    "title_ua",
+    "attr",
+    "attribute",
+    "param",
+    "parameter",
+    "label",
+)
+_COLOR_VALUE_KEYS = (
+    "value",
+    "attribute_value",
+    "option_value",
+    "value_name",
+    "text",
+    "color",
+    "color_name",
+    "colour",
+)
+
+
+def _looks_like_color_attr(name: Any) -> bool:
+    return bool(_COLOR_ATTR_RE.search(str(name or "")))
+
+
+def _parse_maybe_json(raw: Any) -> Any:
+    if isinstance(raw, str):
+        text = raw.strip()
+        if text[:1] in "{[":
+            try:
+                return json.loads(text)
+            except ValueError:
+                return raw
+    return raw
+
+
+def _usable_color_text(value: Any) -> str:
+    text = _trim(value)
+    if not text or text.isdigit() or len(text) > 60:
+        return ""
+    lowered = text.casefold()
+    if lowered.startswith("http") or lowered in {"null", "none", "-", "—"}:
+        return ""
+    return text
+
+
+def _walk_rozetka_attrs(raw: Any, named: list[str], values: list[str]) -> None:
+    raw = _parse_maybe_json(raw)
+    if raw is None or isinstance(raw, bool):
+        return
+    if isinstance(raw, str):
+        text = _usable_color_text(raw)
+        if text and text not in values:
+            values.append(text)
+        return
+    if isinstance(raw, dict):
+        name = ""
+        for key in _COLOR_NAME_KEYS:
+            if raw.get(key):
+                name = raw.get(key)
+                break
+        for key in _COLOR_VALUE_KEYS:
+            val = raw.get(key)
+            if val in (None, "", []):
+                continue
+            if isinstance(val, list):
+                for item in val:
+                    text = _usable_color_text(item)
+                    if text and _looks_like_color_attr(name) and text not in named:
+                        named.append(text)
+                    if text and text not in values:
+                        values.append(text)
+            else:
+                text = _usable_color_text(val)
+                if text and _looks_like_color_attr(name) and text not in named:
+                    named.append(text)
+                if text and text not in values:
+                    values.append(text)
+        for key, val in raw.items():
+            if key in _COLOR_NAME_KEYS or key in _COLOR_VALUE_KEYS:
+                continue
+            if _looks_like_color_attr(key):
+                text = _usable_color_text(val)
+                if text and text not in named:
+                    named.append(text)
+                if text and text not in values:
+                    values.append(text)
+                continue
+            if isinstance(val, (dict, list)) or (
+                isinstance(val, str) and val.strip()[:1] in "{["
+            ):
+                _walk_rozetka_attrs(val, named, values)
+            else:
+                text = _usable_color_text(val)
+                if text and text not in values:
+                    values.append(text)
+        return
+    if isinstance(raw, list):
+        for item in raw:
+            _walk_rozetka_attrs(item, named, values)
+
+
+def _extract_rozetka_color(*sources: Any) -> str:
+    """Колір з характеристики «Колір / Цвет / color», якщо API віддала назву поля."""
+    named: list[str] = []
+    values: list[str] = []
+    for src in sources:
+        parsed = _parse_maybe_json(src)
+        if isinstance(src, str) and not isinstance(parsed, (dict, list)):
+            text = _usable_color_text(src)
+            if text and text not in named:
+                named.append(text)
+            continue
+        _walk_rozetka_attrs(parsed, named, values)
+    return named[0] if named else ""
+
+
+def _rozetka_attr_values(*sources: Any) -> list[str]:
+    """Усі текстові значення характеристик — щоб зіставити з кольором у наявності."""
+    named: list[str] = []
+    values: list[str] = []
+    for src in sources:
+        _walk_rozetka_attrs(src, named, values)
+    return values
+
+
+def _rozetka_purchase_blobs(purchase: dict[str, Any], item: dict[str, Any]) -> list[Any]:
+    conf = purchase.get("conf") if isinstance(purchase.get("conf"), dict) else {}
+    return [
+        purchase.get("color"),
+        item.get("color"),
+        item.get("color_name"),
+        item.get("details"),
+        item.get("options"),
+        item.get("item_details"),
+        purchase.get("item_details"),
+        purchase.get("details"),
+        purchase.get("options"),
+        purchase.get("conf_details"),
+        conf.get("details"),
+        conf.get("options"),
+    ]
+
+
+def _fetch_rozetka_item(token: str, item_id: Any) -> dict[str, Any]:
+    iid = _trim(item_id)
+    if not iid:
+        return {}
+    url = (
+        f"https://api-seller.rozetka.com.ua/items/{iid}"
+        "?expand=details,options,group_item"
+    )
+    status, data = _get_json(url, _rozetka_headers(token))
+    if status < 200 or status >= 300 or not isinstance(data, dict):
+        return {}
+    content = data.get("content") if isinstance(data.get("content"), dict) else data
+    return content if isinstance(content, dict) else {}
+
+
+_ROZETKA_COLOR_ATTR_IDS: dict[str, set[str]] = {}
+_ROZETKA_COLOR_VALUE_NAMES: dict[str, dict[str, str]] = {}
+
+
+def _rozetka_color_attr_index(token: str, category_id: Any) -> tuple[set[str], dict[str, str]]:
+    """id характеристики «Колір» та value_id → назва для категорії Rozetka."""
+    cid = _trim(category_id)
+    empty: tuple[set[str], dict[str, str]] = (set(), {})
+    if not cid:
+        return empty
+    if cid in _ROZETKA_COLOR_ATTR_IDS:
+        return _ROZETKA_COLOR_ATTR_IDS[cid], _ROZETKA_COLOR_VALUE_NAMES.get(cid) or {}
+    url = (
+        "https://api-seller.rozetka.com.ua/market-categories/category-options"
+        f"?category_id={cid}"
+    )
+    status, data = _get_json(url, _rozetka_headers(token))
+    ids: set[str] = set()
+    value_names: dict[str, str] = {}
+    content: Any = data.get("content") if isinstance(data, dict) else None
+    rows: list[Any] = []
+    if isinstance(content, list):
+        rows = content
+    elif isinstance(content, dict):
+        for key in ("options", "attributes", "marketCategorys", "items"):
+            if isinstance(content.get(key), list):
+                rows = content.get(key) or []
+                break
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        if not _looks_like_color_attr(row.get("name")):
+            continue
+        oid = row.get("id")
+        if oid is not None:
+            ids.add(str(oid))
+        vid = row.get("value_id")
+        vname = _usable_color_text(row.get("value_name"))
+        if vid is not None and vname:
+            value_names[str(vid)] = vname
+    _ROZETKA_COLOR_ATTR_IDS[cid] = ids
+    _ROZETKA_COLOR_VALUE_NAMES[cid] = value_names
+    return ids, value_names
+
+
+def _color_from_details_ids(
+    details: Any, attr_ids: set[str], value_names: dict[str, str]
+) -> str:
+    details = _parse_maybe_json(details)
+    if not isinstance(details, dict) or not attr_ids:
+        return ""
+    for key, val in details.items():
+        if str(key) not in attr_ids:
+            continue
+        text = _usable_color_text(val)
+        if text:
+            return text
+        mapped = value_names.get(str(val).strip())
+        if mapped:
+            return mapped
+    return ""
+
+
+def _fill_rozetka_item_colors(mapped: dict[str, Any], token: str) -> None:
+    for item in mapped.get("items") or []:
+        if not isinstance(item, dict):
+            continue
+        if _trim(item.get("color")):
+            continue
+        content = _fetch_rozetka_item(token, item.get("item_id"))
+        if not content:
+            continue
+        blobs = [
+            content.get("color"),
+            content.get("color_name"),
+            content.get("details"),
+            content.get("options"),
+            content.get("group_item"),
+        ]
+        color = _extract_rozetka_color(*blobs)
+        if not color:
+            cat_id = content.get("catalog_id")
+            cat = content.get("catalog_category")
+            if isinstance(cat, dict):
+                cat_id = cat_id or cat.get("id")
+            attr_ids, value_names = _rozetka_color_attr_index(token, cat_id)
+            color = _color_from_details_ids(
+                content.get("details"), attr_ids, value_names
+            ) or _color_from_details_ids(content.get("options"), attr_ids, value_names)
+        extra_vals = _rozetka_attr_values(*blobs)
+        if color:
+            item["color"] = color
+        prev = (
+            item.get("color_candidates")
+            if isinstance(item.get("color_candidates"), list)
+            else []
+        )
+        item["color_candidates"] = list(dict.fromkeys([*prev, *extra_vals]))
+
+
+def _fetch_prom_product(token: str, product_id: Any) -> dict[str, Any]:
+    pid = _trim(product_id)
+    if not pid:
+        return {}
+    status, data = _get_json(
+        f"https://my.prom.ua/api/v1/products/{pid}",
+        {"Authorization": f"Bearer {token}", "Accept": "application/json"},
+    )
+    if status < 200 or status >= 300 or not isinstance(data, dict):
+        return {}
+    product = data.get("product") if isinstance(data.get("product"), dict) else data
+    return product if isinstance(product, dict) else {}
+
+
+def _fill_prom_item_meta(mapped: dict[str, Any], token: str) -> None:
+    """Колір і код з картки товару Prom: в замовленні їх немає."""
+    for item in mapped.get("items") or []:
+        if not isinstance(item, dict):
+            continue
+        product = _fetch_prom_product(token, item.get("product_id"))
+        if not product:
+            continue
+        if not _trim(item.get("code")):
+            item["code"] = _prom_warehouse_code(
+                product, _trim(item.get("product_id"))
+            )
+        blobs = [product.get("attributes")]
+        color = _extract_rozetka_color(*blobs)
+        extra_vals = _rozetka_attr_values(*blobs)
+        name = _trim(product.get("name"))
+        if name and name not in extra_vals:
+            extra_vals.append(name)
+        if color and not _trim(item.get("color")):
+            item["color"] = color
+        prev = (
+            item.get("color_candidates")
+            if isinstance(item.get("color_candidates"), list)
+            else []
+        )
+        item["color_candidates"] = list(dict.fromkeys([*prev, *extra_vals]))
+        if item.get("retail") in (None, ""):
+            item["retail"] = product.get("price")
 
 
 def _map_rozetka(content: dict[str, Any], source: dict[str, str]) -> dict[str, Any]:
@@ -307,12 +662,15 @@ def _map_rozetka(content: dict[str, Any], source: dict[str, str]) -> dict[str, A
         if not isinstance(p, dict):
             continue
         item = p.get("item") if isinstance(p.get("item"), dict) else {}
-        details = item.get("details")
+        blobs = _rozetka_purchase_blobs(p, item)
+        color = _extract_rozetka_color(*blobs)
         items.append(
             {
                 "name": _pick(p.get("item_name"), item.get("name"), item.get("name_ua")),
                 "code": _pick(item.get("article"), p.get("article"), item.get("id"), p.get("item_id")),
-                "color": _pick(p.get("color"), details if isinstance(details, str) else ""),
+                "color": color,
+                "color_candidates": _rozetka_attr_values(*blobs),
+                "item_id": _pick(p.get("item_id"), item.get("id")),
                 "qty": max(1, int(p.get("quantity") or 1)),
                 "retail": p.get("price") or p.get("price_with_discount") or p.get("cost"),
             }
@@ -342,13 +700,27 @@ def _map_rozetka(content: dict[str, Any], source: dict[str, str]) -> dict[str, A
         "payment": _payment_label(
             _pick(content.get("payment_type_name"), content.get("payment_type"))
         ),
-        "carrier": _carrier_label(
-            service.get("name"),
-            service.get("type"),
-            delivery.get("delivery_service_name"),
-            content.get("ttn"),
-        )
-        or "НП",
+        "carrier": (
+            _carrier_label(
+                service.get("name"),
+                service.get("type"),
+                delivery.get("delivery_service_name"),
+            )
+            or (
+                "Розетка"
+                if "w2w"
+                in " ".join(
+                    _trim(x).lower()
+                    for x in (
+                        service.get("name"),
+                        service.get("type"),
+                        delivery.get("delivery_service_name"),
+                    )
+                    if _trim(x)
+                )
+                else "НП"
+            )
+        ),
         "client": _client_line(
             city=_pick(
                 _as_text(delivery.get("city"), "name_ua", "city_name", "title", "name"),
@@ -372,27 +744,135 @@ def _map_rozetka(content: dict[str, Any], source: dict[str, str]) -> dict[str, A
     }
 
 
-def _fetch_rozetka(source: dict[str, str], token: str, order_id: str) -> dict[str, Any] | None:
-    oid = str(order_id).lstrip("#")
-    expand = "user,delivery,purchases,delivery_service,payment_type_name"
-    status, data = _get_json(
-        f"https://api-seller.rozetka.com.ua/orders/{oid}?expand={expand}",
-        {"Authorization": f"Bearer {token}", "Accept": "application/json"},
-    )
+def _rozetka_headers(token: str) -> dict[str, str]:
+    return {"Authorization": f"Bearer {token}", "Accept": "application/json"}
+
+
+def _rozetka_error_text(data: Any) -> str:
+    if not isinstance(data, dict):
+        return ""
+    err = data.get("errors")
+    if isinstance(err, dict):
+        return str(err.get("message") or err.get("code") or "").strip()
+    if isinstance(err, str):
+        return err.strip()
+    return str(data.get("message") or "").strip()
+
+
+def _rozetka_is_auth_error(status: int, data: Any) -> bool:
     if status in {401, 403}:
-        raise RuntimeError("Rozetka: токен не принят")
+        return True
+    blob = _rozetka_error_text(data).lower()
+    return any(
+        x in blob
+        for x in (
+            "invalid credentials",
+            "unauthorized",
+            "unauthenticated",
+            "access denied",
+            "token",
+            "не авторизован",
+        )
+    )
+
+
+def _rozetka_is_not_found(status: int, data: Any) -> bool:
     if status == 404:
+        return True
+    blob = _rozetka_error_text(data).lower()
+    return any(
+        x in blob
+        for x in ("not_found", "not found", "не знайден", "не найден", "entity not found")
+    )
+
+
+def _rozetka_order_from_details(data: Any) -> dict[str, Any] | None:
+    if not isinstance(data, dict):
         return None
-    if status < 200 or status >= 300:
-        err = data.get("errors") if isinstance(data, dict) else None
-        msg = ""
-        if isinstance(err, dict):
-            msg = str(err.get("message") or "")
-        raise RuntimeError(f"Rozetka: {msg or data.get('message') or f'HTTP {status}'}")
-    content = data.get("content") if isinstance(data, dict) else None
+    content = data.get("content")
     if not isinstance(content, dict) or not content.get("id"):
         return None
-    return _map_rozetka(content, source)
+    if isinstance(content.get("orders"), list):
+        return None
+    return content
+
+
+def _rozetka_order_from_search(data: Any, oid: str) -> dict[str, Any] | None:
+    if not isinstance(data, dict):
+        return None
+    content = data.get("content")
+    if not isinstance(content, dict):
+        return None
+    orders = content.get("orders")
+    if not isinstance(orders, list):
+        return None
+    for order in orders:
+        if isinstance(order, dict) and str(order.get("id") or "") == oid:
+            return order
+    if len(orders) == 1 and isinstance(orders[0], dict) and orders[0].get("id"):
+        return orders[0]
+    return None
+
+
+def _fetch_rozetka(source: dict[str, str], token: str, order_id: str) -> dict[str, Any] | None:
+    oid = str(order_id).lstrip("#")
+    expand = (
+        "user,delivery,purchases,delivery_service,payment_type_name,"
+        "status_data,item_details"
+    )
+    headers = _rozetka_headers(token)
+    details_url = f"https://api-seller.rozetka.com.ua/orders/{oid}?expand={expand}"
+
+    status, data = _get_json(details_url, headers)
+    if _rozetka_is_auth_error(status, data):
+        raise RuntimeError(
+            "Rozetka: токен не принят или истёк. Обновите ROZETKA_API_TOKEN на Render"
+        )
+    if status >= 300 and not _rozetka_is_not_found(status, data):
+        raise RuntimeError(
+            f"Rozetka: {_rozetka_error_text(data) or f'HTTP {status}'}"
+        )
+    if (
+        isinstance(data, dict)
+        and data.get("success") is False
+        and not _rozetka_is_not_found(status, data)
+    ):
+        raise RuntimeError(
+            f"Rozetka: {_rozetka_error_text(data) or 'API вернула ошибку'}"
+        )
+
+    content = _rozetka_order_from_details(data) if 200 <= status < 300 else None
+
+    if content is None:
+        # GET /orders/{id} інколи не знаходить; search з types=1 — усі статуси
+        search_url = (
+            "https://api-seller.rozetka.com.ua/orders/search"
+            f"?id={oid}&types=1&expand={expand}"
+        )
+        st2, data2 = _get_json(search_url, headers)
+        if _rozetka_is_auth_error(st2, data2):
+            raise RuntimeError(
+                "Rozetka: токен не принят или истёк. Обновите ROZETKA_API_TOKEN на Render"
+            )
+        if 200 <= st2 < 300:
+            content = _rozetka_order_from_search(data2, oid)
+            if content and not content.get("purchases") and content.get("id"):
+                st3, data3 = _get_json(
+                    f"https://api-seller.rozetka.com.ua/orders/{content['id']}?expand={expand}",
+                    headers,
+                )
+                detailed = _rozetka_order_from_details(data3)
+                if detailed:
+                    content = detailed
+
+    if not content or not content.get("id"):
+        return None
+    mapped = _map_rozetka(content, source)
+    try:
+        _fill_rozetka_item_colors(mapped, token)
+    except Exception:
+        logger.exception("Rozetka item color enrich failed for order %s", content.get("id"))
+    return mapped
 
 
 def _map_kasta(order: dict[str, Any], source: dict[str, str]) -> dict[str, Any]:
@@ -533,6 +1013,11 @@ def find_marketplace_order(order_id: str, source_id: str = "auto") -> dict[str, 
                 return mapped
     if errors:
         raise RuntimeError(f"Заказ {oid} не найден.\n" + "\n".join(errors))
+    if len(sources) == 1:
+        raise RuntimeError(
+            f"{sources[0]['label']}: заказ {oid} не найден в кабинете продавца. "
+            "Нужен ID заказа из seller.rozetka.com.ua, не ТТН и не номер из письма покупателю."
+        )
     raise RuntimeError(f"Заказ {oid} не найден ни на одном магазине")
 
 
@@ -550,15 +1035,27 @@ def _real_location(raw: Any) -> str:
 
 
 def _lookup_item_catalog_meta(
-    catalog: Any, code: str, color: str
-) -> tuple[str, str]:
-    """Расположение (столбец J) и Название для CRM (столбец C) по коду товара."""
-    if catalog is None or not _trim(code):
-        return "", ""
-    from bot.orders_sheets import _lookup_variant_meta
-
-    _retail, location, name = _lookup_variant_meta(catalog, code, color)
-    return _real_location(location), _trim(name)
+    catalog: Any, code: str, color: str, product_id: str = ""
+) -> tuple[str, str, str, str, str, str]:
+    """Розташування, назва, РРЦ, дроп, колір і складський код з таблиці наявності."""
+    if catalog is None or (not _trim(code) and not _trim(product_id)):
+        return "", "", "", "", "", ""
+    matches = _find_catalog_variants(catalog, code, color, product_id)
+    if not matches:
+        return "", "", "", "", "", ""
+    v = matches[0]
+    sheet_name = _trim(getattr(v, "warehouse_name", "")) or _trim(getattr(v, "name", ""))
+    variant_color = _trim(getattr(v, "color", ""))
+    if _is_generic_sheet_color(variant_color):
+        variant_color = ""
+    return (
+        _real_location(getattr(v, "location", "")),
+        sheet_name,
+        _fmt_money(getattr(v, "retail_price", "")),
+        _fmt_money(getattr(v, "drop_price", "")),
+        variant_color,
+        _trim(getattr(v, "code", "")),
+    )
 
 
 def build_sheet_rows(
@@ -572,14 +1069,43 @@ def build_sheet_rows(
     if not items:
         items = [{"name": "", "code": "", "color": "", "qty": 1, "retail": ""}]
     note = _trim(comment)
-    sale = _fmt_money(mapped.get("order_sum"))
+    order_sum = _fmt_money(mapped.get("order_sum"))
     status_label = _trim(carrier_status) or _trim(mapped.get("status"))
     rows = []
     for item in items:
         code = _trim(item.get("code"))
         color = _trim(item.get("color"))
-        location, catalog_name = _lookup_item_catalog_meta(catalog, code, color)
+        product_id = _trim(item.get("product_id"))
+        if not color and product_id:
+            color = _lookup_unique_catalog_color(
+                catalog, code, product_id=product_id
+            )
+        if not color:
+            color = _match_catalog_color(
+                catalog,
+                code,
+                item.get("color_candidates") or [],
+                product_id=product_id,
+            )
+        if not color:
+            color = _lookup_unique_catalog_color(catalog, code)
+        (
+            location,
+            catalog_name,
+            catalog_retail,
+            catalog_drop,
+            catalog_color,
+            catalog_code,
+        ) = _lookup_item_catalog_meta(catalog, code, color, product_id=product_id)
+        if not color:
+            color = catalog_color
+        if (not code or _looks_like_prom_id(code)) and catalog_code:
+            code = catalog_code
         item_name = catalog_name or _trim(item.get("name"))
+        sale = catalog_retail or _fmt_money(item.get("retail"))
+        if not sale and len(items) == 1:
+            sale = order_sum
+        drop = catalog_drop
         rows.append(
             [
                 mapped.get("date") or "",
@@ -591,7 +1117,7 @@ def build_sheet_rows(
                 color,
                 item.get("qty") or 1,
                 sale,
-                "",
+                drop,
                 mapped.get("source_label") or "",
                 mapped.get("client") or "",
                 mapped.get("ttn") or "",
@@ -692,6 +1218,176 @@ def write_marketplace_order(
         "updated": False,
         "source": {"id": mapped["source_id"], "label": mapped["source_label"]},
         "orderId": mapped["order_id"],
+        "preview": preview_rows(rows),
+        "rows": written,
+        "stock": stock_res,
+        "message": msg,
+    }
+
+
+MANUAL_ORDER_PREFIX = "TEL-"
+
+
+def lookup_catalog_items(
+    catalog: Any, query: str, *, limit: int = 40
+) -> list[dict[str, Any]]:
+    """Пошук у таблиці наявності для ручної форми розширення."""
+    q = _trim(query)
+    if not q or catalog is None:
+        return []
+    variants: list[Any] = []
+    if hasattr(catalog, "search"):
+        variants = catalog.search(query=q, mode="code", limit=limit) or []
+        if not variants:
+            variants = catalog.search(query=q, mode="auto", limit=limit) or []
+    out: list[dict[str, Any]] = []
+    for v in variants[:limit]:
+        data = v.to_dict() if hasattr(v, "to_dict") else {}
+        out.append(
+            {
+                "code": _trim(data.get("code")),
+                "name": _trim(data.get("name")),
+                "color": _trim(data.get("color")),
+                "stock": data.get("stock"),
+                "drop_price": _fmt_money(data.get("drop_price")),
+                "retail_price": _fmt_money(data.get("retail_price")),
+                "location": _real_location(data.get("location")),
+            }
+        )
+    return out
+
+
+def next_manual_order_id(ws: Any) -> str:
+    col = ws.col_values(COL_ORDER_NO)
+    max_n = 0
+    prefix = MANUAL_ORDER_PREFIX.upper()
+    for value in col[1:]:
+        text = _trim(value).upper()
+        if not text.startswith(prefix):
+            continue
+        suffix = text[len(prefix) :].lstrip()
+        if suffix.isdigit():
+            max_n = max(max_n, int(suffix))
+    return f"{MANUAL_ORDER_PREFIX}{max_n + 1:04d}"
+
+
+def write_manual_order(
+    storage: AppStorage,
+    *,
+    code: str,
+    color: str = "",
+    qty: int = 1,
+    name: str = "",
+    client_name: str = "",
+    phone: str = "",
+    city: str = "",
+    warehouse: str = "",
+    payment: str = "НАЛОЖКА",
+    carrier: str = "НП",
+    ttn: str = "",
+    source: str = "Телефон",
+    comment: str = "",
+    catalog: Any = None,
+) -> dict[str, Any]:
+    code = _trim(code)
+    if not code:
+        raise ValueError("Вкажіть код товару")
+    qty = max(1, int(qty or 1))
+    color = _trim(color)
+    name = _trim(name)
+    ttn = re.sub(r"\s+", "", _trim(ttn))
+    source_label = _trim(source) or "Телефон"
+    pay = _payment_label(payment) or "НАЛОЖКА"
+    ship = _carrier_label(carrier) or _trim(carrier) or "НП"
+    client_name = _trim(client_name)
+    phone = _trim(phone)
+    city = _trim(city)
+    warehouse = _trim(warehouse)
+
+    ttn_details: dict[str, Any] = {}
+    if ttn:
+        try:
+            from bot.sheet_tracking import lookup_ttn_details
+
+            ttn_details = lookup_ttn_details(storage, ttn)
+        except Exception:
+            logger.exception("NP TTN lookup failed for manual order")
+            ttn_details = {}
+        if not client_name:
+            client_name = _trim(ttn_details.get("name"))
+        if not phone:
+            phone = _trim(ttn_details.get("phone"))
+        if not city:
+            city = _trim(ttn_details.get("city"))
+        if not warehouse:
+            warehouse = _trim(ttn_details.get("warehouse"))
+        if not ship or ship == "НП":
+            # Готова ТТН НП — служба вже відома
+            if ttn_details.get("found"):
+                ship = _carrier_label(carrier) or "НП"
+
+    ws = _open_orders_worksheet(storage)
+    order_id = next_manual_order_id(ws)
+
+    carrier_status = _trim(ttn_details.get("status"))
+    if ttn:
+        if not carrier_status:
+            carrier_status = "ТТН надано"
+    else:
+        carrier_status = "немає ТТН"
+
+    mapped = {
+        "source_id": "manual",
+        "source_label": source_label,
+        "order_id": order_id,
+        "date": datetime.now(KYIV).strftime("%d.%m.%Y"),
+        "payment": pay,
+        "carrier": ship,
+        "client": _client_line(
+            city=city,
+            place=warehouse,
+            name=client_name,
+            phone=phone,
+        ),
+        "ttn": ttn,
+        "status": carrier_status,
+        "order_sum": "",
+        "items": [
+            {
+                "name": name,
+                "code": code,
+                "color": color,
+                "qty": qty,
+                "retail": "",
+            }
+        ],
+    }
+    rows = build_sheet_rows(
+        mapped, comment, catalog=catalog, carrier_status=carrier_status
+    )
+    written = append_order_rows(ws, rows)
+
+    stock_res = None
+    if catalog and hasattr(catalog, "consume_cart_stock"):
+        try:
+            stock_res = catalog.consume_cart_stock(
+                mapped.get("items") or [], allow_insufficient=True
+            )
+        except Exception:
+            logger.exception(
+                "Не вдалося списати залишки для ручного замовлення %s", order_id
+            )
+
+    msg = f"Записано {len(rows)} стр. заказа {order_id}"
+    if stock_res and stock_res.get("updated_rows"):
+        msg += f" (списано остатки в {stock_res['updated_rows']} стр. наличия)"
+
+    return {
+        "ok": True,
+        "already": False,
+        "updated": False,
+        "source": {"id": "manual", "label": source_label},
+        "orderId": order_id,
         "preview": preview_rows(rows),
         "rows": written,
         "stock": stock_res,

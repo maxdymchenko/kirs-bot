@@ -44,6 +44,7 @@ class ProductVariant:
     sheet_row: int = 0  # 1-based рядок у Google Sheet (0 = невідомо)
     retail_price: str = ""  # колонка H (РРЦ), якщо є
     location: str = ""  # колонка J — розташування на складі
+    warehouse_name: str = ""  # колонка D — складська назва для таблиці «Заказы»
 
     def to_dict(self) -> dict:
         return {
@@ -797,8 +798,9 @@ class CatalogService:
             product_id = str(row[0]).strip()
             code = str(row[1]).strip().lstrip("'")
             name = str(row[2]).strip()
+            warehouse_name = str(row[3]).strip()
             color = str(row[4]).strip()
-            if not code or not name:
+            if not code or not (name or warehouse_name):
                 continue
             live_photo_url = live_urls[idx] if idx < len(live_urls) else ""
             if not live_photo_url:
@@ -813,6 +815,7 @@ class CatalogService:
                     drop_price=str(row[6]).strip(),
                     retail_price=str(row[7]).strip() if len(row) > 7 else "",
                     location=str(row[9]).strip() if len(row) > 9 else "",
+                    warehouse_name=warehouse_name,
                     photo_url=str(row[12]).strip(),
                     live_photo_url=live_photo_url,
                     sheet_row=idx + 2,

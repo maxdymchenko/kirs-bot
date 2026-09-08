@@ -200,15 +200,67 @@ def fetch_np_tracking_statuses(
 
 def lookup_single_ttn_status(storage: AppStorage, ttn: str) -> str:
     """Швидка перевірка статусу однієї ТТН від перевізника."""
-    clean = str(ttn or "").strip()
-    if not clean:
+    return str(lookup_ttn_details(storage, ttn).get("status") or "").strip()
+
+
+def lookup_ttn_details(storage: AppStorage, ttn: str) -> dict[str, Any]:
+    """Дані отримувача та статус з трекінгу НП (для ручного запису за готовою ТТН)."""
+    clean = re.sub(r"\s+", "", str(ttn or "").strip())
+    digits = re.sub(r"\D+", "", clean)
+
+    def _empty() -> dict[str, Any]:
+        return {
+            "ttn": digits or clean,
+            "found": False,
+            "status": "",
+            "name": "",
+            "phone": "",
+            "city": "",
+            "warehouse": "",
+            "client": "",
+        }
+
+    if not digits or not _is_np_ttn(digits):
+        return _empty()
+
+    res = fetch_np_tracking_statuses(storage, [digits])
+    info = res.get(digits) or {}
+    raw = info.get("raw") if isinstance(info.get("raw"), dict) else {}
+
+    def _pick(*keys: str) -> str:
+        for key in keys:
+            text = str((raw or {}).get(key) or "").strip()
+            if text:
+                return text
         return ""
-    if _is_np_ttn(clean):
-        res = fetch_np_tracking_statuses(storage, [clean])
-        norm = re.sub(r"\D+", "", clean)
-        if norm in res:
-            return res[norm].get("status") or ""
-    return ""
+
+    name = _pick(
+        "RecipientFullName",
+        "RecipientName",
+        "RecipientFullNameEW",
+        "CounterpartyRecipientDescription",
+    )
+    phone = _pick("PhoneRecipient", "Phone")
+    city = _pick("CityRecipient", "CityRecipientDescription", "RecipientCityName")
+    warehouse = _pick(
+        "WarehouseRecipient",
+        "RecipientAddressName",
+        "RecipientAddress",
+        "WarehouseRecipientNumber",
+    )
+    status = str(info.get("status") or _pick("Status") or "").strip()
+    client = " ".join(p for p in (city, warehouse, name, phone) if p)
+    found = bool(status or name or city or warehouse)
+    return {
+        "ttn": digits,
+        "found": found,
+        "status": status,
+        "name": name,
+        "phone": phone,
+        "city": city,
+        "warehouse": warehouse,
+        "client": client,
+    }
 
 
 def run_sheet_tracking_sync(storage: AppStorage) -> dict[str, Any]:

@@ -71,8 +71,22 @@ TTN_STATUS_LABELS = {
 
 def _fmt_money(value: Any) -> str:
     """Суми для Sheet: десятковий роздільник — кома (напр. 510,23)."""
+    if value is None or isinstance(value, bool):
+        return ""
+    if isinstance(value, dict):
+        for key in ("amount", "value", "cost", "price", "sum"):
+            found = _fmt_money(value.get(key))
+            if found:
+                return found
+        return ""
+    raw = str(value).replace("\u00a0", " ").strip()
+    if not raw:
+        return ""
+    match = re.search(r"(\d[\d\s]*([,\.]\d{1,2})?)", raw)
+    if not match:
+        return ""
     try:
-        n = float(str(value or "").replace(" ", "").replace(",", ".") or 0)
+        n = float(match.group(1).replace(" ", "").replace(",", "."))
     except (TypeError, ValueError):
         return ""
     if abs(n) < 1e-9:
@@ -237,6 +251,50 @@ def _digits_only(code: str) -> str:
     return digits.lstrip("0") or digits
 
 
+def _norm_product_id(value: Any) -> str:
+    """ID Prom зі Sheet: 1430223923, 1430223923.0 або 1.430223923e9 → однакові."""
+    raw = str(value or "").strip().replace("\u00a0", "").replace(" ", "")
+    if not raw:
+        return ""
+    m = re.fullmatch(r"(\d+)\.0+", raw)
+    if m:
+        return m.group(1)
+    if re.fullmatch(r"[-+]?\d+(\.\d+)?[eE][-+]?\d+", raw):
+        try:
+            n = float(raw)
+            if n.is_integer() and n > 0:
+                return str(int(n))
+        except (ValueError, OverflowError):
+            pass
+    return raw
+
+
+def _product_ids_equal(left: Any, right: Any) -> bool:
+    a = _norm_product_id(left)
+    b = _norm_product_id(right)
+    return bool(a and b and a == b)
+
+
+def _is_generic_sheet_color(color: str) -> bool:
+    key = _norm_text(color)
+    if not key:
+        return True
+    return any(
+        key.startswith(p)
+        for p in (
+            "разн",
+            "різн",
+            "микс",
+            "мікс",
+            "mix",
+            "асортимент",
+            "ассортимент",
+            "разноцвет",
+            "різнокольор",
+        )
+    )
+
+
 def _codes_match_lenient(v_code: str, query_code: str, catalog: Any = None) -> bool:
     """Сопоставление кодов: точное, без ведущих нулей или только цифры (игнорируя буквы)."""
     v_s = str(v_code or "").strip()
@@ -261,35 +319,128 @@ def _codes_match_lenient(v_code: str, query_code: str, catalog: Any = None) -> b
     return False
 
 
-def _lookup_variant_meta(
-    catalog: Any, code: str, color: str
-) -> tuple[str, str, str]:
-    """Повертає (retail_price, location, name)."""
-    if catalog is None or not str(code or "").strip():
-        return "", "", ""
+def _find_catalog_variants(
+    catalog: Any, code: str, color: str = "", product_id: str = ""
+) -> list[Any]:
+    """Рядки наявності: спочатку Prom ID (стовпець A), інакше складський код (B)."""
+    if catalog is None:
+        return []
     try:
         variants = catalog.all_variants()
     except Exception:
         logger.exception("catalog all_variants failed for sheet enrich")
-        return "", "", ""
-    color_n = _norm_text(color)
-    matches = []
-    for v in variants:
-        if not _codes_match_lenient(getattr(v, "code", ""), code, catalog):
-            continue
-        matches.append(v)
+        return []
+    matches: list[Any] = []
+    pid = str(product_id or "").strip()
+    if pid:
+        matches = [
+            v for v in variants if _product_ids_equal(getattr(v, "product_id", ""), pid)
+        ]
+    query = str(code or "").strip()
+    if not matches and query:
+        matches = [
+            v
+            for v in variants
+            if _codes_match_lenient(getattr(v, "code", ""), query, catalog)
+        ]
+    if not matches and query:
+        matches = [
+            v
+            for v in variants
+            if _product_ids_equal(getattr(v, "product_id", ""), query)
+        ]
     if not matches:
-        return "", "", ""
+        return []
+    color_n = _norm_text(color)
     if color_n:
         by_color = [v for v in matches if _norm_text(getattr(v, "color", "")) == color_n]
         if by_color:
             matches = by_color
+    elif pid and len(matches) > 1:
+        specific = [
+            v
+            for v in matches
+            if str(getattr(v, "color", "") or "").strip()
+            and not _is_generic_sheet_color(str(getattr(v, "color", "") or ""))
+        ]
+        if specific:
+            matches = specific
+    return matches
+
+
+def _lookup_variant_meta(
+    catalog: Any, code: str, color: str, product_id: str = ""
+) -> tuple[str, str, str, str]:
+    """Повертає (retail_price, location, name, drop_price).
+
+    Назва для листа «Заказы» — стовпець D таблиці наявності, інакше C.
+    """
+    if catalog is None or (
+        not str(code or "").strip() and not str(product_id or "").strip()
+    ):
+        return "", "", "", ""
+    matches = _find_catalog_variants(catalog, code, color, product_id)
+    if not matches:
+        return "", "", "", ""
     v = matches[0]
+    sheet_name = str(getattr(v, "warehouse_name", "") or "").strip() or str(
+        getattr(v, "name", "") or ""
+    ).strip()
     return (
         str(getattr(v, "retail_price", "") or ""),
         str(getattr(v, "location", "") or ""),
-        str(getattr(v, "name", "") or "").strip(),
+        sheet_name,
+        str(getattr(v, "drop_price", "") or ""),
     )
+
+
+def _catalog_colors_for_code(
+    catalog: Any, code: str, product_id: str = ""
+) -> list[str]:
+    colors: list[str] = []
+    seen: set[str] = set()
+    for v in _find_catalog_variants(catalog, code, "", product_id):
+        raw = str(getattr(v, "color", "") or "").strip()
+        if not raw:
+            continue
+        key = _norm_text(raw)
+        if not key or key in seen or _is_generic_sheet_color(raw):
+            continue
+        seen.add(key)
+        colors.append(raw)
+    return colors
+
+
+def _lookup_unique_catalog_color(
+    catalog: Any, code: str, product_id: str = ""
+) -> str:
+    """Колір з наявності, якщо за кодом/ID Prom є рівно один конкретний варіант."""
+    colors = _catalog_colors_for_code(catalog, code, product_id)
+    return colors[0] if len(colors) == 1 else ""
+
+
+def _match_catalog_color(
+    catalog: Any, code: str, candidates: list[Any], product_id: str = ""
+) -> str:
+    """Підібрати колір з наявності за значеннями характеристик майданчика."""
+    colors = _catalog_colors_for_code(catalog, code, product_id)
+    if not colors:
+        return ""
+    indexed = [(_norm_text(c), c) for c in colors]
+    texts: list[str] = []
+    for raw in candidates or []:
+        text = _norm_text(str(raw or ""))
+        if text and text not in texts:
+            texts.append(text)
+    for text in texts:
+        for key, orig in indexed:
+            if text == key:
+                return orig
+    for text in texts:
+        for key, orig in indexed:
+            if text and key and (text in key or key in text):
+                return orig
+    return ""
 
 
 def build_sheet_rows(
@@ -348,7 +499,9 @@ def build_sheet_rows(
         retail = str(item.get("retail_price") or "").strip()
         location = str(item.get("location") or "").strip()
 
-        r2, loc2, name2 = _lookup_variant_meta(catalog, code, color)
+        r2, loc2, name2, _drop2 = _lookup_variant_meta(
+            catalog, code, color, product_id=str(item.get("product_id") or "").strip()
+        )
         retail = retail or r2
         location = location or loc2
         if name2:

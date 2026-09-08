@@ -286,6 +286,23 @@ class ExtOrderWriteRequest(BaseModel):
     comment: str = Field("", max_length=1000)
 
 
+class ExtManualOrderRequest(BaseModel):
+    code: str = Field(..., min_length=1, max_length=64)
+    color: str = Field("", max_length=80)
+    qty: int = Field(1, ge=1, le=999)
+    name: str = Field("", max_length=300)
+    clientName: str = Field("", max_length=200)
+    phone: str = Field("", max_length=32)
+    city: str = Field("", max_length=120)
+    warehouse: str = Field("", max_length=200)
+    payment: str = Field("НАЛОЖКА", max_length=32)
+    carrier: str = Field("НП", max_length=32)
+    ttn: str = Field("", max_length=64)
+    source: str = Field("Телефон", max_length=64)
+    comment: str = Field("", max_length=1000)
+    requireTtn: bool = False
+
+
 def _apply_dropper_discount(price_raw: str, percent: float) -> tuple[str, str | None]:
     """Повертає (ціна_для_показу, оригінал_або_None)."""
     if not percent or percent <= 0:
@@ -500,6 +517,75 @@ def create_web_app(
         except Exception as exc:
             logger.exception("ext order write failed")
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.get("/api/ext/catalog")
+    async def ext_catalog_lookup(
+        request: Request, q: str = Query("", max_length=80)
+    ) -> dict:
+        _require_ext_token(request)
+        from bot.marketplace_ext import lookup_catalog_items
+
+        query = (q or "").strip()
+        if not query:
+            return {"ok": True, "items": []}
+        try:
+            items = await asyncio.to_thread(lookup_catalog_items, catalog, query)
+        except Exception as exc:
+            logger.exception("ext catalog lookup failed")
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {"ok": True, "items": items}
+
+    @app.post("/api/ext/order/manual")
+    async def ext_order_manual(
+        payload: ExtManualOrderRequest, request: Request
+    ) -> dict:
+        _require_ext_token(request)
+        from bot.marketplace_ext import write_manual_order
+
+        if payload.requireTtn and not (payload.ttn or "").strip():
+            raise HTTPException(status_code=400, detail="Вкажіть номер ТТН")
+
+        try:
+            return await asyncio.to_thread(
+                write_manual_order,
+                storage,
+                code=payload.code,
+                color=payload.color or "",
+                qty=payload.qty,
+                name=payload.name or "",
+                client_name=payload.clientName or "",
+                phone=payload.phone or "",
+                city=payload.city or "",
+                warehouse=payload.warehouse or "",
+                payment=payload.payment or "НАЛОЖКА",
+                carrier=payload.carrier or "НП",
+                ttn=payload.ttn or "",
+                source=payload.source or "Телефон",
+                comment=payload.comment or "",
+                catalog=catalog,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except Exception as exc:
+            logger.exception("ext manual order write failed")
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.get("/api/ext/ttn")
+    async def ext_ttn_lookup(
+        request: Request, number: str = Query("", max_length=64)
+    ) -> dict:
+        _require_ext_token(request)
+        from bot.sheet_tracking import lookup_ttn_details
+
+        ttn = (number or "").strip()
+        if not ttn:
+            return {"ok": True, "found": False, "ttn": ""}
+        try:
+            data = await asyncio.to_thread(lookup_ttn_details, storage, ttn)
+        except Exception as exc:
+            logger.exception("ext ttn lookup failed")
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {"ok": True, **data}
 
     @app.get("/api/session")
     async def session(
@@ -1645,7 +1731,7 @@ def create_web_app(
             for item in safe_cart:
                 if item.get("retail_price") and item.get("location"):
                     continue
-                retail, loc = _lookup_variant_meta(
+                retail, loc, *_rest = _lookup_variant_meta(
                     catalog, str(item.get("code") or ""), str(item.get("color") or "")
                 )
                 if not item.get("retail_price") and retail:

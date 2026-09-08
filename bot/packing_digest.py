@@ -101,7 +101,7 @@ def _extract_packing_items(
                 try:
                     from bot.orders_sheets import _lookup_variant_meta
 
-                    _, loc_cat = _lookup_variant_meta(catalog, code, color)
+                    _, loc_cat, *_rest = _lookup_variant_meta(catalog, code, color)
                     loc = _clean_location(loc_cat)
                 except Exception:
                     pass
