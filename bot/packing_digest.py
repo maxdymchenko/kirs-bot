@@ -14,7 +14,7 @@ from typing import Any, Awaitable, Callable
 from zoneinfo import ZoneInfo
 
 from bot.accounts import AppStorage
-from bot.warehouse import list_warehouse_queue
+from bot.warehouse import is_sheet_queue_order, list_warehouse_queue
 
 logger = logging.getLogger(__name__)
 
@@ -24,35 +24,6 @@ HOUR_NOON = 12
 HOUR_AFTERNOON = 14
 SETTINGS_KEY = "packing_digest_state"
 DEFAULT_CHAT_ID = "-1003912251878"
-
-_MARKET_SOURCE_MARKERS = (
-    "пром",
-    "prom",
-    "rozetka",
-    "розет",
-    "kasta",
-    "каста",
-    "телефон",
-    "olx",
-    "instagram",
-    "інстаграм",
-    "инстаграм",
-    "інше",
-    "viber",
-)
-_LEFT_WAREHOUSE_STATUS = (
-    "в дорозі",
-    "у дорозі",
-    "в дороге",
-    "на відділен",
-    "на отделен",
-    "у відділен",
-    "прибув на",
-    "прибыл на",
-    "передано перевізнику",
-    "прямує до",
-    "видано одержувачу",
-)
 
 NotifyFn = Callable[[str, str], Awaitable[None] | None]
 
@@ -168,104 +139,23 @@ def packing_orders(storage: AppStorage, *, limit: int = 500) -> list[dict[str, A
     return list_warehouse_queue(storage, stage="packing", limit=limit)
 
 
-def _is_market_or_manual_source(source: str, order_no: str = "") -> bool:
-    text = str(source or "").casefold()
-    no = str(order_no or "").strip().upper()
-    if no.startswith("TEL-"):
-        return True
-    if not text:
-        return False
-    return any(marker in text for marker in _MARKET_SOURCE_MARKERS)
-
-
-def _is_sheet_row_still_packing(status: str) -> bool:
-    from bot.sheet_tracking import is_terminal_sheet_status
-
-    raw = str(status or "").strip()
-    if is_terminal_sheet_status(raw):
-        return False
-    folded = raw.casefold()
-    return not any(word in folded for word in _LEFT_WAREHOUSE_STATUS)
-
-
-def _sheet_qty(raw: Any) -> int:
-    text = str(raw or "").strip().replace(" ", "").replace(",", ".")
-    try:
-        n = int(float(text)) if text else 1
-    except (TypeError, ValueError):
-        n = 1
-    return max(1, n)
-
-
-def list_sheet_packing_orders(storage: AppStorage) -> list[dict[str, Any]]:
-    """Рядки Prom / Rozetka / ручні з листа «Заказы», які ще на складі."""
-    try:
-        from bot.orders_sheets import _open_orders_worksheet
-
-        ws = _open_orders_worksheet(storage)
-        rows = ws.get_all_values()
-    except Exception:
-        logger.exception("packing digest: failed to read marketplace rows from sheet")
-        return []
-    out: list[dict[str, Any]] = []
-    for idx, row in enumerate(rows[1:], start=2):
-        while len(row) < 18:
-            row.append("")
-        order_no = str(row[1] or "").strip()
-        source = str(row[10] or "").strip()
-        if not order_no or not _is_market_or_manual_source(source, order_no):
-            continue
-        if not _is_sheet_row_still_packing(row[13]):
-            continue
-        code = str(row[5] or "").strip()
-        color = str(row[6] or "").strip()
-        name = str(row[4] or "").strip()
-        qty = _sheet_qty(row[7])
-        loc = _clean_location(row[17] if len(row) > 17 else "")
-        sheet_key = f"{order_no}|{code}|{color}|{idx}"
-        out.append(
-            {
-                "id": None,
-                "order_number": order_no,
-                "payload": {
-                    "cart": [
-                        {
-                            "name": name,
-                            "code": code,
-                            "color": color,
-                            "qty": qty,
-                            "location": loc,
-                            "source": source,
-                        }
-                    ],
-                    "sheet_key": sheet_key,
-                    "market_source": source,
-                },
-            }
-        )
-    return out
-
-
-def _sheet_key_of(order: dict[str, Any]) -> str:
+def _digest_sheet_token(order: dict[str, Any]) -> str:
+    if is_sheet_queue_order(order):
+        return str(order.get("order_number") or "").strip()
     payload = order.get("payload") if isinstance(order.get("payload"), dict) else {}
     return str(payload.get("sheet_key") or "").strip()
 
 
-def merge_packing_orders(
-    dropper_orders: list[dict[str, Any]],
-    sheet_orders: list[dict[str, Any]],
-) -> list[dict[str, Any]]:
-    seen_nos = {
-        str(order.get("order_number") or "").strip()
-        for order in dropper_orders
-        if str(order.get("order_number") or "").strip()
-    }
-    extra = [
-        order
-        for order in sheet_orders
-        if str(order.get("order_number") or "").strip() not in seen_nos
-    ]
-    return [*dropper_orders, *extra]
+def _digest_sqlite_id(order: dict[str, Any]) -> int | None:
+    if _digest_sheet_token(order):
+        return None
+    raw = order.get("id")
+    if raw is None:
+        return None
+    text = str(raw).strip()
+    if text.lstrip("-").isdigit():
+        return int(text)
+    return None
 
 
 def format_packing_digest_messages(
@@ -513,9 +403,7 @@ async def run_packing_digest_pass(
         stats["skipped"] = 1
         return stats
 
-    dropper_orders = packing_orders(storage)
-    sheet_orders = list_sheet_packing_orders(storage)
-    orders = merge_packing_orders(dropper_orders, sheet_orders)
+    orders = packing_orders(storage)
     day = _day_key(now)
     locations_order = storage.get_warehouse_locations_order()
 
@@ -530,10 +418,10 @@ async def run_packing_digest_pass(
         )
         # навіть якщо 0 — зберігаємо порожній список, щоб 14:00 знала базу
         state.setdefault("noon_ids_by_day", {})[day] = [
-            int(o["id"]) for o in selected if o.get("id") is not None
+            oid for o in selected if (oid := _digest_sqlite_id(o)) is not None
         ]
         state.setdefault("noon_sheet_keys_by_day", {})[day] = [
-            key for o in selected if (key := _sheet_key_of(o))
+            key for o in selected if (key := _digest_sheet_token(o))
         ]
     else:
         noon_ids = {
@@ -546,12 +434,14 @@ async def run_packing_digest_pass(
         }
         selected = []
         for o in orders:
-            sheet_key = _sheet_key_of(o)
+            sheet_key = _digest_sheet_token(o)
             if sheet_key:
                 if sheet_key not in noon_sheet:
                     selected.append(o)
-            elif o.get("id") is not None and int(o["id"]) not in noon_ids:
-                selected.append(o)
+            else:
+                oid = _digest_sqlite_id(o)
+                if oid is not None and oid not in noon_ids:
+                    selected.append(o)
         messages = (
             format_packing_digest_messages(
                 selected, locations_order, catalog=catalog, is_noon=False

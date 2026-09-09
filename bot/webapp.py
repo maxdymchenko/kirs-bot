@@ -3255,12 +3255,14 @@ def create_web_app(
                     **o,
                     "warehouse_stage": order_warehouse_stage(o),
                     "has_ttn_pdf": order_has_ttn_pdf(o),
+                    "source_label": str(payload.get("market_source") or "").strip(),
                     "cart_summary": [
                         {
                             "code": str(x.get("code") or ""),
                             "color": str(x.get("color") or ""),
                             "qty": int(x.get("qty") or 1),
                             "name": str(x.get("name") or ""),
+                            "location": str(x.get("location") or ""),
                         }
                         for x in cart
                         if isinstance(x, dict)
@@ -3277,7 +3279,7 @@ def create_web_app(
 
     @app.post("/api/warehouse/orders/{order_id}/ready")
     async def warehouse_mark_ready(
-        order_id: int,
+        order_id: str,
         chat_id: str = Query("", max_length=64),
         user_id: str = Query("", max_length=64),
         username: str = Query("", max_length=64),
@@ -3335,7 +3337,7 @@ def create_web_app(
 
     @app.post("/api/warehouse/orders/{order_id}/packing")
     async def warehouse_mark_packing(
-        order_id: int,
+        order_id: str,
         chat_id: str = Query("", max_length=64),
         user_id: str = Query("", max_length=64),
         username: str = Query("", max_length=64),
@@ -3356,16 +3358,16 @@ def create_web_app(
         chat_id: str = Query("", max_length=64),
         user_id: str = Query("", max_length=64),
         username: str = Query("", max_length=64),
-        order_id: list[int] = Query(default=[]),
+        order_id: list[str] = Query(default=[]),
     ) -> Response:
         from bot.warehouse import list_warehouse_queue, merge_ready_ttn_pdfs
 
         _require_warehouse(chat_id=chat_id, user_id=user_id, username=username)
         items = list_warehouse_queue(storage, stage="ready_to_ship", limit=300)
-        selected = [int(x) for x in (order_id or []) if str(x).strip()]
+        selected = [str(x).strip() for x in (order_id or []) if str(x).strip()]
         if selected:
             wanted = set(selected)
-            items = [o for o in items if int(o.get("id") or 0) in wanted]
+            items = [o for o in items if str(o.get("id") or "") in wanted]
             if not items:
                 raise HTTPException(
                     status_code=400,

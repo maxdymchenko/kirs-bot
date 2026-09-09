@@ -6774,7 +6774,9 @@ ${
             (x) =>
               `${escapeHtml(x.code || "")}${
                 x.color ? ` · ${escapeHtml(x.color)}` : ""
-              } ×${escapeHtml(String(x.qty || 1))}`
+              } ×${escapeHtml(String(x.qty || 1))}${
+                x.location ? ` · ${escapeHtml(x.location)}` : ""
+              }`
           )
           .join("<br/>")
       : "—";
@@ -6804,7 +6806,7 @@ ${
               order.ttn_number || "—"
             )}</div>
             <div class="meta">${escapeHtml(order.recipient_name || "—")} · ${escapeHtml(
-              order.own_ttn ? "власна ТТН" : "ТТН власника"
+              order.source_label || (order.own_ttn ? "власна ТТН" : "ТТН власника")
             )} · ${pdfBadge}</div>
           </div>
           ${checkHtml}
