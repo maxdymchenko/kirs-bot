@@ -1,6 +1,6 @@
 """Дайджест у групу упаковки: 12:00 і 14:00 (Київ).
 
-12:00 — усі замовлення в черзі «На пакування» (розбивка за градацією розташування на складі).
+12:00 — черга «На пакування»: замовлення дропперов + Prom/Rozetka/ручні з листа «Заказы».
 14:00 — лише ті, що зʼявились після полудня (не були в списку 12:00).
 Якщо замовлень немає — повідомлення не надсилаємо.
 """
@@ -24,6 +24,35 @@ HOUR_NOON = 12
 HOUR_AFTERNOON = 14
 SETTINGS_KEY = "packing_digest_state"
 DEFAULT_CHAT_ID = "-1003912251878"
+
+_MARKET_SOURCE_MARKERS = (
+    "пром",
+    "prom",
+    "rozetka",
+    "розет",
+    "kasta",
+    "каста",
+    "телефон",
+    "olx",
+    "instagram",
+    "інстаграм",
+    "инстаграм",
+    "інше",
+    "viber",
+)
+_LEFT_WAREHOUSE_STATUS = (
+    "в дорозі",
+    "у дорозі",
+    "в дороге",
+    "на відділен",
+    "на отделен",
+    "у відділен",
+    "прибув на",
+    "прибыл на",
+    "передано перевізнику",
+    "прямує до",
+    "видано одержувачу",
+)
 
 NotifyFn = Callable[[str, str], Awaitable[None] | None]
 
@@ -83,6 +112,7 @@ def _extract_packing_items(
                     "color": "",
                     "qty": 1,
                     "location": "",
+                    "source": "",
                 }
             )
             total_qty += 1
@@ -106,6 +136,9 @@ def _extract_packing_items(
                 except Exception:
                     pass
 
+            source = str(
+                item.get("source") or payload.get("market_source") or ""
+            ).strip()
             all_items.append(
                 {
                     "order_number": order_num,
@@ -114,6 +147,7 @@ def _extract_packing_items(
                     "color": color,
                     "qty": qty,
                     "location": loc,
+                    "source": source,
                 }
             )
             total_qty += qty
@@ -132,6 +166,106 @@ def _day_key(day: datetime) -> str:
 def packing_orders(storage: AppStorage, *, limit: int = 500) -> list[dict[str, Any]]:
     """Поточна черга «На пакування» (та сама логіка, що в кабінеті комірника)."""
     return list_warehouse_queue(storage, stage="packing", limit=limit)
+
+
+def _is_market_or_manual_source(source: str, order_no: str = "") -> bool:
+    text = str(source or "").casefold()
+    no = str(order_no or "").strip().upper()
+    if no.startswith("TEL-"):
+        return True
+    if not text:
+        return False
+    return any(marker in text for marker in _MARKET_SOURCE_MARKERS)
+
+
+def _is_sheet_row_still_packing(status: str) -> bool:
+    from bot.sheet_tracking import is_terminal_sheet_status
+
+    raw = str(status or "").strip()
+    if is_terminal_sheet_status(raw):
+        return False
+    folded = raw.casefold()
+    return not any(word in folded for word in _LEFT_WAREHOUSE_STATUS)
+
+
+def _sheet_qty(raw: Any) -> int:
+    text = str(raw or "").strip().replace(" ", "").replace(",", ".")
+    try:
+        n = int(float(text)) if text else 1
+    except (TypeError, ValueError):
+        n = 1
+    return max(1, n)
+
+
+def list_sheet_packing_orders(storage: AppStorage) -> list[dict[str, Any]]:
+    """Рядки Prom / Rozetka / ручні з листа «Заказы», які ще на складі."""
+    try:
+        from bot.orders_sheets import _open_orders_worksheet
+
+        ws = _open_orders_worksheet(storage)
+        rows = ws.get_all_values()
+    except Exception:
+        logger.exception("packing digest: failed to read marketplace rows from sheet")
+        return []
+    out: list[dict[str, Any]] = []
+    for idx, row in enumerate(rows[1:], start=2):
+        while len(row) < 18:
+            row.append("")
+        order_no = str(row[1] or "").strip()
+        source = str(row[10] or "").strip()
+        if not order_no or not _is_market_or_manual_source(source, order_no):
+            continue
+        if not _is_sheet_row_still_packing(row[13]):
+            continue
+        code = str(row[5] or "").strip()
+        color = str(row[6] or "").strip()
+        name = str(row[4] or "").strip()
+        qty = _sheet_qty(row[7])
+        loc = _clean_location(row[17] if len(row) > 17 else "")
+        sheet_key = f"{order_no}|{code}|{color}|{idx}"
+        out.append(
+            {
+                "id": None,
+                "order_number": order_no,
+                "payload": {
+                    "cart": [
+                        {
+                            "name": name,
+                            "code": code,
+                            "color": color,
+                            "qty": qty,
+                            "location": loc,
+                            "source": source,
+                        }
+                    ],
+                    "sheet_key": sheet_key,
+                    "market_source": source,
+                },
+            }
+        )
+    return out
+
+
+def _sheet_key_of(order: dict[str, Any]) -> str:
+    payload = order.get("payload") if isinstance(order.get("payload"), dict) else {}
+    return str(payload.get("sheet_key") or "").strip()
+
+
+def merge_packing_orders(
+    dropper_orders: list[dict[str, Any]],
+    sheet_orders: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    seen_nos = {
+        str(order.get("order_number") or "").strip()
+        for order in dropper_orders
+        if str(order.get("order_number") or "").strip()
+    }
+    extra = [
+        order
+        for order in sheet_orders
+        if str(order.get("order_number") or "").strip() not in seen_nos
+    ]
+    return [*dropper_orders, *extra]
 
 
 def format_packing_digest_messages(
@@ -202,7 +336,10 @@ def format_packing_digest_messages(
                 details.append(name[:40])
 
             desc = " · ".join(details) if details else (name[:40] or "Товар")
-            lines.append(f"• {desc} — {qty} шт (№ {ord_num})")
+            tail = f"№ {ord_num}"
+            if it.get("source"):
+                tail += f" · {it['source']}"
+            lines.append(f"• {desc} — {qty} шт ({tail})")
 
         blocks.append("\n".join(lines))
 
@@ -251,13 +388,13 @@ def _load_state(storage: AppStorage) -> dict[str, Any]:
             (SETTINGS_KEY,),
         ).fetchone()
     if not row:
-        return {"sent": [], "noon_ids_by_day": {}}
+        return {"sent": [], "noon_ids_by_day": {}, "noon_sheet_keys_by_day": {}}
     try:
         data = json.loads(row["value_json"] or "{}")
     except json.JSONDecodeError:
-        return {"sent": [], "noon_ids_by_day": {}}
+        return {"sent": [], "noon_ids_by_day": {}, "noon_sheet_keys_by_day": {}}
     if not isinstance(data, dict):
-        return {"sent": [], "noon_ids_by_day": {}}
+        return {"sent": [], "noon_ids_by_day": {}, "noon_sheet_keys_by_day": {}}
     sent = data.get("sent")
     if not isinstance(sent, list):
         sent = []
@@ -269,9 +406,18 @@ def _load_state(storage: AppStorage) -> dict[str, Any]:
         if not isinstance(ids, list):
             continue
         cleaned[str(day)] = [int(x) for x in ids if str(x).strip().lstrip("-").isdigit()]
+    sheet_map = data.get("noon_sheet_keys_by_day")
+    if not isinstance(sheet_map, dict):
+        sheet_map = {}
+    sheet_cleaned: dict[str, list[str]] = {}
+    for day, keys in sheet_map.items():
+        if not isinstance(keys, list):
+            continue
+        sheet_cleaned[str(day)] = [str(x) for x in keys if str(x).strip()]
     return {
         "sent": [str(x) for x in sent][-60:],
         "noon_ids_by_day": cleaned,
+        "noon_sheet_keys_by_day": sheet_cleaned,
     }
 
 
@@ -279,15 +425,20 @@ def _save_state(storage: AppStorage, state: dict[str, Any]) -> None:
     from bot.accounts import _now
 
     noon_map = state.get("noon_ids_by_day") or {}
+    sheet_map = state.get("noon_sheet_keys_by_day") or {}
     # тримаємо лише останні ~14 днів
     if isinstance(noon_map, dict) and len(noon_map) > 14:
         keys = sorted(noon_map.keys())[-14:]
         noon_map = {k: noon_map[k] for k in keys}
+    if isinstance(sheet_map, dict) and len(sheet_map) > 14:
+        keys = sorted(sheet_map.keys())[-14:]
+        sheet_map = {k: sheet_map[k] for k in keys}
 
     payload = json.dumps(
         {
             "sent": list(state.get("sent") or [])[-60:],
             "noon_ids_by_day": noon_map,
+            "noon_sheet_keys_by_day": sheet_map,
         },
         ensure_ascii=False,
     )
@@ -362,7 +513,9 @@ async def run_packing_digest_pass(
         stats["skipped"] = 1
         return stats
 
-    orders = packing_orders(storage)
+    dropper_orders = packing_orders(storage)
+    sheet_orders = list_sheet_packing_orders(storage)
+    orders = merge_packing_orders(dropper_orders, sheet_orders)
     day = _day_key(now)
     locations_order = storage.get_warehouse_locations_order()
 
@@ -379,16 +532,26 @@ async def run_packing_digest_pass(
         state.setdefault("noon_ids_by_day", {})[day] = [
             int(o["id"]) for o in selected if o.get("id") is not None
         ]
+        state.setdefault("noon_sheet_keys_by_day", {})[day] = [
+            key for o in selected if (key := _sheet_key_of(o))
+        ]
     else:
         noon_ids = {
             int(x)
             for x in (state.get("noon_ids_by_day") or {}).get(day, [])
         }
-        selected = [
-            o
-            for o in orders
-            if o.get("id") is not None and int(o["id"]) not in noon_ids
-        ]
+        noon_sheet = {
+            str(x)
+            for x in (state.get("noon_sheet_keys_by_day") or {}).get(day, [])
+        }
+        selected = []
+        for o in orders:
+            sheet_key = _sheet_key_of(o)
+            if sheet_key:
+                if sheet_key not in noon_sheet:
+                    selected.append(o)
+            elif o.get("id") is not None and int(o["id"]) not in noon_ids:
+                selected.append(o)
         messages = (
             format_packing_digest_messages(
                 selected, locations_order, catalog=catalog, is_noon=False
