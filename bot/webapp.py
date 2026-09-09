@@ -1959,6 +1959,65 @@ def create_web_app(
             "edit_window": window,
         }
 
+    @app.get("/api/owner/form-history")
+    async def owner_form_history(
+        owner_chat_id: str = Query("", max_length=64),
+        owner_user_id: str = Query("", max_length=64),
+        limit: int = Query(500, ge=1, le=500),
+    ) -> dict:
+        from bot.order_edit import enrich_orders_with_changes
+        from bot.warehouse import list_owner_form_history
+
+        _require_owner(owner_chat_id, owner_user_id)
+        items = list_owner_form_history(
+            storage, owner_chat_id=owner_chat_id, limit=limit
+        )
+        sqlite_items = [o for o in items if not (o.get("payload") or {}).get("sheet_order")]
+        sheet_items = [o for o in items if (o.get("payload") or {}).get("sheet_order")]
+        sqlite_items = enrich_orders_with_changes(storage, sqlite_items)
+        merged = [*sqlite_items, *sheet_items]
+        merged.sort(key=lambda o: str(o.get("created_at") or ""), reverse=True)
+        return {"count": len(merged), "items": merged, "edit_window": None}
+
+    @app.get("/api/owner/form-history/export.xlsx")
+    async def owner_form_history_export(
+        owner_chat_id: str = Query("", max_length=64),
+        owner_user_id: str = Query("", max_length=64),
+        status: str = Query("", max_length=32),
+        date_from: str = Query("", max_length=16),
+        date_to: str = Query("", max_length=16),
+    ) -> Response:
+        from bot.excel_export import (
+            build_orders_xlsx,
+            order_matches_export_filters,
+            safe_filename,
+        )
+        from bot.warehouse import list_owner_form_history
+
+        _require_owner(owner_chat_id, owner_user_id)
+        items = list_owner_form_history(
+            storage, owner_chat_id=owner_chat_id, limit=500
+        )
+        filtered = [
+            o
+            for o in items
+            if order_matches_export_filters(
+                o,
+                status=status,
+                date_from=date_from.strip(),
+                date_to=date_to.strip(),
+            )
+        ]
+        data = build_orders_xlsx(filtered, sheet_title="Замовлення")
+        filename = safe_filename("orders_owner_form")
+        return Response(
+            content=data,
+            media_type=(
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            ),
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
+
     @app.get("/api/dropper/orders/export.xlsx")
     async def dropper_orders_export(
         chat_id: str = Query(..., max_length=64),

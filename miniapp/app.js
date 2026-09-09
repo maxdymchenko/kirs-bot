@@ -63,6 +63,7 @@
     historyPageNext: document.getElementById("historyPageNext"),
     historyPageLabel: document.getElementById("historyPageLabel"),
     historyOrdersCount: document.getElementById("historyOrdersCount"),
+    historyViewHint: document.getElementById("historyViewHint"),
     balanceFiltersToggle: document.getElementById("balanceFiltersToggle"),
     balanceFiltersPanel: document.getElementById("balanceFiltersPanel"),
     balanceExcelExport: document.getElementById("balanceExcelExport"),
@@ -2009,6 +2010,7 @@ ${ttnLine}</div>
   }
 
   function orderDropperProfit(order) {
+    if ((order.payload || {}).sheet_order) return null;
     if (orderPaymentMethod(order) !== "cod") return null;
     const payload = order.payload || {};
     const ttn = String(order.ttn_status || "");
@@ -2596,6 +2598,10 @@ ${
     const statusSub = hist.sub
       ? `<div class="order-card-status-sub">${escapeHtml(hist.sub)}</div>`
       : "";
+    const sourceLabel = String(payload.market_source || "").trim();
+    const sourceHtml = sourceLabel
+      ? `<div class="meta">${escapeHtml(sourceLabel)}</div>`
+      : "";
     const pdfHold = Boolean(payload.ttn_pdf_hold);
     const pdfHoldHtml = pdfHold
       ? `<div class="form-error order-pdf-hold">⚠️ Номер ТТН і PDF не збігаються — виправте, інакше замовлення не піде на упаковку. ${escapeHtml(
@@ -2607,6 +2613,7 @@ ${
         <button type="button" class="order-card-toggle" aria-expanded="false">
           <div class="order-card-main">
             <div class="order-card-num">${escapeHtml(order.order_number || "")}</div>
+            ${sourceHtml}
             <div class="meta">${escapeHtml(formatOrderDate(order.created_at))}</div>
             <div class="meta">${escapeHtml(name || "—")} · ${escapeHtml(recipient.phone || "")}</div>
             <div class="meta">${escapeHtml(delivery.city || "")}</div>
@@ -3885,8 +3892,9 @@ ${
         ? pageItems
             .map((o) =>
               renderOrderCard(o, {
-                dropperActions: true,
-                allowDropperEdit: historyBucket === "awaiting",
+                dropperActions: !(o.payload || {}).sheet_order,
+                allowDropperEdit:
+                  historyBucket === "awaiting" && !(o.payload || {}).sheet_order,
                 editWindow: dropperOrdersEditWindow,
                 editMode: "dropper",
               })
@@ -3900,16 +3908,26 @@ ${
     bindOrderCardClicks(els.ordersHistory);
   }
 
+  function isOwnerSelfForm() {
+    return sessionState.role === "owner" && previewState.mode === "owner";
+  }
+
   async function renderOrdersHistory() {
     if (!els.ordersHistory) return;
+    if (els.historyViewHint) {
+      els.historyViewHint.textContent = isOwnerSelfForm()
+        ? "Замовлення Mini App, а також Prom / Rozetka / ручний ввід з таблиці «Заказы»."
+        : "Усі передані вами замовлення з номерами.";
+    }
     const chatId = effectiveDropperChatId();
     syncHistoryBucketTabs();
     historyPage = 0;
     els.ordersHistory.innerHTML = `<div class="ac-loading">Завантаження історії...</div>`;
     try {
-      const response = await fetch(
-        `/api/dropper/orders?chat_id=${encodeURIComponent(chatId)}&limit=500`
-      );
+      const url = isOwnerSelfForm()
+        ? `/api/owner/form-history?${ownerAuthParams()}&limit=500`
+        : `/api/dropper/orders?chat_id=${encodeURIComponent(chatId)}&limit=500`;
+      const response = await fetch(url);
       const data = await response.json();
       if (!response.ok) {
         throw new Error(typeof data.detail === "string" ? data.detail : "Помилка");
@@ -7064,13 +7082,17 @@ ${
     els.historyExcelExport.addEventListener("click", async () => {
       const chatId = effectiveDropperChatId();
       const filters = collectOrderFilterValues(els.historyFiltersPanel);
-      const params = new URLSearchParams({ chat_id: chatId });
+      const params = isOwnerSelfForm()
+        ? new URLSearchParams(ownerAuthParams())
+        : new URLSearchParams({ chat_id: chatId });
       params.set("status", historyBucket || "all");
       if (filters.dateFrom) params.set("date_from", filters.dateFrom);
       if (filters.dateTo) params.set("date_to", filters.dateTo);
       try {
         await downloadBlobUrl(
-          `/api/dropper/orders/export.xlsx?${params.toString()}`,
+          isOwnerSelfForm()
+            ? `/api/owner/form-history/export.xlsx?${params.toString()}`
+            : `/api/dropper/orders/export.xlsx?${params.toString()}`,
           "orders.xlsx"
         );
         showToast("Excel завантажено");

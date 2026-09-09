@@ -5,6 +5,7 @@ from __future__ import annotations
 import io
 import json
 import logging
+import re
 from datetime import datetime
 from typing import Any
 
@@ -223,8 +224,63 @@ def set_sheet_warehouse_stage(
     _save_sheet_stages(storage, stages)
 
 
-def list_sheet_warehouse_orders(storage: AppStorage) -> list[dict[str, Any]]:
-    """Prom / Rozetka / ручні з листа «Заказы», які ще на складі (1 картка = 1 №)."""
+def _sheet_money(raw: Any) -> float:
+    text = str(raw or "").strip().replace(" ", "").replace(",", ".")
+    if not text:
+        return 0.0
+    try:
+        return max(0.0, float(text))
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _phone_from_client(text: str) -> str:
+    digits = re.sub(r"\D+", "", str(text or ""))
+    if len(digits) >= 10:
+        return digits[-12:] if len(digits) > 12 else digits
+    return ""
+
+
+def _sheet_status_to_ttn(status: str, ttn: str) -> str:
+    from bot.sheet_tracking import is_terminal_sheet_status
+
+    raw = str(status or "").strip()
+    folded = raw.casefold()
+    has_ttn = bool(str(ttn or "").strip())
+    if is_terminal_sheet_status(raw):
+        if any(
+            w in folded
+            for w in (
+                "відмов",
+                "отказ",
+                "повернен",
+                "повернут",
+                "возврат",
+                "скасован",
+                "отменен",
+            )
+        ):
+            if "скасован" in folded or "отменен" in folded:
+                return "cancelled"
+            return "returned"
+        return "received"
+    if any(word in folded for word in _LEFT_WAREHOUSE_STATUS):
+        if any(
+            w in folded
+            for w in ("відділен", "отделен", "прибув", "прибыл")
+        ):
+            return "at_warehouse"
+        return "in_transit"
+    if "помилка" in folded or "ошибка" in folded:
+        return "create_error"
+    if has_ttn:
+        return "created"
+    return "none"
+
+
+def _load_sheet_market_groups(
+    storage: AppStorage, *, packing_only: bool
+) -> dict[str, list[dict[str, Any]]]:
     try:
         from bot.orders_sheets import _open_orders_worksheet
 
@@ -232,7 +288,7 @@ def list_sheet_warehouse_orders(storage: AppStorage) -> list[dict[str, Any]]:
         rows = ws.get_all_values()
     except Exception:
         logger.exception("warehouse: failed to read marketplace rows from sheet")
-        return []
+        return {}
 
     groups: dict[str, list[dict[str, Any]]] = {}
     for idx, row in enumerate(rows[1:], start=2):
@@ -242,73 +298,152 @@ def list_sheet_warehouse_orders(storage: AppStorage) -> list[dict[str, Any]]:
         source = str(row[10] or "").strip()
         if not order_no or not _is_market_or_manual_source(source, order_no):
             continue
-        if not _is_sheet_row_still_packing(row[13]):
+        status = str(row[13] or "").strip()
+        if packing_only and not _is_sheet_row_still_packing(status):
             continue
         groups.setdefault(order_no, []).append(
             {
                 "row_idx": idx,
                 "created_raw": row[0],
+                "payment": str(row[2] or "").strip(),
                 "name": str(row[4] or "").strip(),
                 "code": str(row[5] or "").strip(),
                 "color": str(row[6] or "").strip(),
                 "qty": _sheet_qty(row[7]),
+                "retail": _sheet_money(row[8]),
                 "source": source,
                 "client": str(row[11] or "").strip(),
                 "ttn": str(row[12] or "").strip(),
+                "status": status,
                 "location": _clean_location(row[17] if len(row) > 17 else ""),
             }
         )
+    return groups
 
+
+def _sheet_order_from_lines(
+    order_no: str,
+    lines: list[dict[str, Any]],
+    *,
+    stages: dict[str, str] | None = None,
+    for_history: bool = False,
+) -> dict[str, Any]:
+    lines = sorted(lines, key=lambda x: int(x.get("row_idx") or 0))
+    latest = lines[-1]
+    ttn = next((str(x.get("ttn") or "").strip() for x in lines if x.get("ttn")), "")
+    sources: list[str] = []
+    for line in lines:
+        src = str(line.get("source") or "").strip()
+        if src and src not in sources:
+            sources.append(src)
+    client = next(
+        (str(x.get("client") or "").strip() for x in lines if x.get("client")),
+        "",
+    )
+    payment = next(
+        (str(x.get("payment") or "").strip() for x in lines if x.get("payment")),
+        "",
+    )
+    created_at = _sheet_created_at(latest.get("created_raw"), latest.get("row_idx") or 0)
+    source_label = " · ".join(sources)
+    total = round(sum(float(x.get("retail") or 0) * int(x.get("qty") or 1) for x in lines), 2)
+    if for_history:
+        ttn_status = _sheet_status_to_ttn(str(latest.get("status") or ""), ttn)
+        status = "cancelled" if ttn_status == "cancelled" else "accepted"
+    else:
+        ttn_status = "created" if ttn else "none"
+        status = "new"
+    stage = (stages or {}).get(order_no) or STAGE_PACKING
+    if stage not in {STAGE_PACKING, STAGE_READY}:
+        stage = STAGE_PACKING
+    return {
+        "id": sheet_order_id(order_no),
+        "order_number": order_no,
+        "ttn_number": ttn,
+        "own_ttn": False,
+        "created_at": created_at,
+        "warehouse_stage": stage,
+        "status": status,
+        "ttn_status": ttn_status,
+        "payment_method": payment,
+        "total": total,
+        "prepay": 0,
+        "payload": {
+            "sheet_order": True,
+            "market_source": source_label,
+            "warehouse_stage": stage,
+            "ttn_number": ttn,
+            "comment": source_label,
+            "recipient": {
+                "first_name": client,
+                "last_name": "",
+                "phone": _phone_from_client(client),
+            },
+            "payment": {"method": payment},
+            "cart": [
+                {
+                    "name": str(line.get("name") or ""),
+                    "code": str(line.get("code") or ""),
+                    "color": str(line.get("color") or ""),
+                    "qty": int(line.get("qty") or 1),
+                    "location": str(line.get("location") or ""),
+                    "source": str(line.get("source") or ""),
+                    "drop_price": str(line.get("retail") or ""),
+                }
+                for line in lines
+            ],
+        },
+    }
+
+
+def list_sheet_warehouse_orders(storage: AppStorage) -> list[dict[str, Any]]:
+    """Prom / Rozetka / ручні з листа «Заказы», які ще на складі (1 картка = 1 №)."""
+    groups = _load_sheet_market_groups(storage, packing_only=True)
     stages = _load_sheet_stages(storage)
-    out: list[dict[str, Any]] = []
-    for order_no, lines in groups.items():
-        lines.sort(key=lambda x: int(x.get("row_idx") or 0))
-        latest = lines[-1]
-        ttn = next((str(x.get("ttn") or "").strip() for x in lines if x.get("ttn")), "")
-        sources = []
-        for line in lines:
-            src = str(line.get("source") or "").strip()
-            if src and src not in sources:
-                sources.append(src)
-        client = next(
-            (str(x.get("client") or "").strip() for x in lines if x.get("client")),
-            "",
-        )
-        created_at = _sheet_created_at(latest.get("created_raw"), latest.get("row_idx") or 0)
-        stage = stages.get(order_no) or STAGE_PACKING
-        if stage not in {STAGE_PACKING, STAGE_READY}:
-            stage = STAGE_PACKING
-        out.append(
-            {
-                "id": sheet_order_id(order_no),
-                "order_number": order_no,
-                "ttn_number": ttn,
-                "own_ttn": False,
-                "created_at": created_at,
-                "warehouse_stage": stage,
-                "status": "new",
-                "ttn_status": "created" if ttn else "none",
-                "payload": {
-                    "sheet_order": True,
-                    "market_source": " · ".join(sources),
-                    "warehouse_stage": stage,
-                    "ttn_number": ttn,
-                    "recipient": {"first_name": client, "last_name": ""},
-                    "cart": [
-                        {
-                            "name": str(line.get("name") or ""),
-                            "code": str(line.get("code") or ""),
-                            "color": str(line.get("color") or ""),
-                            "qty": int(line.get("qty") or 1),
-                            "location": str(line.get("location") or ""),
-                            "source": str(line.get("source") or ""),
-                        }
-                        for line in lines
-                    ],
-                },
-            }
-        )
+    return [
+        _sheet_order_from_lines(order_no, lines, stages=stages, for_history=False)
+        for order_no, lines in groups.items()
+    ]
+
+
+def list_sheet_history_orders(storage: AppStorage) -> list[dict[str, Any]]:
+    """Усі Prom / Rozetka / ручні з листа — для історії кабінету власника."""
+    groups = _load_sheet_market_groups(storage, packing_only=False)
+    stages = _load_sheet_stages(storage)
+    out = [
+        _sheet_order_from_lines(order_no, lines, stages=stages, for_history=True)
+        for order_no, lines in groups.items()
+    ]
+    out.sort(key=lambda o: str(o.get("created_at") or ""), reverse=True)
     return out
+
+
+def list_owner_form_history(
+    storage: AppStorage,
+    *,
+    owner_chat_id: str = "",
+    limit: int = 500,
+) -> list[dict[str, Any]]:
+    """Замовлення Mini App власника (якщо є картка дроппера) + Prom/Rozetka/ручні з листа."""
+    items: list[dict[str, Any]] = []
+    seen_nos: set[str] = set()
+    dropper = storage.get_dropper_by_chat(str(owner_chat_id or "").strip()) if owner_chat_id else None
+    if dropper:
+        sqlite_items = storage.list_orders_for_dropper(dropper.id, limit=limit)
+        items.extend(sqlite_items)
+        for order in sqlite_items:
+            no = str(order.get("order_number") or "").strip()
+            if no:
+                seen_nos.add(no)
+    for order in list_sheet_history_orders(storage):
+        no = str(order.get("order_number") or "").strip()
+        if no and no in seen_nos:
+            continue
+        items.append(order)
+        if no:
+            seen_nos.add(no)
+    items.sort(key=lambda o: str(o.get("created_at") or ""), reverse=True)
+    return items[: max(1, int(limit))]
 
 
 def get_sheet_warehouse_order(
