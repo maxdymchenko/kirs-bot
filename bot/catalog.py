@@ -162,6 +162,28 @@ def _code_raw(code: str) -> str:
     return str(code or "").strip().lstrip("'").casefold()
 
 
+def _codes_match(left: str, right: str) -> bool:
+    """199 і 199А / 010 і 10 — один артикул для залишків."""
+    a = _code_raw(left)
+    b = _code_raw(right)
+    if a and b and a == b:
+        return True
+    if _normalize_code(left).casefold() == _normalize_code(right).casefold():
+        return True
+    d_a = re.sub(r"\D+", "", str(left or "")).lstrip("0")
+    d_b = re.sub(r"\D+", "", str(right or "")).lstrip("0")
+    return bool(d_a and d_b and d_a == d_b)
+
+
+def _stock_code_key(code: str) -> str:
+    """Ключ залишків: букви в коді не розділяють товар (199 = 199А)."""
+    raw = _code_raw(code)
+    if not raw:
+        return ""
+    digits = re.sub(r"\D+", "", raw).lstrip("0")
+    return digits or raw
+
+
 def _parse_stock(raw: str) -> int | None:
     raw = str(raw or "").strip().replace(",", ".")
     if not raw:
@@ -263,7 +285,7 @@ def _atomic_stock_by_code(variants: list[ProductVariant]) -> dict[str, int | Non
     for v in variants:
         if _is_kit_code(v.code):
             continue
-        key = _code_raw(v.code)
+        key = _stock_code_key(v.code)
         if not key:
             continue
         by_code.setdefault(key, []).append(v)
@@ -299,7 +321,7 @@ def _atomic_stock_by_code(variants: list[ProductVariant]) -> dict[str, int | Non
 def _lookup_atomic_stock(
     stock_map: dict[str, int | None], code: str
 ) -> int | None:
-    raw = _code_raw(code)
+    raw = _stock_code_key(code)
     if raw in stock_map:
         return stock_map[raw]
     norm = _normalize_code(code).casefold()
@@ -320,7 +342,7 @@ def sync_catalog_stocks(
 ) -> tuple[list[ProductVariant], list[tuple[int, int]]]:
     """
     Повна синхронізація залишків:
-    1. Дублі однакового коду і кольору — синхронізуються до однакового залишку.
+    1. Дублі одного артикула і кольору (199 і 199А, «Черный») — однаковий залишок.
     2. «Різні кольори» — автоматично дорівнюють сумі залишків конкретних кольорів цього коду.
     3. Комплекти ('405+625') — дорівнюють min(складових) (0 якщо хоча б одна складова 0).
     Повертає (variants, [(sheet_row, new_stock), ...]).
@@ -332,7 +354,7 @@ def sync_catalog_stocks(
     for v in variants:
         if _is_kit_code(v.code):
             continue
-        key = (_code_raw(v.code), _norm_text(v.color))
+        key = (_stock_code_key(v.code), _norm_text(v.color))
         if not key[0]:
             continue
         atomic_by_code_color.setdefault(key, []).append(v)
@@ -353,7 +375,7 @@ def sync_catalog_stocks(
     for v in variants:
         if _is_kit_code(v.code):
             continue
-        key = _code_raw(v.code)
+        key = _stock_code_key(v.code)
         if not key:
             continue
         by_code.setdefault(key, []).append(v)
@@ -562,17 +584,7 @@ class CatalogService:
             ws.batch_update(data[i : i + chunk], value_input_option="USER_ENTERED")
 
     def _codes_equal(self, left: str, right: str) -> bool:
-        a = _code_raw(left)
-        b = _code_raw(right)
-        if a and b and a == b:
-            return True
-        if _normalize_code(left).casefold() == _normalize_code(right).casefold():
-            return True
-        d_a = re.sub(r"\D+", "", str(left or "")).lstrip("0")
-        d_b = re.sub(r"\D+", "", str(right or "")).lstrip("0")
-        if d_a and d_b and d_a == d_b:
-            return True
-        return False
+        return _codes_match(left, right)
 
     def _find_atomic_rows(
         self,
@@ -582,14 +594,11 @@ class CatalogService:
         color: str = "",
         product_id: str = "",
     ) -> list[ProductVariant]:
+        # Залишки завжди за кодом (+ колір), не за Prom/Rozetka ID.
+        _ = product_id
         rows = [v for v in variants if not _is_kit_code(v.code) and self._codes_equal(v.code, code)]
         if not rows:
             return []
-        pid = str(product_id or "").strip()
-        if pid:
-            by_id = [v for v in rows if str(v.product_id or "").strip() == pid]
-            if by_id:
-                rows = by_id
         color_n = _norm_text(color)
         if color_n:
             by_color = [v for v in rows if color_n == _norm_text(v.color)]
@@ -674,7 +683,6 @@ class CatalogService:
         code = str(item.get("code") or "").strip().lstrip("'")
         qty = max(1, int(item.get("qty") or 1))
         color = str(item.get("color") or "").strip()
-        product_id = str(item.get("product_id") or "").strip()
         if not code:
             return
 
@@ -682,9 +690,7 @@ class CatalogService:
             parts = _kit_components(code)
             if parts:
                 for part in parts:
-                    rows = self._find_atomic_rows(
-                        variants, part, color=color, product_id=""
-                    )
+                    rows = self._find_atomic_rows(variants, part, color=color)
                     avail = self._available_on_rows(rows)
                     if avail is None:
                         continue
@@ -701,10 +707,6 @@ class CatalogService:
                 if self._codes_equal(v.code, code)
                 and (not color or _norm_text(v.color) == _norm_text(color))
             ]
-            if product_id:
-                by_id = [v for v in rows if str(v.product_id or "").strip() == product_id]
-                if by_id:
-                    rows = by_id
             avail = self._available_on_rows(rows)
             if avail is not None and avail < qty:
                 raise InsufficientStockError(
@@ -712,9 +714,7 @@ class CatalogService:
                 )
             return
 
-        rows = self._find_atomic_rows(
-            variants, code, color=color, product_id=product_id
-        )
+        rows = self._find_atomic_rows(variants, code, color=color)
         avail = self._available_on_rows(rows)
         if avail is not None and avail < qty:
             raise InsufficientStockError(
@@ -731,7 +731,6 @@ class CatalogService:
         code = str(item.get("code") or "").strip().lstrip("'")
         qty = max(1, int(item.get("qty") or 1))
         color = str(item.get("color") or "").strip()
-        product_id = str(item.get("product_id") or "").strip()
         if not code:
             return []
 
@@ -740,12 +739,10 @@ class CatalogService:
             parts = _kit_components(code)
             if parts:
                 for part in parts:
-                    rows = self._find_atomic_rows(
-                        variants, part, color=color, product_id=""
-                    )
+                    rows = self._find_atomic_rows(variants, part, color=color)
                     # Якщо по кольору нічого з числовим stock — беремо будь-які атомарні
                     if not any(v.stock is not None for v in rows):
-                        rows = self._find_atomic_rows(variants, part, color="", product_id="")
+                        rows = self._find_atomic_rows(variants, part, color="")
                     if any(v.stock is not None for v in rows):
                         updates.extend(
                             self._decrement_rows(
@@ -760,10 +757,6 @@ class CatalogService:
                 if self._codes_equal(v.code, code)
                 and (not color or _norm_text(v.color) == _norm_text(color))
             ]
-            if product_id:
-                by_id = [v for v in rows if str(v.product_id or "").strip() == product_id]
-                if by_id:
-                    rows = by_id
             if any(v.stock is not None for v in rows):
                 updates.extend(
                     self._decrement_rows(
@@ -772,9 +765,7 @@ class CatalogService:
                 )
             return updates
 
-        rows = self._find_atomic_rows(
-            variants, code, color=color, product_id=product_id
-        )
+        rows = self._find_atomic_rows(variants, code, color=color)
         if any(v.stock is not None for v in rows):
             updates.extend(
                 self._decrement_rows(
@@ -861,8 +852,10 @@ class CatalogService:
     ) -> dict:
         """
         Списати залишки після продажу.
+        Орієнтир — код (+ колір), не Prom/Rozetka ID.
+        199 і 199А одного кольору списуються разом.
         Комплект → мінус по кожній складовій, потім перерахунок комплектів.
-        Звичайний товар → мінус по його рядку + перерахунок комплектів.
+        Звичайний товар → мінус по рядках артикула + перерахунок комплектів.
         """
         items = [x for x in (cart or []) if isinstance(x, dict)]
         if not items:
@@ -913,7 +906,6 @@ class CatalogService:
         code = str(item.get("code") or "").strip().lstrip("'")
         qty = max(1, int(item.get("qty") or 1))
         color = str(item.get("color") or "").strip()
-        product_id = str(item.get("product_id") or "").strip()
         if not code:
             return []
 
@@ -922,11 +914,9 @@ class CatalogService:
             parts = _kit_components(code)
             if parts:
                 for part in parts:
-                    rows = self._find_atomic_rows(
-                        variants, part, color=color, product_id=""
-                    )
+                    rows = self._find_atomic_rows(variants, part, color=color)
                     if not any(v.stock is not None for v in rows):
-                        rows = self._find_atomic_rows(variants, part, color="", product_id="")
+                        rows = self._find_atomic_rows(variants, part, color="")
                     if any(v.stock is not None for v in rows):
                         updates.extend(self._increment_rows(rows, qty))
                 return updates
@@ -937,17 +927,11 @@ class CatalogService:
                 if self._codes_equal(v.code, code)
                 and (not color or _norm_text(v.color) == _norm_text(color))
             ]
-            if product_id:
-                by_id = [v for v in rows if str(v.product_id or "").strip() == product_id]
-                if by_id:
-                    rows = by_id
             if any(v.stock is not None for v in rows):
                 updates.extend(self._increment_rows(rows, qty))
             return updates
 
-        rows = self._find_atomic_rows(
-            variants, code, color=color, product_id=product_id
-        )
+        rows = self._find_atomic_rows(variants, code, color=color)
         if any(v.stock is not None for v in rows):
             updates.extend(self._increment_rows(rows, qty))
         return updates
