@@ -1,4 +1,4 @@
-"""Модуль відстеження статусів ТТН у Google Sheet «Закази» (10:00 та 19:00 Київ).
+"""Модуль відстеження статусів ТТН у Google Sheet «Закази» (10:00 та 21:00 Київ).
 
 Перевіряє всі активні (не фінальні) ТТН у таблиці через API перевізників (Нова Пошта, Розетка)
 і записує актуальний статус доставки безпосередньо у стовпець N («Статус»).
@@ -22,7 +22,7 @@ from bot.novaposhta import NovaPoshtaClient
 logger = logging.getLogger(__name__)
 
 KYIV = ZoneInfo("Europe/Kyiv")
-TRACKING_HOURS = (10, 19)
+TRACKING_HOURS = (10, 21)
 
 # Регулярний вираз для перевірки ТТН Нової Пошти (11-14 цифр)
 _NP_TTN_RE = re.compile(r"^\d{11,14}$")
@@ -91,7 +91,7 @@ def seconds_until_next_tracking_slot(
     now: datetime | None = None,
     allow_current_hour: bool = False,
 ) -> tuple[float, int]:
-    """Розрахунок затримки до наступного слоту відстеження (10:00 або 19:00 за Києвом)."""
+    """Розрахунок затримки до наступного слоту відстеження (10:00 або 21:00 за Києвом)."""
     dt = now or datetime.now(KYIV)
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=KYIV)

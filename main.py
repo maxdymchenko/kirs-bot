@@ -361,7 +361,7 @@ async def main() -> None:
                 pass
 
     async def sheet_tracking_loop() -> None:
-        """О 10:00 і 19:00 Київ — опитування статусів ТТН з перевізників та оновлення стовпця N у Google Sheet."""
+        """О 10:00 і 21:00 Київ — опитування статусів ТТН з перевізників та оновлення стовпця N у Google Sheet."""
         from bot.sheet_tracking import (
             run_sheet_tracking_sync,
             seconds_until_next_tracking_slot,
