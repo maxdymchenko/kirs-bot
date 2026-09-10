@@ -491,6 +491,41 @@ def list_warehouse_queue(
     return out
 
 
+def mark_packing_queue_ready_to_ship(
+    storage: AppStorage,
+    *,
+    actor_user_id: str = "",
+) -> dict[str, Any]:
+    """Усі замовлення з черги «На пакування» → «На відправлення» (один запис стадій листа)."""
+    items = list_warehouse_queue(storage, stage=STAGE_PACKING, limit=500)
+    stages = _load_sheet_stages(storage)
+    moved_sheet: list[str] = []
+    moved_sqlite: list[str] = []
+    errors: list[dict[str, str]] = []
+    for order in items:
+        oid = order.get("id")
+        sheet_no = parse_sheet_order_id(oid)
+        if sheet_no:
+            stages[sheet_no] = STAGE_READY
+            moved_sheet.append(sheet_no)
+            continue
+        try:
+            mark_order_ready_to_ship(
+                storage, oid, actor_user_id=actor_user_id
+            )
+            moved_sqlite.append(str(oid))
+        except Exception as exc:
+            errors.append({"id": str(oid or ""), "error": str(exc)})
+    if moved_sheet:
+        _save_sheet_stages(storage, stages)
+    return {
+        "count": len(moved_sheet) + len(moved_sqlite),
+        "moved_sheet": len(moved_sheet),
+        "moved_sqlite": len(moved_sqlite),
+        "errors": errors,
+    }
+
+
 def mark_order_ready_to_ship(
     storage: AppStorage,
     order_id: int | str,
@@ -500,11 +535,20 @@ def mark_order_ready_to_ship(
     sheet_no = parse_sheet_order_id(order_id)
     if sheet_no:
         order = get_sheet_warehouse_order(storage, sheet_no)
-        if not order:
-            raise ValueError("Замовлення не знайдено")
-        if order_warehouse_stage(order) == STAGE_READY:
+        if order and order_warehouse_stage(order) == STAGE_READY:
             return order
         set_sheet_warehouse_stage(storage, sheet_no, STAGE_READY)
+        if not order:
+            return {
+                "id": sheet_order_id(sheet_no),
+                "order_number": sheet_no,
+                "warehouse_stage": STAGE_READY,
+                "payload": {
+                    "sheet_order": True,
+                    "warehouse_stage": STAGE_READY,
+                    "warehouse_ready_by": str(actor_user_id or ""),
+                },
+            }
         order["warehouse_stage"] = STAGE_READY
         payload = dict(order.get("payload") or {})
         payload["warehouse_stage"] = STAGE_READY

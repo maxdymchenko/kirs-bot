@@ -3336,6 +3336,20 @@ def create_web_app(
             )
         return {"stage": stage_key, "count": len(enriched), "items": enriched}
 
+    @app.post("/api/warehouse/queue/ready-all")
+    async def warehouse_mark_all_ready(
+        chat_id: str = Query("", max_length=64),
+        user_id: str = Query("", max_length=64),
+        username: str = Query("", max_length=64),
+    ) -> dict:
+        from bot.warehouse import mark_packing_queue_ready_to_ship
+
+        _require_warehouse(chat_id=chat_id, user_id=user_id, username=username)
+        result = mark_packing_queue_ready_to_ship(
+            storage, actor_user_id=user_id
+        )
+        return {"ok": True, **result}
+
     @app.post("/api/warehouse/orders/{order_id}/ready")
     async def warehouse_mark_ready(
         order_id: str,
