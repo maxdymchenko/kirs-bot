@@ -6,6 +6,7 @@ import io
 import json
 import logging
 import re
+import time
 from datetime import datetime
 from typing import Any
 
@@ -47,9 +48,21 @@ _LEFT_WAREHOUSE_STATUS = (
     "прибув на",
     "прибыл на",
     "передано перевізнику",
+    "передано кур",
+    "видано кур",
     "прямує до",
+    "у місті",
+    "в городе",
+    "на шляху",
+    "на пути",
+    "відправлення прийнято",
+    "отправление принято",
     "видано одержувачу",
 )
+_NP_LIVE_CACHE_TTL_SEC = 300.0
+_np_live_cache_at = 0.0
+_np_live_cache_key: frozenset[str] = frozenset()
+_np_live_cache_data: dict[str, dict[str, Any]] = {}
 
 
 def order_warehouse_stage(order: dict[str, Any]) -> str:
@@ -299,8 +312,6 @@ def _load_sheet_market_groups(
         if not order_no or not _is_market_or_manual_source(source, order_no):
             continue
         status = str(row[13] or "").strip()
-        if packing_only and not _is_sheet_row_still_packing(status):
-            continue
         groups.setdefault(order_no, []).append(
             {
                 "row_idx": idx,
@@ -318,7 +329,19 @@ def _load_sheet_market_groups(
                 "location": _clean_location(row[17] if len(row) > 17 else ""),
             }
         )
-    return groups
+    if not packing_only:
+        return groups
+    kept: dict[str, list[dict[str, Any]]] = {}
+    for order_no, lines in groups.items():
+        left = False
+        for line in lines:
+            status = str(line.get("status") or "").strip()
+            if status and not _is_sheet_row_still_packing(status):
+                left = True
+                break
+        if not left:
+            kept[order_no] = lines
+    return kept
 
 
 def _sheet_order_from_lines(
@@ -396,14 +419,74 @@ def _sheet_order_from_lines(
     }
 
 
+def _cached_np_live_statuses(
+    storage: AppStorage, ttns: list[str]
+) -> dict[str, dict[str, Any]]:
+    global _np_live_cache_at, _np_live_cache_key, _np_live_cache_data
+    from bot.sheet_tracking import fetch_np_tracking_statuses
+
+    key = frozenset(ttns)
+    now = time.monotonic()
+    if (
+        key
+        and key == _np_live_cache_key
+        and now - _np_live_cache_at < _NP_LIVE_CACHE_TTL_SEC
+    ):
+        return _np_live_cache_data
+    data = fetch_np_tracking_statuses(storage, ttns)
+    if data:
+        _np_live_cache_at = now
+        _np_live_cache_key = key
+        _np_live_cache_data = data
+    return data
+
+
+def _drop_sheet_orders_left_via_np(
+    storage: AppStorage, orders: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """Прибрати з черги складу посилки, які НП уже везе, навіть якщо стовпець N застарів."""
+    from bot.novaposhta import map_np_status_code
+
+    ttns: list[str] = []
+    for order in orders:
+        raw = str(order.get("ttn_number") or "")
+        digits = re.sub(r"\D+", "", raw)
+        if _looks_like_np_ttn(raw) and digits:
+            ttns.append(digits)
+    if not ttns:
+        return orders
+    try:
+        info = _cached_np_live_statuses(storage, ttns)
+    except Exception:
+        logger.exception("warehouse: NP live status check failed")
+        return orders
+    kept: list[dict[str, Any]] = []
+    for order in orders:
+        digits = re.sub(r"\D+", "", str(order.get("ttn_number") or ""))
+        row = info.get(digits) or {}
+        if not row:
+            kept.append(order)
+            continue
+        mapped = map_np_status_code(row.get("status_code"), row.get("status") or "")
+        if mapped in SHIPPED_OR_FINAL_STATUSES:
+            continue
+        if str(row.get("status") or "").strip() and not _is_sheet_row_still_packing(
+            str(row.get("status") or "")
+        ):
+            continue
+        kept.append(order)
+    return kept
+
+
 def list_sheet_warehouse_orders(storage: AppStorage) -> list[dict[str, Any]]:
     """Prom / Rozetka / ручні з листа «Заказы», які ще на складі (1 картка = 1 №)."""
     groups = _load_sheet_market_groups(storage, packing_only=True)
     stages = _load_sheet_stages(storage)
-    return [
+    orders = [
         _sheet_order_from_lines(order_no, lines, stages=stages, for_history=False)
         for order_no, lines in groups.items()
     ]
+    return _drop_sheet_orders_left_via_np(storage, orders)
 
 
 def list_sheet_history_orders(storage: AppStorage) -> list[dict[str, Any]]:

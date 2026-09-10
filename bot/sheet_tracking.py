@@ -140,6 +140,26 @@ def _open_orders_sheet(storage: AppStorage) -> gspread.Worksheet | None:
         return None
 
 
+def _np_clients_for_tracking(storage: AppStorage) -> list[NovaPoshtaClient]:
+    """list_np_clients повертає (label, client, is_primary), не dict."""
+    from bot.np_fulfillment import list_np_clients
+
+    out: list[NovaPoshtaClient] = []
+    for entry in list_np_clients(storage) or []:
+        client = None
+        if isinstance(entry, dict):
+            client = entry.get("client")
+        elif isinstance(entry, (tuple, list)) and len(entry) >= 2:
+            client = entry[1]
+        if client is not None:
+            out.append(client)
+    if not out:
+        fallback = NovaPoshtaClient()
+        if fallback.configured():
+            out.append(fallback)
+    return out
+
+
 def fetch_np_tracking_statuses(
     storage: AppStorage, ttns: list[str]
 ) -> dict[str, dict[str, Any]]:
@@ -151,12 +171,10 @@ def fetch_np_tracking_statuses(
     if not clean_ttns:
         return {}
 
-    from bot.np_fulfillment import list_np_clients
-
-    clients = list_np_clients(storage)
+    clients = _np_clients_for_tracking(storage)
     if not clients:
-        # Спробуємо базовий клієнт
-        clients = [{"client": NovaPoshtaClient(), "label": "default"}]
+        logger.warning("NP tracking skipped: no Nova Poshta API clients")
+        return {}
 
     results: dict[str, dict[str, Any]] = {}
     chunk_size = 80
@@ -167,10 +185,7 @@ def fetch_np_tracking_statuses(
         last_exc: Exception | None = None
         data: list[dict[str, Any]] = []
 
-        for entry in clients:
-            client: NovaPoshtaClient = entry.get("client")
-            if not client:
-                continue
+        for client in clients:
             try:
                 data = client.get_status_documents(docs)
                 if data:
@@ -188,7 +203,7 @@ def fetch_np_tracking_statuses(
             number = re.sub(r"\D+", "", str(row.get("Number") or ""))
             status_text = str(row.get("Status") or "").strip()
             status_code = str(row.get("StatusCode") or "").strip()
-            if number and status_text:
+            if number and (status_text or status_code):
                 results[number] = {
                     "status": status_text,
                     "status_code": status_code,

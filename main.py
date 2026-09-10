@@ -368,23 +368,30 @@ async def main() -> None:
         )
 
         await asyncio.sleep(40)
+        first_pass = True
         while not stop_event.is_set():
             try:
-                delay, hour = seconds_until_next_tracking_slot(allow_current_hour=True)
-                if delay > 0:
-                    logger.info(
-                        "Sheet tracking sync: next %02d:00 in %.0f min",
-                        hour,
-                        delay / 60.0,
-                    )
-                    try:
-                        await asyncio.wait_for(stop_event.wait(), timeout=delay)
-                        break
-                    except asyncio.TimeoutError:
-                        pass
+                hour = 0
+                if first_pass:
+                    logger.info("Sheet tracking sync: startup pass")
+                else:
+                    delay, hour = seconds_until_next_tracking_slot(allow_current_hour=True)
+                    if delay > 0:
+                        logger.info(
+                            "Sheet tracking sync: next %02d:00 in %.0f min",
+                            hour,
+                            delay / 60.0,
+                        )
+                        try:
+                            await asyncio.wait_for(stop_event.wait(), timeout=delay)
+                            break
+                        except asyncio.TimeoutError:
+                            pass
                 stats = await asyncio.to_thread(run_sheet_tracking_sync, app_storage)
+                first_pass = False
+                slot = "startup" if hour == 0 else f"{hour:02d}:00"
                 if stats.get("updated_statuses", 0) > 0 or stats.get("checked_ttns", 0) > 0:
-                    logger.info("Sheet tracking sync (%02d:00): %s", hour, stats)
+                    logger.info("Sheet tracking sync (%s): %s", slot, stats)
                 delay, hour = seconds_until_next_tracking_slot(allow_current_hour=False)
                 try:
                     await asyncio.wait_for(stop_event.wait(), timeout=delay)
