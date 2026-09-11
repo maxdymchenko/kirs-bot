@@ -100,6 +100,85 @@ def _norm_text(value: str) -> str:
     return " ".join(str(value or "").casefold().split())
 
 
+_COLOR_WORD_RE = re.compile(r"[a-zа-яёіїєґ]+", re.IGNORECASE)
+# Довші основи першими: бежевий ≠ білий, сиренєвий ≠ синій.
+_COLOR_STEMS: tuple[tuple[str, str], ...] = (
+    ("світло-сір", "gray"),
+    ("светло-сер", "gray"),
+    ("темно-син", "navy"),
+    ("тёмно-син", "navy"),
+    ("сирен", "lilac"),
+    ("бузков", "lilac"),
+    ("фіолет", "purple"),
+    ("фиолет", "purple"),
+    ("коричн", "brown"),
+    ("рожев", "pink"),
+    ("розов", "pink"),
+    ("помаранч", "orange"),
+    ("оранж", "orange"),
+    ("жовтий", "yellow"),
+    ("жовта", "yellow"),
+    ("жовте", "yellow"),
+    ("желт", "yellow"),
+    ("зелен", "green"),
+    ("блакитн", "blue"),
+    ("голуб", "blue"),
+    ("синій", "blue"),
+    ("синя", "blue"),
+    ("синє", "blue"),
+    ("синий", "blue"),
+    ("синяя", "blue"),
+    ("синее", "blue"),
+    ("червон", "red"),
+    ("красн", "red"),
+    ("бежев", "beige"),
+    ("білий", "white"),
+    ("біла", "white"),
+    ("біле", "white"),
+    ("белый", "white"),
+    ("белая", "white"),
+    ("белое", "white"),
+    ("сірий", "gray"),
+    ("сіра", "gray"),
+    ("сіре", "gray"),
+    ("серый", "gray"),
+    ("серая", "gray"),
+    ("серое", "gray"),
+    ("чорн", "black"),
+    ("черн", "black"),
+    ("black", "black"),
+    ("brown", "brown"),
+    ("white", "white"),
+    ("beige", "beige"),
+    ("gray", "gray"),
+    ("grey", "gray"),
+    ("green", "green"),
+    ("yellow", "yellow"),
+    ("orange", "orange"),
+    ("purple", "purple"),
+    ("pink", "pink"),
+    ("blue", "blue"),
+    ("red", "red"),
+    ("беж", "beige"),
+)
+
+
+def _color_canon_tokens(text: str) -> set[str]:
+    """Канонічні кольори з поля або з назви товару (чорна → black, коричневий → brown)."""
+    folded = _norm_text(text)
+    if not folded:
+        return set()
+    out: set[str] = set()
+    stems = sorted(_COLOR_STEMS, key=lambda item: -len(item[0]))
+    for word in _COLOR_WORD_RE.findall(folded):
+        w = word.casefold()
+        for stem, canon in stems:
+            if w == stem or w.startswith(stem):
+                out.add(canon)
+                break
+    return out
+
+
 def sheet_status_label(order: dict[str, Any]) -> str:
     payload = order.get("payload") or {}
     np_text = str(payload.get("np_status_text") or "").strip()
@@ -355,6 +434,21 @@ def _find_catalog_variants(
     color_n = _norm_text(color)
     if color_n:
         by_color = [v for v in matches if _norm_text(getattr(v, "color", "")) == color_n]
+        if not by_color:
+            want = _color_canon_tokens(color)
+            if len(want) == 1:
+                syn = [
+                    v
+                    for v in matches
+                    if want & _color_canon_tokens(str(getattr(v, "color", "") or ""))
+                ]
+                uniq = {
+                    _norm_text(str(getattr(v, "color", "") or ""))
+                    for v in syn
+                    if str(getattr(v, "color", "") or "").strip()
+                }
+                if len(uniq) == 1:
+                    by_color = syn
         if by_color:
             matches = by_color
     elif pid and len(matches) > 1:
@@ -437,11 +531,28 @@ def _match_catalog_color(
         for key, orig in indexed:
             if text == key:
                 return orig
-    for text in texts:
-        for key, orig in indexed:
-            if text and key and (text in key or key in text):
-                return orig
-    return ""
+    catalog_toks = [(orig, _color_canon_tokens(orig)) for orig in colors]
+
+    def _unique_canon_hit(cands: list[str]) -> str:
+        hits: list[str] = []
+        for text in cands:
+            toks = _color_canon_tokens(text)
+            if not toks:
+                continue
+            matched = [orig for orig, ct in catalog_toks if ct and (ct & toks)]
+            for orig in matched:
+                if orig not in hits:
+                    hits.append(orig)
+        return hits[0] if len(hits) == 1 else ""
+
+    # Назва товару («… чорна (10724)») надійніша за помилковий/порожній атрибут.
+    names = [t for t in texts if " " in t or len(t) > 24]
+    shorts = [t for t in texts if t not in names]
+    return (
+        _unique_canon_hit(names)
+        or _unique_canon_hit(shorts)
+        or _unique_canon_hit(texts)
+    )
 
 
 def build_sheet_rows(

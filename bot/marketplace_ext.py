@@ -27,6 +27,7 @@ from bot.orders_sheets import (
     _is_generic_sheet_color,
     _lookup_unique_catalog_color,
     _match_catalog_color,
+    _norm_text,
     _open_orders_worksheet,
 )
 
@@ -724,6 +725,13 @@ def _fill_rozetka_item_colors(mapped: dict[str, Any], token: str) -> None:
             continue
         color = _color_from_rozetka_card(content, token)
         extra_vals = [color] if color else []
+        for key in ("name", "name_ua", "title", "title_ua"):
+            text = _trim(content.get(key))
+            if text:
+                extra_vals.append(text)
+        card_name = _trim(item.get("name"))
+        if card_name:
+            extra_vals.append(card_name)
         if color:
             item["color"] = color
         prev = (
@@ -790,13 +798,17 @@ def _map_rozetka(content: dict[str, Any], source: dict[str, str]) -> dict[str, A
             continue
         item = p.get("item") if isinstance(p.get("item"), dict) else {}
         blobs = _rozetka_purchase_blobs(p, item)
+        name = _pick(p.get("item_name"), item.get("name"), item.get("name_ua"))
         color = _extract_rozetka_color(*blobs)
+        candidates = _rozetka_attr_values(*blobs)
+        if name and name not in candidates:
+            candidates.append(name)
         items.append(
             {
-                "name": _pick(p.get("item_name"), item.get("name"), item.get("name_ua")),
+                "name": name,
                 "code": _pick(item.get("article"), p.get("article"), item.get("id"), p.get("item_id")),
                 "color": color,
-                "color_candidates": _rozetka_attr_values(*blobs),
+                "color_candidates": candidates,
                 "item_id": _pick(p.get("item_id"), item.get("id")),
                 "qty": max(1, int(p.get("quantity") or 1)),
                 "retail": p.get("price") or p.get("price_with_discount") or p.get("cost"),
@@ -1170,6 +1182,15 @@ def _lookup_item_catalog_meta(
     matches = _find_catalog_variants(catalog, code, color, product_id)
     if not matches:
         return "", "", "", "", "", ""
+    colors = [
+        _trim(getattr(v, "color", ""))
+        for v in matches
+        if _trim(getattr(v, "color", ""))
+        and not _is_generic_sheet_color(str(getattr(v, "color", "") or ""))
+    ]
+    uniq_colors = list(dict.fromkeys(_norm_text(c) for c in colors if c))
+    if not _trim(color) and len(uniq_colors) > 1:
+        return "", "", "", "", "", ""
     v = matches[0]
     sheet_name = _trim(getattr(v, "warehouse_name", "")) or _trim(getattr(v, "name", ""))
     variant_color = _trim(getattr(v, "color", ""))
@@ -1203,23 +1224,25 @@ def build_sheet_rows(
         code = _trim(item.get("code"))
         color = _trim(item.get("color"))
         product_id = _trim(item.get("product_id"))
+        candidates: list[Any] = []
+        name = _trim(item.get("name"))
+        if name:
+            candidates.append(name)
         if color:
-            matched = _match_catalog_color(
-                catalog, code, [color], product_id=product_id
-            )
-            if matched:
-                color = matched
-        else:
+            candidates.append(color)
+        for raw in item.get("color_candidates") or []:
+            text = _trim(raw)
+            if text and text not in candidates:
+                candidates.append(text)
+        matched = _match_catalog_color(
+            catalog, code, candidates, product_id=product_id
+        )
+        if matched:
+            color = matched
+        elif not color:
             if product_id:
                 color = _lookup_unique_catalog_color(
                     catalog, code, product_id=product_id
-                )
-            if not color:
-                color = _match_catalog_color(
-                    catalog,
-                    code,
-                    item.get("color_candidates") or [],
-                    product_id=product_id,
                 )
             if not color:
                 color = _lookup_unique_catalog_color(catalog, code)
@@ -1232,7 +1255,9 @@ def build_sheet_rows(
             catalog_code,
         ) = _lookup_item_catalog_meta(catalog, code, color, product_id=product_id)
         if not color:
-            color = catalog_color
+            color = _lookup_unique_catalog_color(
+                catalog, code, product_id=product_id
+            ) or _lookup_unique_catalog_color(catalog, code)
         if (not code or _looks_like_prom_id(code)) and catalog_code:
             code = catalog_code
         item_name = catalog_name or _trim(item.get("name"))
