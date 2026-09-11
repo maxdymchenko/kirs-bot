@@ -28,6 +28,11 @@ TRACKING_HOURS = (10, 21)
 _NP_TTN_RE = re.compile(r"^\d{11,14}$")
 
 
+def _is_rozetka_ttn(raw: str) -> bool:
+    text = str(raw or "").strip().upper()
+    return text.startswith("RMP-") or text.startswith("PRM-")
+
+
 def _is_np_ttn(raw: str) -> bool:
     digits = re.sub(r"\D+", "", str(raw or ""))
     if not (11 <= len(digits) <= 14):
@@ -305,10 +310,18 @@ def run_sheet_tracking_sync(storage: AppStorage) -> dict[str, Any]:
             row.append("")
         order_no = str(row[1] or "").strip()
         carrier = str(row[3] or "").strip()
+        source = str(row[10] or "").strip()
         ttn_raw = str(row[12] or "").strip()
         current_status = str(row[13] or "").strip()
+        carrier_l = carrier.casefold()
+        source_l = source.casefold()
+        is_rmp = _is_rozetka_ttn(ttn_raw)
+        is_rozetka_row = is_rmp or any(
+            mark in carrier_l or mark in source_l
+            for mark in ("розет", "rozetka")
+        )
 
-        if not ttn_raw:
+        if not ttn_raw and not is_rozetka_row:
             continue
 
         # Якщо статус уже фінальний (отримано / відмова / повернення) — не опитуємо повторно
@@ -317,7 +330,10 @@ def run_sheet_tracking_sync(storage: AppStorage) -> dict[str, Any]:
             continue
 
         digits_ttn = re.sub(r"\D+", "", ttn_raw)
-        is_np = _is_np_ttn(ttn_raw) or carrier.upper() in {"НП", "НОВА ПОШТА", "NOVA POSHTA"}
+        is_np = (not is_rmp) and (
+            _is_np_ttn(ttn_raw)
+            or carrier.upper() in {"НП", "НОВА ПОШТА", "NOVA POSHTA"}
+        )
 
         if is_np and (11 <= len(digits_ttn) <= 14):
             np_ttns_to_check.append(digits_ttn)
@@ -331,11 +347,25 @@ def run_sheet_tracking_sync(storage: AppStorage) -> dict[str, Any]:
                 "digits_ttn": digits_ttn,
                 "current_status": current_status,
                 "is_np": is_np,
+                "is_rozetka": is_rozetka_row,
             }
         )
 
     # Опитуємо Нову Пошту
     np_statuses = fetch_np_tracking_statuses(storage, np_ttns_to_check)
+    rozetka_ids = [
+        str(meta["order_no"] or "").strip()
+        for meta in rows_meta
+        if meta.get("is_rozetka") and str(meta.get("order_no") or "").strip()
+    ]
+    rozetka_statuses: dict[str, str] = {}
+    if rozetka_ids:
+        try:
+            from bot.marketplace_ext import fetch_rozetka_status_labels
+
+            rozetka_statuses = fetch_rozetka_status_labels(rozetka_ids)
+        except Exception:
+            logger.exception("Rozetka tracking batch failed")
 
     updates: list[dict[str, Any]] = []
     updated_count = 0
@@ -345,14 +375,11 @@ def run_sheet_tracking_sync(storage: AppStorage) -> dict[str, Any]:
         current_status = meta["current_status"]
         new_status = ""
 
-        # 1. Нова Пошта
         if meta["digits_ttn"] in np_statuses:
             info = np_statuses[meta["digits_ttn"]]
             new_status = str(info.get("status") or "").strip()
-
-        # 2. Якщо перевізник Rozetka або ТТН PRM- / Rozetka Delivery
-        elif meta["carrier"].lower() == "розетка" or meta["ttn_raw"].startswith("PRM-"):
-            pass
+        elif meta.get("is_rozetka"):
+            new_status = str(rozetka_statuses.get(str(meta.get("order_no") or "")) or "").strip()
 
         if new_status and new_status != current_status:
             updates.append({"range": f"N{row_num}", "values": [[new_status]]})
@@ -376,5 +403,6 @@ def run_sheet_tracking_sync(storage: AppStorage) -> dict[str, Any]:
         "checked_ttns": len(rows_meta),
         "skipped_terminal": skipped_terminal,
         "np_tracked": len(np_statuses),
+        "rozetka_tracked": len(rozetka_statuses),
         "updated_statuses": updated_count,
     }

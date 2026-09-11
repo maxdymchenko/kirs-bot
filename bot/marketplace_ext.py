@@ -97,6 +97,15 @@ def _pick(*values: Any) -> str:
     return ""
 
 
+def _pick_status_text(*values: Any) -> str:
+    """Текст статусу Rozetka: пропускаємо голі коди на кшталт «24»."""
+    for value in values:
+        text = _as_text(value)
+        if text and not text.isdigit():
+            return text
+    return ""
+
+
 def _as_list(value: Any) -> list:
     return value if isinstance(value, list) else []
 
@@ -788,6 +797,53 @@ def _fill_prom_item_meta(mapped: dict[str, Any], token: str) -> None:
             item["retail"] = product.get("price")
 
 
+def _status_data_title(raw: Any) -> str:
+    if isinstance(raw, list) and raw:
+        raw = raw[-1]
+    if not isinstance(raw, dict):
+        return _pick_status_text(raw)
+    return _pick_status_text(
+        raw.get("title"),
+        raw.get("name_ua"),
+        raw.get("name"),
+        raw.get("text"),
+        raw.get("status_text"),
+        raw.get("label"),
+    )
+
+
+def _rozetka_status_label(content: dict[str, Any]) -> str:
+    """Живий статус замовлення Rozetka текстом, не кодом 1/24."""
+    delivery = content.get("delivery") if isinstance(content.get("delivery"), dict) else {}
+    service = (
+        content.get("delivery_service")
+        if isinstance(content.get("delivery_service"), dict)
+        else {}
+    )
+    text = _pick_status_text(
+        content.get("status_text"),
+        _status_data_title(content.get("status_data")),
+        delivery.get("status_text"),
+        delivery.get("status_name"),
+        delivery.get("delivery_status_text"),
+        service.get("status_text"),
+        service.get("status_name"),
+    )
+    if text:
+        return text
+    code = str(content.get("status") or "").strip()
+    return _ROZETKA_STATUS_BY_ID.get(code, "") or code
+
+
+_ROZETKA_STATUS_BY_ID = {
+    "1": "Нове замовлення",
+    "2": "Обробляється менеджером",
+    "3": "Комплектується. Дані підтверджені",
+    "4": "Передано до служби доставки",
+    "5": "Доставляється",
+}
+
+
 def _map_rozetka(content: dict[str, Any], source: dict[str, str]) -> dict[str, Any]:
     user = content.get("user") if isinstance(content.get("user"), dict) else {}
     delivery = content.get("delivery") if isinstance(content.get("delivery"), dict) else {}
@@ -874,7 +930,7 @@ def _map_rozetka(content: dict[str, Any], source: dict[str, str]) -> dict[str, A
             ),
         ),
         "ttn": _pick(content.get("ttn"), delivery.get("ttn")),
-        "status": _pick(content.get("status_text"), str(content.get("status") or "")),
+        "status": _rozetka_status_label(content),
         "order_sum": content.get("cost_with_discount")
         or content.get("cost")
         or content.get("amount_with_discount")
@@ -1119,6 +1175,36 @@ def _fetch_from_source(source: dict[str, str], order_id: str) -> dict[str, Any] 
     if kind == "kasta":
         return _fetch_kasta(source, token, order_id)
     return None
+
+
+def fetch_rozetka_status_labels(order_ids: list[str]) -> dict[str, str]:
+    """Актуальні статуси замовлень Rozetka за номером з кабінету продавця."""
+    ids = list(dict.fromkeys(_trim(x) for x in order_ids if _trim(x)))
+    sources = [s for s in enabled_sources() if s["kind"] == "rozetka"]
+    if not ids or not sources:
+        return {}
+
+    def _one(oid: str) -> tuple[str, str]:
+        last_err = ""
+        for src in sources:
+            try:
+                mapped = _fetch_rozetka(src, _token(src), oid)
+            except Exception as exc:
+                last_err = str(exc)
+                continue
+            if mapped:
+                return oid, _trim(mapped.get("status"))
+        if last_err:
+            logger.warning("Rozetka status %s: %s", oid, last_err)
+        return oid, ""
+
+    out: dict[str, str] = {}
+    workers = min(6, len(ids))
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        for oid, label in pool.map(_one, ids):
+            if label:
+                out[oid] = label
+    return out
 
 
 def find_marketplace_order(order_id: str, source_id: str = "auto") -> dict[str, Any]:
