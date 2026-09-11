@@ -6801,6 +6801,16 @@ ${
     const pdfBadge = order.has_ttn_pdf
       ? `<span class="meta-soft">PDF ✓</span>`
       : `<span class="meta-soft">PDF немає</span>`;
+    const sourceLabel = String(order.source_label || "").trim();
+    const ttn = String(order.ttn_number || "").trim();
+    const titleBits = [`<b>${escapeHtml(order.order_number || "")}</b>`];
+    if (sourceLabel) titleBits.push(escapeHtml(sourceLabel));
+    if (ttn) titleBits.push(`ТТН ${escapeHtml(ttn)}`);
+    const subBits = [escapeHtml(order.recipient_name || "—")];
+    if (!sourceLabel) {
+      subBits.push(escapeHtml(order.own_ttn ? "власна ТТН" : "ТТН власника"));
+    }
+    subBits.push(pdfBadge);
     const checkHtml =
       stage === "packing"
         ? `<label class="warehouse-order-check">
@@ -6820,12 +6830,8 @@ ${
       <article class="warehouse-order-card" data-order-id="${escapeHtml(String(order.id))}">
         <div class="warehouse-order-head">
           <div>
-            <div><b>${escapeHtml(order.order_number || "")}</b> · ТТН ${escapeHtml(
-              order.ttn_number || "—"
-            )}</div>
-            <div class="meta">${escapeHtml(order.recipient_name || "—")} · ${escapeHtml(
-              order.source_label || (order.own_ttn ? "власна ТТН" : "ТТН власника")
-            )} · ${pdfBadge}</div>
+            <div>${titleBits.join(" · ")}</div>
+            <div class="meta">${subBits.join(" · ")}</div>
           </div>
           ${checkHtml}
         </div>
