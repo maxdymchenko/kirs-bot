@@ -738,6 +738,13 @@ def append_order_rows(
         start = max(2, len(all_vals) - len(rows) + 1)
     written = list(range(start, start + len(rows)))
     _paint_rows_white(ws, written)
+    paint_status_n_cells(
+        ws,
+        [
+            (row_num, str(rows[i][13] if len(rows[i]) > 13 else ""))
+            for i, row_num in enumerate(written)
+        ],
+    )
     return written
 
 
@@ -787,6 +794,100 @@ def _paint_rows_white(ws: gspread.Worksheet, row_numbers: list[int]) -> None:
         ws.spreadsheet.batch_update({"requests": requests})
     except Exception:
         logger.exception("failed to paint new order rows white")
+
+
+_STATUS_N_GREEN = (0.776, 0.937, 0.808)  # #C6EFCE
+_STATUS_N_RED = (1.0, 0.78, 0.808)  # #FFC7CE
+_STATUS_N_WHITE = (1.0, 1.0, 1.0)
+_STATUS_N_GREEN_MARKERS = (
+    "в дорозі",
+    "у дорозі",
+    "в дороге",
+    "на відділен",
+    "на отделен",
+    "у відділен",
+    "прибув на",
+    "прибыл на",
+    "передано перевізнику",
+    "передано кур",
+    "видано кур",
+    "прямує до",
+    "у місті",
+    "в городе",
+    "на шляху",
+    "на пути",
+    "відправлення прийнято",
+    "отправление принято",
+    "доставляється",
+    "передано до служби",
+    "очікує в пункті",
+    "видано одержувачу",
+    "отриман",
+    "получен",
+    "виконан",
+    "вручен",
+)
+
+
+def status_n_fill_rgb(status: str) -> tuple[float, float, float]:
+    """Колір заливки стовпця N: зелений = у дорозі, червоний = видалено."""
+    st = str(status or "").casefold().strip()
+    if not st:
+        return _STATUS_N_WHITE
+    if "видален" in st or "удален" in st:
+        return _STATUS_N_RED
+    if any(word in st for word in _STATUS_N_GREEN_MARKERS):
+        return _STATUS_N_GREEN
+    return _STATUS_N_WHITE
+
+
+def paint_status_n_cells(
+    ws: gspread.Worksheet, row_statuses: list[tuple[int, str]]
+) -> None:
+    """Залити лише комірки N за статусом (зелений / червоний / білий)."""
+    buckets: dict[tuple[float, float, float], list[int]] = {}
+    for row_num, status in row_statuses:
+        try:
+            n = int(row_num)
+        except (TypeError, ValueError):
+            continue
+        if n < 2:
+            continue
+        buckets.setdefault(status_n_fill_rgb(status), []).append(n)
+    requests: list[dict[str, Any]] = []
+    for (red, green, blue), rows in buckets.items():
+        for start, end in _consecutive_row_spans(rows):
+            requests.append(
+                {
+                    "repeatCell": {
+                        "range": {
+                            "sheetId": ws.id,
+                            "startRowIndex": start - 1,
+                            "endRowIndex": end,
+                            "startColumnIndex": COL_STATUS - 1,
+                            "endColumnIndex": COL_STATUS,
+                        },
+                        "cell": {
+                            "userEnteredFormat": {
+                                "backgroundColor": {
+                                    "red": red,
+                                    "green": green,
+                                    "blue": blue,
+                                }
+                            }
+                        },
+                        "fields": "userEnteredFormat.backgroundColor",
+                    }
+                }
+            )
+    if not requests:
+        return
+    try:
+        chunk = 80
+        for i in range(0, len(requests), chunk):
+            ws.spreadsheet.batch_update({"requests": requests[i : i + chunk]})
+    except Exception:
+        logger.exception("failed to paint status column N")
 
 
 def update_rows_values(
@@ -857,6 +958,10 @@ def replace_order_rows(
     if existing:
         update_rows_values(ws, existing[:keep], patched[:keep])
         written.extend(existing[:keep])
+        paint_status_n_cells(
+            ws,
+            [(existing[i], str(patched[i][13] or "")) for i in range(keep)],
+        )
         leftover = existing[keep:]
         if leftover:
             ws.batch_update(
@@ -893,6 +998,7 @@ def update_lifecycle_columns(
             ]
         )
     ws.batch_update(data, value_input_option="USER_ENTERED")
+    paint_status_n_cells(ws, [(n, status) for n in row_numbers])
 
 
 def sync_order_to_sheet(

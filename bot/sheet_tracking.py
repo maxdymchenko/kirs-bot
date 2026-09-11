@@ -85,6 +85,8 @@ def is_terminal_sheet_status(status: str) -> bool:
             "возврат",
             "скасован",
             "отменен",
+            "видален",
+            "удален",
         )
     ):
         return True
@@ -304,6 +306,7 @@ def run_sheet_tracking_sync(storage: AppStorage) -> dict[str, Any]:
     np_ttns_to_check: list[str] = []
     rows_meta: list[dict[str, Any]] = []
     skipped_terminal = 0
+    skipped_paint: list[tuple[int, str]] = []
 
     for idx, row in enumerate(all_rows[1:], start=2):
         while len(row) < 18:
@@ -327,6 +330,7 @@ def run_sheet_tracking_sync(storage: AppStorage) -> dict[str, Any]:
         # Якщо статус уже фінальний (отримано / відмова / повернення) — не опитуємо повторно
         if is_terminal_sheet_status(current_status):
             skipped_terminal += 1
+            skipped_paint.append((idx, current_status))
             continue
 
         digits_ttn = re.sub(r"\D+", "", ttn_raw)
@@ -369,6 +373,7 @@ def run_sheet_tracking_sync(storage: AppStorage) -> dict[str, Any]:
 
     updates: list[dict[str, Any]] = []
     updated_count = 0
+    paint_pairs: list[tuple[int, str]] = []
 
     for meta in rows_meta:
         row_num = meta["row"]
@@ -384,6 +389,9 @@ def run_sheet_tracking_sync(storage: AppStorage) -> dict[str, Any]:
         if new_status and new_status != current_status:
             updates.append({"range": f"N{row_num}", "values": [[new_status]]})
             updated_count += 1
+        paint_pairs.append((row_num, new_status or current_status))
+
+    paint_pairs.extend(skipped_paint)
 
     if updates:
         # Пакетний запис у Google Sheet чанками по 80 комірок
@@ -396,6 +404,11 @@ def run_sheet_tracking_sync(storage: AppStorage) -> dict[str, Any]:
             updated_count,
             skipped_terminal,
         )
+
+    if paint_pairs:
+        from bot.orders_sheets import paint_status_n_cells
+
+        paint_status_n_cells(ws, paint_pairs)
 
     return {
         "ok": True,
