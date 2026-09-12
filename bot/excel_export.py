@@ -27,7 +27,9 @@ def order_history_bucket(order: dict[str, Any]) -> str:
         return "returns"
     if ttn == "received":
         return "received"
-    if ttn in {"in_transit", "at_warehouse", "provided"}:
+    if payload.get("ttn_pdf_hold"):
+        return "awaiting"
+    if ttn in {"in_transit", "at_warehouse"}:
         return "transit"
     return "awaiting"
 

@@ -2062,7 +2062,8 @@ ${ttnLine}</div>
       return "returns";
     }
     if (ttn === "received") return "received";
-    if (ttn === "in_transit" || ttn === "at_warehouse" || ttn === "provided") {
+    if (payload.ttn_pdf_hold) return "awaiting";
+    if (ttn === "in_transit" || ttn === "at_warehouse") {
       return "transit";
     }
     // pending_create / created / create_error / none / ще без руху НП
