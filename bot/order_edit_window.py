@@ -1,7 +1,8 @@
 """Вікно редагування замовлень дроппером (Київський час).
 
-Редагування/скасування відкриті завжди, КРІМ інтервалу 11:50–14:30 —
-коли йде розноска по таблиці кладовщику.
+Інтервал 11:50–14:30 (розноска кладовщику) тимчасово вимкнено —
+дроппер може редагувати/скасовувати в будь-який час, поки замовлення
+ще не відправлено. Щоб повернути блок, поставте DROPPER_EDIT_LOCK_ENABLED = True.
 """
 
 from __future__ import annotations
@@ -11,6 +12,8 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 KYIV = ZoneInfo("Europe/Kyiv")
+# Тимчасово вимкнено на прохання власника (2026-09-12).
+DROPPER_EDIT_LOCK_ENABLED = False
 LOCK_START = time(11, 50)
 LOCK_END = time(14, 30)
 LOCK_START_LABEL = "11:50"
@@ -22,7 +25,9 @@ def now_kyiv() -> datetime:
 
 
 def is_dropper_edit_locked(now: datetime | None = None) -> bool:
-    """True у «закриту годину» 11:50 ≤ t < 14:30 (Europe/Kyiv)."""
+    """True у «закриту годину» 11:50 ≤ t < 14:30 (Europe/Kyiv), якщо вікно увімкнено."""
+    if not DROPPER_EDIT_LOCK_ENABLED:
+        return False
     dt = now or now_kyiv()
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=KYIV)
@@ -42,7 +47,11 @@ def dropper_edit_window_info(now: datetime | None = None) -> dict[str, Any]:
     today = dt.date()
     start_dt = datetime.combine(today, LOCK_START, tzinfo=KYIV)
     end_dt = datetime.combine(today, LOCK_END, tzinfo=KYIV)
-    if locked:
+    if not DROPPER_EDIT_LOCK_ENABLED:
+        message = "Редагування відкрите, поки замовлення не відправлено."
+        next_open = None
+        next_lock = None
+    elif locked:
         message = (
             f"Зараз {LOCK_START_LABEL}–{LOCK_END_LABEL} (Київ) — редагування та "
             "скасування тимчасово закриті (розноска замовлень). "
@@ -71,7 +80,7 @@ def dropper_edit_window_info(now: datetime | None = None) -> dict[str, Any]:
         "next_open_at": next_open.isoformat(timespec="seconds") if next_open else "",
         "next_lock_at": (
             ""
-            if locked
+            if locked or next_lock is None
             else (
                 next_lock.isoformat(timespec="seconds")
                 if dt.timetz().replace(tzinfo=None) < LOCK_START

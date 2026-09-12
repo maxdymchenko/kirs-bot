@@ -2406,8 +2406,8 @@ ${
     }
     const allowCod = isFlagEnabled(dropperSettings.allow_cod, true);
     const editHint = allowCod
-      ? "До 11:50 і після 14:30 (Київ) можна змінити або скасувати, якщо ще не відправлено. ТТН перествориться автоматично."
-      : "До 11:50 і після 14:30 (Київ) можна змінити або скасувати, якщо ще не відправлено.";
+      ? "Можна змінити або скасувати, якщо ще не відправлено. ТТН перествориться автоматично."
+      : "Можна змінити або скасувати, якщо ще не відправлено.";
     return `
       <div class="order-edit-actions">
         <p class="hint">${escapeHtml(editHint)}</p>
@@ -3867,11 +3867,7 @@ ${
             dropperOrdersEditWindow.message ||
               "11:50–14:30 — редагування закрите, можна лише запит власнику."
           )}</div>`
-        : historyBucket === "awaiting" && dropperOrdersEditWindow
-          ? `<div class="hint order-window-banner">${escapeHtml(
-              dropperOrdersEditWindow.message || ""
-            )}</div>`
-          : "";
+        : "";
     const emptyByBucket = {
       awaiting: "Немає замовлень, що очікують відправлення",
       transit: "Немає замовлень у дорозі",
