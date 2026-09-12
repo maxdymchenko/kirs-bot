@@ -100,6 +100,11 @@ def _collect_np_from_text(text: str, found: list[str], seen: set[str]) -> None:
         digits = m.group(1)
         if _looks_like_np_en(digits):
             _add_unique(found, seen, digits)
+    for m in re.finditer(r"(?<!\d)(\d{15,18})(?!\d)", compact):
+        digits = m.group(1)
+        head = digits[:14]
+        if digits.startswith(_NP_PREFIXES) and _looks_like_np_en(head):
+            _add_unique(found, seen, head)
     for prefix in _NP_PREFIXES:
         need = 14 - len(prefix)
         for m in re.finditer(rf"({re.escape(prefix)}\d{{{need}}})", compact):
@@ -108,7 +113,19 @@ def _collect_np_from_text(text: str, found: list[str], seen: set[str]) -> None:
                 _add_unique(found, seen, digits)
 
 
-def extract_waybill_candidates(pdf_bytes: bytes) -> list[str]:
+def _collect_np_from_filename(name: str, found: list[str], seen: set[str]) -> None:
+    raw = str(name or "").strip()
+    if not raw:
+        return
+    _collect_np_from_text(raw, found, seen)
+    digits = _digits_only(raw)
+    if len(digits) >= 14 and digits.startswith(_NP_PREFIXES):
+        head = digits[:14]
+        if _looks_like_np_en(head):
+            _add_unique(found, seen, head)
+
+
+def extract_waybill_candidates(pdf_bytes: bytes, filename: str = "") -> list[str]:
     """Номери НП (з пробілами на етикетці теж) та Rozetka (RMP-…)."""
     texts: list[str] = []
     try:
@@ -137,6 +154,7 @@ def extract_waybill_candidates(pdf_bytes: bytes) -> list[str]:
         raw_blob = ""
     if raw_blob:
         _collect_np_from_text(raw_blob, found, seen)
+    _collect_np_from_filename(filename, found, seen)
     return found
 
 
@@ -145,6 +163,7 @@ def verify_ttn_pdf(
     pdf_bytes: bytes,
     ttn_number: str,
     carrier: str = "",
+    filename: str = "",
 ) -> dict[str, Any]:
     """
     Повертає {ok, expected, found, message}.
@@ -159,7 +178,7 @@ def verify_ttn_pdf(
             "message": "Вкажіть коректний номер накладної",
         }
 
-    found = extract_waybill_candidates(pdf_bytes)
+    found = extract_waybill_candidates(pdf_bytes, filename=filename)
     if not found:
         return {
             "ok": False,
@@ -202,6 +221,7 @@ def verify_ttn_pdf_base64(
     pdf_b64: str,
     ttn_number: str,
     carrier: str = "",
+    filename: str = "",
 ) -> dict[str, Any]:
     try:
         pdf_bytes = decode_pdf_base64(pdf_b64)
@@ -213,7 +233,10 @@ def verify_ttn_pdf_base64(
             "message": str(exc),
         }
     return verify_ttn_pdf(
-        pdf_bytes=pdf_bytes, ttn_number=ttn_number, carrier=carrier
+        pdf_bytes=pdf_bytes,
+        ttn_number=ttn_number,
+        carrier=carrier,
+        filename=filename,
     )
 
 
@@ -224,6 +247,7 @@ def apply_ttn_pdf_check(
     pdf_b64: str,
     ttn_number: str | None = None,
     carrier: str | None = None,
+    filename: str | None = None,
 ) -> dict[str, Any]:
     """
     Звірити PDF з номером, записати результат у payload.
@@ -238,7 +262,17 @@ def apply_ttn_pdf_check(
         if carrier is not None
         else (payload.get("own_ttn_carrier") or "")
     )
-    check = verify_ttn_pdf_base64(pdf_b64=pdf_b64, ttn_number=number, carrier=carr)
+    pdf_name = str(
+        filename
+        if filename is not None
+        else (payload.get("ttn_pdf_name") or "")
+    )
+    check = verify_ttn_pdf_base64(
+        pdf_b64=pdf_b64,
+        ttn_number=number,
+        carrier=carr,
+        filename=pdf_name,
+    )
     now = datetime.now(timezone.utc).isoformat(timespec="seconds")
     ok = bool(check.get("ok"))
     patch = {

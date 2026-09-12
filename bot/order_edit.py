@@ -359,6 +359,20 @@ def build_payload_from_edit(
         "created_by_user_id",
         "edited_by_owner",
         "old_ttn_before_recreate",
+        "ttn_pdf_hold",
+        "ttn_pdf_ok",
+        "ttn_pdf_check_message",
+        "ttn_pdf_expected",
+        "ttn_pdf_found",
+        "ttn_pdf_checked_at",
+        "ttn_pdf_local_path",
+        "ttn_pdf_local_abs",
+        "ttn_pdf_drive_file_id",
+        "ttn_pdf_drive_folder_id",
+        "ttn_pdf_drive_folder_name",
+        "ttn_pdf_drive_name",
+        "ttn_pdf_drive_source",
+        "ttn_pdf_drive_saved_at",
     )
     payload = {k: old_payload[k] for k in keep_keys if k in old_payload}
     payload.update(

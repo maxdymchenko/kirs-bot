@@ -1880,6 +1880,7 @@ def create_web_app(
                         pdf_b64=pdf_b64,
                         ttn_number=ttn_number,
                         carrier=carrier,
+                        filename=str(getattr(payload, "ttn_pdf_name", None) or ""),
                     )
                     order = applied.get("order") or order
                     if not applied.get("ok"):
@@ -2350,7 +2351,9 @@ def create_web_app(
             "cart": safe_cart,
         }
         diffs = compute_order_diff(order, new_snap)
-        if not diffs:
+        pdf_b64 = str(getattr(validate_payload, "ttn_pdf_base64", None) or "").strip()
+        pdf_only = bool(own_ttn and pdf_b64 and not diffs)
+        if not diffs and not pdf_only:
             changes = storage.list_order_changes(order_id, limit=100)
             return {
                 "ok": True,
@@ -2359,6 +2362,109 @@ def create_web_app(
                 "ttn_recreated": False,
                 "ttn_error": "",
                 "diff": [],
+            }
+
+        if pdf_only:
+            from bot.ttn_pdf_verify import (
+                apply_ttn_pdf_check,
+                format_ttn_pdf_mismatch_message,
+            )
+
+            pdf_name = str(validate_payload.ttn_pdf_name or "").strip() or (
+                f"{order.get('order_number')}_{ttn_number}.pdf"
+            )
+            applied = apply_ttn_pdf_check(
+                storage,
+                order,
+                pdf_b64=pdf_b64,
+                ttn_number=ttn_number,
+                carrier=carrier,
+                filename=pdf_name,
+            )
+            saved = applied.get("order") or order
+            storage.add_order_change(
+                order_id=order_id,
+                order_number=str(saved.get("order_number") or ""),
+                actor_role=actor_role,
+                actor_user_id=str(actor_user_id or "").strip(),
+                actor_label=actor_label,
+                change_type="ttn",
+                summary=(
+                    "Накладну перевірено — hold знято"
+                    if applied.get("ok")
+                    else "Повторна звірка PDF: номер не збігся"
+                ),
+                diff=[
+                    {
+                        "field": "ttn_pdf",
+                        "old": str(old_payload.get("ttn_pdf_name") or ""),
+                        "new": pdf_name,
+                    }
+                ],
+            )
+            try:
+                if applied.get("ok"):
+                    await _notify(
+                        str(saved.get("chat_id") or dropper.chat_id),
+                        (
+                            f"✅ Накладну перевірено · {saved.get('order_number')}\n"
+                            "Номер у PDF збігається. Hold знято — замовлення знову "
+                            "може йти в роботу."
+                        ),
+                    )
+                else:
+                    await _notify(
+                        str(saved.get("chat_id") or dropper.chat_id),
+                        format_ttn_pdf_mismatch_message(
+                            saved, applied.get("check") or {}
+                        ),
+                    )
+            except Exception:
+                logger.exception(
+                    "notify ttn pdf recheck failed %s", saved.get("order_number")
+                )
+            try:
+                from bot.ttn_drive import decode_pdf_base64, persist_order_ttn_pdf
+
+                persist_order_ttn_pdf(
+                    storage,
+                    saved,
+                    pdf_bytes=decode_pdf_base64(pdf_b64),
+                    source="upload",
+                    filename=pdf_name,
+                )
+            except Exception:
+                logger.exception(
+                    "ttn pdf drive save on recheck failed %s",
+                    saved.get("order_number"),
+                )
+            try:
+                from bot.orders_sheets import sync_order_to_sheet
+
+                saved = (
+                    sync_order_to_sheet(
+                        storage,
+                        storage.get_order(order_id) or saved,
+                        catalog=catalog,
+                        full=True,
+                    )
+                    or saved
+                )
+            except Exception:
+                logger.exception(
+                    "orders sheet sync on pdf recheck %s failed",
+                    saved.get("order_number"),
+                )
+            changes = storage.list_order_changes(order_id, limit=100)
+            return {
+                "ok": True,
+                "order": {**saved, "changes": changes},
+                "changed": True,
+                "ttn_recreated": False,
+                "ttn_error": "",
+                "diff": [],
+                "can_recreate_ttn": can_recreate_ttn(saved),
+                "ttn_pdf_ok": bool(applied.get("ok")),
             }
 
         try:
@@ -2409,6 +2515,7 @@ def create_web_app(
             new_payload.pop("pending_balance_debit", None)
             new_payload.pop("pending_balance_debit_method", None)
 
+        keep_pdf_hold = bool(old_payload.get("ttn_pdf_hold")) and not pdf_b64
         saved = storage.replace_order(
             order_id,
             payment_method=validate_payload.payment_method,
@@ -2421,7 +2528,7 @@ def create_web_app(
             ttn_number=saved_ttn_number,
             ttn_status=ttn_status,
             payload=new_payload,
-            sheets_sync_status="pending",
+            sheets_sync_status="hold_pdf" if keep_pdf_hold else "pending",
         )
         if not saved:
             raise HTTPException(status_code=500, detail="Не вдалося зберегти замовлення")
@@ -2545,6 +2652,9 @@ def create_web_app(
                         pdf_b64=pdf_b64,
                         ttn_number=saved_ttn_number,
                         carrier=carrier,
+                        filename=str(
+                            getattr(validate_payload, "ttn_pdf_name", None) or ""
+                        ),
                     )
                     saved = applied.get("order") or saved
                     if not applied.get("ok"):

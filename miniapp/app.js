@@ -2607,7 +2607,7 @@ ${
     const pdfHoldHtml = pdfHold
       ? `<div class="form-error order-pdf-hold">⚠️ Номер ТТН і PDF не збігаються — виправте, інакше замовлення не піде на упаковку. ${escapeHtml(
           payload.ttn_pdf_check_message || ""
-        )}</div>`
+        )} Відкрийте «Редагувати» і ще раз прикріпіть PDF етикетки, потім збережіть.</div>`
       : "";
     return `
       <article class="order-card" data-order-id="${orderId}">
@@ -3482,10 +3482,10 @@ ${
         const newTtn = String(body.ttn_number || "")
           .replace(/\s+/g, "")
           .toUpperCase();
-        if (oldTtn !== newTtn) {
+        if (oldTtn !== newTtn || Boolean((order.payload || {}).ttn_pdf_hold)) {
           if (errEl) {
             errEl.textContent =
-              "При зміні номера накладної прикріпіть PDF етикетки ще раз — для звірки номера";
+              "Прикріпіть PDF етикетки ще раз — для звірки номера з накладною";
             errEl.classList.remove("hidden");
           }
           return;
