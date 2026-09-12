@@ -231,9 +231,6 @@ def sheet_carrier_label(order: dict[str, Any]) -> str:
         carrier = str(payload.get("own_ttn_carrier") or "").strip().lower()
         if carrier == "rozetka":
             return "Rozetka"
-        if carrier:
-            return carrier
-        return "власна ТТН"
     return "НП"
 
 
