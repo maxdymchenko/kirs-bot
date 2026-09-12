@@ -13,9 +13,27 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-_NP_TTN_RE = re.compile(r"(?<!\d)(\d{14})(?!\d)")
 _RMP_RE = re.compile(r"(RMP-\d{6,20})", re.IGNORECASE)
+_NP_GROUPED_RE = re.compile(
+    r"(?<!\d)(\d{4}(?:[\s\-]+\d{4}){2}[\s\-]+\d{2,4})(?!\d)"
+)
+_NP_COMPACT_RE = re.compile(r"(?<!\d)(\d{13,14})(?!\d)")
+_NP_PREFIXES = ("204", "205", "206", "207", "208", "590", "591")
+_DATE_PREFIX_RE = re.compile(r"^20(2[0-9]|3[0-9])(0[1-9]|1[0-2])")
 _MAX_PDF_BYTES = 2_500_000
+
+
+def _digits_only(value: str) -> str:
+    return re.sub(r"\D+", "", str(value or ""))
+
+
+def _looks_like_np_en(digits: str) -> bool:
+    raw = _digits_only(digits)
+    if not (13 <= len(raw) <= 14):
+        return False
+    if _DATE_PREFIX_RE.match(raw):
+        return False
+    return raw.startswith(_NP_PREFIXES)
 
 
 def decode_pdf_base64(raw: str) -> bytes:
@@ -42,14 +60,56 @@ def normalize_waybill(value: str, carrier: str = "") -> str:
     if carrier == "rozetka" or raw.upper().startswith("RMP-"):
         m = _RMP_RE.search(raw.replace(" ", ""))
         return m.group(1).upper() if m else ""
-    digits = re.sub(r"\D", "", raw)
+    digits = _digits_only(raw)
+    if len(digits) > 14 and digits.startswith(_NP_PREFIXES):
+        return digits[:14]
     if len(digits) >= 14:
         return digits[:14] if len(digits) == 14 else digits[-14:]
     return digits
 
 
+def _np_numbers_match(expected: str, found: str) -> bool:
+    a = _digits_only(expected)
+    b = _digits_only(found)
+    if not a or not b:
+        return False
+    if a == b:
+        return True
+    if min(len(a), len(b)) < 13:
+        return False
+    if not (a.startswith(_NP_PREFIXES) or b.startswith(_NP_PREFIXES)):
+        return False
+    return a.startswith(b) or b.startswith(a)
+
+
+def _add_unique(found: list[str], seen: set[str], value: str) -> None:
+    val = str(value or "").strip()
+    if not val or val in seen:
+        return
+    seen.add(val)
+    found.append(val)
+
+
+def _collect_np_from_text(text: str, found: list[str], seen: set[str]) -> None:
+    for m in _NP_GROUPED_RE.finditer(text):
+        digits = _digits_only(m.group(1))
+        if _looks_like_np_en(digits):
+            _add_unique(found, seen, digits[:14] if len(digits) > 14 else digits)
+    compact = re.sub(r"(?<=\d)[\s\-]+(?=\d)", "", text)
+    for m in _NP_COMPACT_RE.finditer(compact):
+        digits = m.group(1)
+        if _looks_like_np_en(digits):
+            _add_unique(found, seen, digits)
+    for prefix in _NP_PREFIXES:
+        need = 14 - len(prefix)
+        for m in re.finditer(rf"({re.escape(prefix)}\d{{{need}}})", compact):
+            digits = m.group(1)
+            if _looks_like_np_en(digits):
+                _add_unique(found, seen, digits)
+
+
 def extract_waybill_candidates(pdf_bytes: bytes) -> list[str]:
-    """Усі знайдені в PDF номери НП (14 цифр) та Rozetka (RMP-…)."""
+    """Номери НП (з пробілами на етикетці теж) та Rozetka (RMP-…)."""
     texts: list[str] = []
     try:
         from pypdf import PdfReader
@@ -63,24 +123,20 @@ def extract_waybill_candidates(pdf_bytes: bytes) -> list[str]:
     except Exception:
         logger.debug("pypdf read failed", exc_info=True)
 
-    try:
-        texts.append(pdf_bytes.decode("latin-1", errors="ignore"))
-    except Exception:
-        pass
-
     blob = "\n".join(texts)
     found: list[str] = []
     seen: set[str] = set()
     for m in _RMP_RE.finditer(blob):
-        val = m.group(1).upper()
-        if val not in seen:
-            seen.add(val)
-            found.append(val)
-    for m in _NP_TTN_RE.finditer(blob):
-        val = m.group(1)
-        if val not in seen:
-            seen.add(val)
-            found.append(val)
+        _add_unique(found, seen, m.group(1).upper())
+    _collect_np_from_text(blob, found, seen)
+
+    # Сирий PDF — лише номери з префіксом НП, без дат на кшталт 20260912…
+    try:
+        raw_blob = pdf_bytes.decode("latin-1", errors="ignore")
+    except Exception:
+        raw_blob = ""
+    if raw_blob:
+        _collect_np_from_text(raw_blob, found, seen)
     return found
 
 
@@ -119,7 +175,7 @@ def verify_ttn_pdf(
     if carrier_l == "rozetka" or expected.startswith("RMP-"):
         match = any(normalize_waybill(x, "rozetka") == expected for x in found)
     else:
-        match = any(normalize_waybill(x, "nova_poshta") == expected for x in found)
+        match = any(_np_numbers_match(expected, x) for x in found)
 
     if not match:
         preview = ", ".join(found[:3])
