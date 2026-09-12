@@ -58,7 +58,7 @@ TTN_STATUS_LABELS = {
     "pending_create": "очікує створення ТТН",
     "create_error": "помилка створення ТТН",
     "created": "ТТН створено",
-    "provided": "ТТН надано",
+    "provided": "ТТН створено дропером",
     "in_transit": "в дорозі",
     "at_warehouse": "на відділенні",
     "received": "отримано",
@@ -179,8 +179,12 @@ def _color_canon_tokens(text: str) -> set[str]:
     return out
 
 
+OWN_TTN_STATUS_LABEL = "ТТН створено дропером"
+
+
 def sheet_status_label(order: dict[str, Any]) -> str:
     payload = order.get("payload") or {}
+    own_ttn = bool(order.get("own_ttn") or payload.get("own_ttn"))
     np_text = str(payload.get("np_status_text") or "").strip()
     if np_text:
         return np_text
@@ -199,6 +203,9 @@ def sheet_status_label(order: dict[str, Any]) -> str:
     if payload.get("np_error") and not str(order.get("ttn_number") or payload.get("ttn_number") or "").strip():
         return "помилка створення ТТН"
     ttn = str(order.get("ttn_status") or "").strip()
+    has_ttn = bool(str(order.get("ttn_number") or payload.get("ttn_number") or "").strip())
+    if own_ttn and has_ttn and ttn in {"", "none", "provided", "created", "pending_create"}:
+        return OWN_TTN_STATUS_LABEL
     return TTN_STATUS_LABELS.get(ttn, ttn or "—")
 
 
