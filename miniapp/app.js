@@ -6811,10 +6811,11 @@ ${
     const pdfBadge = order.has_ttn_pdf
       ? `<span class="meta-soft">PDF ✓</span>`
       : `<span class="meta-soft">PDF немає</span>`;
+    const dropperName = String(order.dropper_name || order.source_label || "").trim();
     const sourceLabel = String(order.source_label || "").trim();
     const ttn = String(order.ttn_number || "").trim();
     const titleBits = [`<b>${escapeHtml(order.order_number || "")}</b>`];
-    if (sourceLabel) titleBits.push(escapeHtml(sourceLabel));
+    if (dropperName) titleBits.push(escapeHtml(dropperName));
     if (ttn) titleBits.push(`ТТН ${escapeHtml(ttn)}`);
     const subBits = [escapeHtml(order.recipient_name || "—")];
     if (!sourceLabel) {

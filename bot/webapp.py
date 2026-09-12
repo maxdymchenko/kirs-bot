@@ -3415,16 +3415,34 @@ def create_web_app(
         _require_warehouse(chat_id=chat_id, user_id=user_id, username=username)
         stage_key = "ready_to_ship" if stage == "ready_to_ship" else "packing"
         items = list_warehouse_queue(storage, stage=stage_key, limit=limit)
+        dropper_names: dict[int, str] = {}
         enriched = []
         for o in items:
             payload = o.get("payload") or {}
             cart = payload.get("cart") or []
+            dropper_name = ""
+            try:
+                did = int(o.get("dropper_id") or 0)
+            except (TypeError, ValueError):
+                did = 0
+            if did:
+                if did not in dropper_names:
+                    dropper = storage.get_dropper_by_id(did)
+                    if dropper:
+                        dropper_names[did] = str(
+                            dropper.owner_title or dropper.company_name or ""
+                        ).strip()
+                    else:
+                        dropper_names[did] = ""
+                dropper_name = dropper_names.get(did) or ""
+            source_label = str(payload.get("market_source") or "").strip()
             enriched.append(
                 {
                     **o,
                     "warehouse_stage": order_warehouse_stage(o),
                     "has_ttn_pdf": order_has_ttn_pdf(o),
-                    "source_label": str(payload.get("market_source") or "").strip(),
+                    "dropper_name": dropper_name,
+                    "source_label": source_label or dropper_name,
                     "cart_summary": [
                         {
                             "code": str(x.get("code") or ""),
