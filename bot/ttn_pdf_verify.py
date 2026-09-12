@@ -68,6 +68,26 @@ def normalize_waybill(value: str, carrier: str = "") -> str:
     return digits
 
 
+def _np_canonical_forms(digits: str) -> set[str]:
+    """14-значні варіанти НП: як є, перші/останні 14, або без однієї зайвої цифри."""
+    raw = _digits_only(digits)
+    out: set[str] = set()
+    if _looks_like_np_en(raw):
+        out.add(raw)
+    if len(raw) > 14 and raw.startswith(_NP_PREFIXES):
+        head, tail = raw[:14], raw[-14:]
+        if _looks_like_np_en(head):
+            out.add(head)
+        if _looks_like_np_en(tail):
+            out.add(tail)
+        if len(raw) == 15:
+            for i in range(15):
+                cand = raw[:i] + raw[i + 1 :]
+                if _looks_like_np_en(cand):
+                    out.add(cand)
+    return out
+
+
 def _np_numbers_match(expected: str, found: str) -> bool:
     a = _digits_only(expected)
     b = _digits_only(found)
@@ -75,11 +95,30 @@ def _np_numbers_match(expected: str, found: str) -> bool:
         return False
     if a == b:
         return True
+    forms_a = _np_canonical_forms(a)
+    forms_b = _np_canonical_forms(b)
+    if forms_a and forms_b and forms_a & forms_b:
+        return True
     if min(len(a), len(b)) < 13:
         return False
     if not (a.startswith(_NP_PREFIXES) or b.startswith(_NP_PREFIXES)):
         return False
     return a.startswith(b) or b.startswith(a)
+
+
+def _pick_official_np(typed: str, found: list[str]) -> str:
+    typed_forms = _np_canonical_forms(typed)
+    for item in found:
+        inter = typed_forms & _np_canonical_forms(item)
+        fourteens = [x for x in inter if len(x) == 14]
+        if fourteens:
+            return fourteens[0]
+        if inter:
+            return next(iter(inter))
+    for cand in typed_forms:
+        if len(cand) == 14:
+            return cand
+    return _digits_only(typed)
 
 
 def _add_unique(found: list[str], seen: set[str], value: str) -> None:
@@ -169,12 +208,55 @@ def verify_ttn_pdf(
     Повертає {ok, expected, found, message}.
     ok=False якщо номер не знайдено в PDF або не збігається.
     """
-    expected = normalize_waybill(ttn_number, carrier)
-    if not expected:
+    carrier_l = str(carrier or "").strip().lower()
+    if carrier_l == "rozetka" or str(ttn_number or "").upper().startswith("RMP-"):
+        expected = normalize_waybill(ttn_number, "rozetka")
+        if not expected:
+            return {
+                "ok": False,
+                "expected": "",
+                "found": [],
+                "message": "Вкажіть коректний номер накладної",
+            }
+        found = extract_waybill_candidates(pdf_bytes, filename=filename)
+        match = any(normalize_waybill(x, "rozetka") == expected for x in found)
+        if not found:
+            return {
+                "ok": False,
+                "expected": expected,
+                "found": [],
+                "message": (
+                    "Не вдалося прочитати номер накладної з PDF. "
+                    "Прикріпіть оригінальну етикетку 100×100 (текст/вектор), не скан-фото."
+                ),
+            }
+        if not match:
+            preview = ", ".join(found[:3])
+            return {
+                "ok": False,
+                "expected": expected,
+                "found": found,
+                "official": "",
+                "message": (
+                    f"Номер у замовленні ({expected}) не збігається з номером у PDF "
+                    f"({preview}). Перевірте ТТН і файл етикетки."
+                ),
+            }
+        return {
+            "ok": True,
+            "expected": expected,
+            "found": found,
+            "official": expected,
+            "message": "OK",
+        }
+
+    typed = _digits_only(ttn_number)
+    if len(typed) < 13:
         return {
             "ok": False,
-            "expected": "",
+            "expected": typed,
             "found": [],
+            "official": "",
             "message": "Вкажіть коректний номер накладної",
         }
 
@@ -182,36 +264,35 @@ def verify_ttn_pdf(
     if not found:
         return {
             "ok": False,
-            "expected": expected,
+            "expected": typed,
             "found": [],
+            "official": "",
             "message": (
                 "Не вдалося прочитати номер накладної з PDF. "
                 "Прикріпіть оригінальну етикетку 100×100 (текст/вектор), не скан-фото."
             ),
         }
 
-    carrier_l = str(carrier or "").strip().lower()
-    if carrier_l == "rozetka" or expected.startswith("RMP-"):
-        match = any(normalize_waybill(x, "rozetka") == expected for x in found)
-    else:
-        match = any(_np_numbers_match(expected, x) for x in found)
-
+    match = any(_np_numbers_match(typed, x) for x in found)
     if not match:
         preview = ", ".join(found[:3])
         return {
             "ok": False,
-            "expected": expected,
+            "expected": typed,
             "found": found,
+            "official": "",
             "message": (
-                f"Номер у замовленні ({expected}) не збігається з номером у PDF "
+                f"Номер у замовленні ({typed}) не збігається з номером у PDF "
                 f"({preview}). Перевірте ТТН і файл етикетки."
             ),
         }
 
+    official = _pick_official_np(typed, found)
     return {
         "ok": True,
-        "expected": expected,
+        "expected": official or typed,
         "found": found,
+        "official": official,
         "message": "OK",
     }
 
@@ -283,9 +364,16 @@ def apply_ttn_pdf_check(
         "ttn_pdf_found": list(check.get("found") or [])[:5],
         "ttn_pdf_checked_at": now,
     }
+    official = str(check.get("official") or "").strip()
+    if ok and official:
+        patch["ttn_number"] = official
     saved = storage.merge_order_payload(int(order["id"]), patch)
     if ok:
-        storage.update_order_flags(int(order["id"]), sheets_sync_status="pending")
+        storage.update_order_flags(
+            int(order["id"]),
+            sheets_sync_status="pending",
+            ttn_number=official or None,
+        )
     else:
         storage.update_order_flags(int(order["id"]), sheets_sync_status="hold_pdf")
     return {
