@@ -3830,11 +3830,23 @@ ${
 
   function syncHistoryBucketTabs() {
     if (!els.historyBuckets) return;
+    const labels = {
+      awaiting: "Очікує відправлення",
+      transit: "В дорозі",
+      received: "Отримано",
+      returns: "Повернення",
+    };
+    const counts = { awaiting: 0, transit: 0, received: 0, returns: 0 };
+    for (const order of dropperOrdersCache || []) {
+      const bucket = orderHistoryBucket(order);
+      if (counts[bucket] != null) counts[bucket] += 1;
+    }
     els.historyBuckets.querySelectorAll("[data-history-bucket]").forEach((btn) => {
-      btn.classList.toggle(
-        "active",
-        btn.getAttribute("data-history-bucket") === historyBucket
-      );
+      const key = btn.getAttribute("data-history-bucket");
+      btn.classList.toggle("active", key === historyBucket);
+      const label = labels[key] || key || "";
+      const n = counts[key] || 0;
+      btn.textContent = n ? `${label} (${n})` : label;
     });
   }
 
@@ -3906,6 +3918,7 @@ ${
               ? "Нічого не знайдено за фільтрами"
               : emptyByBucket[historyBucket] || "Порожньо"
           )}</div>`);
+    syncHistoryBucketTabs();
     bindOrderCardClicks(els.ordersHistory);
   }
 
