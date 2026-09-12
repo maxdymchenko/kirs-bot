@@ -3595,6 +3595,13 @@ def create_web_app(
             },
         )
 
+    @app.get("/favicon.ico")
+    async def favicon_ico() -> FileResponse:
+        icon = MINIAPP_DIR / "favicon.png"
+        if not icon.exists():
+            raise HTTPException(status_code=404, detail="Favicon не найдена")
+        return FileResponse(icon, media_type="image/png")
+
     @app.get("/")
     async def miniapp_index() -> FileResponse:
         index = MINIAPP_DIR / "index.html"
