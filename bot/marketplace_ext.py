@@ -25,6 +25,7 @@ from bot.orders_sheets import (
     _find_catalog_variants,
     _fmt_money,
     _is_generic_sheet_color,
+    _color_canon_tokens,
     _lookup_unique_catalog_color,
     _match_catalog_color,
     _norm_text,
@@ -499,6 +500,16 @@ def _walk_rozetka_attrs(raw: Any, named: list[str], values: list[str]) -> None:
             _walk_rozetka_attrs(item, named, values)
 
 
+def _short_color_label(text: str) -> str:
+    """Короткий підпис кольору (не вся назва товару)."""
+    raw = _usable_color_text(text)
+    if not raw or len(raw) > 28:
+        return ""
+    if not _color_canon_tokens(raw):
+        return ""
+    return raw
+
+
 def _extract_rozetka_color(*sources: Any) -> str:
     """Колір з характеристики «Колір / Цвет / color», якщо API віддала назву поля."""
     named: list[str] = []
@@ -511,7 +522,13 @@ def _extract_rozetka_color(*sources: Any) -> str:
                 named.append(text)
             continue
         _walk_rozetka_attrs(parsed, named, values)
-    return named[0] if named else ""
+    if named:
+        return named[0]
+    for text in values:
+        short = _short_color_label(text)
+        if short:
+            return short
+    return ""
 
 
 def _rozetka_attr_values(*sources: Any) -> list[str]:
@@ -523,12 +540,26 @@ def _rozetka_attr_values(*sources: Any) -> list[str]:
     return values
 
 
+def _rozetka_conf_color(conf: Any) -> str:
+    if not isinstance(conf, dict):
+        return ""
+    for key in ("title", "title_ua", "name", "name_ua", "value", "value_name"):
+        short = _short_color_label(conf.get(key))
+        if short:
+            return short
+    return ""
+
+
 def _rozetka_purchase_blobs(purchase: dict[str, Any], item: dict[str, Any]) -> list[Any]:
     conf = purchase.get("conf") if isinstance(purchase.get("conf"), dict) else {}
     return [
         purchase.get("color"),
         item.get("color"),
         item.get("color_name"),
+        _rozetka_conf_color(conf),
+        conf.get("title"),
+        conf.get("title_ua"),
+        conf.get("name"),
         item.get("details"),
         item.get("options"),
         item.get("item_details"),
@@ -538,6 +569,7 @@ def _rozetka_purchase_blobs(purchase: dict[str, Any], item: dict[str, Any]) -> l
         purchase.get("conf_details"),
         conf.get("details"),
         conf.get("options"),
+        conf,
     ]
 
 
@@ -733,6 +765,9 @@ def _fill_rozetka_item_colors(mapped: dict[str, Any], token: str) -> None:
         if not content:
             continue
         color = _color_from_rozetka_card(content, token)
+        if not color:
+            group = content.get("group_item")
+            color = _rozetka_conf_color(group) or _rozetka_conf_color(content)
         extra_vals = [color] if color else []
         for key in ("name", "name_ua", "title", "title_ua"):
             text = _trim(content.get(key))
@@ -855,10 +890,17 @@ def _map_rozetka(content: dict[str, Any], source: dict[str, str]) -> dict[str, A
         item = p.get("item") if isinstance(p.get("item"), dict) else {}
         blobs = _rozetka_purchase_blobs(p, item)
         name = _pick(p.get("item_name"), item.get("name"), item.get("name_ua"))
-        color = _extract_rozetka_color(*blobs)
+        color = _extract_rozetka_color(*blobs) or _rozetka_conf_color(
+            p.get("conf") if isinstance(p.get("conf"), dict) else {}
+        )
         candidates = _rozetka_attr_values(*blobs)
         if name and name not in candidates:
             candidates.append(name)
+        conf_color = _rozetka_conf_color(
+            p.get("conf") if isinstance(p.get("conf"), dict) else {}
+        )
+        if conf_color and conf_color not in candidates:
+            candidates.append(conf_color)
         items.append(
             {
                 "name": name,
@@ -1332,6 +1374,17 @@ def build_sheet_rows(
                 )
             if not color:
                 color = _lookup_unique_catalog_color(catalog, code)
+            if not color:
+                for text in candidates:
+                    short = _short_color_label(text)
+                    if not short:
+                        continue
+                    matched = _match_catalog_color(
+                        catalog, code, [short], product_id=product_id
+                    )
+                    color = matched or short
+                    if color:
+                        break
         (
             location,
             catalog_name,
