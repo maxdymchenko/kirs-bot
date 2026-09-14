@@ -61,11 +61,17 @@ _LEFT_WAREHOUSE_STATUS = (
     "передано до служби",
     "очікує в пункті",
     "видано одержувачу",
+    "відправлено",
+    "отправлено",
 )
 _NP_LIVE_CACHE_TTL_SEC = 300.0
 _np_live_cache_at = 0.0
 _np_live_cache_key: frozenset[str] = frozenset()
 _np_live_cache_data: dict[str, dict[str, Any]] = {}
+_ROZETKA_LIVE_CACHE_TTL_SEC = 300.0
+_rozetka_live_cache_at = 0.0
+_rozetka_live_cache_key: frozenset[str] = frozenset()
+_rozetka_live_cache_data: dict[str, str] = {}
 
 
 def order_warehouse_stage(order: dict[str, Any]) -> str:
@@ -422,6 +428,38 @@ def _sheet_order_from_lines(
     }
 
 
+def _persist_sqlite_left_warehouse(
+    storage: AppStorage, order: dict[str, Any], mapped: str
+) -> None:
+    """Запам'ятати, що посилка вже поїхала — щоб картка не верталась у «На відправлення»."""
+    if is_sheet_queue_order(order):
+        return
+    try:
+        oid = int(order.get("id") or 0)
+    except (TypeError, ValueError):
+        return
+    if oid <= 0:
+        return
+    status = mapped if mapped in SHIPPED_OR_FINAL_STATUSES else "in_transit"
+    prev = str(order.get("ttn_status") or "").strip()
+    if prev == status:
+        return
+    try:
+        storage.update_order_flags(oid, ttn_status=status)
+        storage.merge_order_payload(
+            oid,
+            {
+                "warehouse_left_via_tracking": True,
+                "warehouse_left_at": datetime.now().isoformat(timespec="seconds"),
+            },
+        )
+    except Exception:
+        logger.exception(
+            "warehouse: persist left-warehouse failed for %s",
+            order.get("order_number"),
+        )
+
+
 def _cached_np_live_statuses(
     storage: AppStorage, ttns: list[str]
 ) -> dict[str, dict[str, Any]]:
@@ -453,6 +491,8 @@ def _drop_sheet_orders_left_via_np(
     ttns: list[str] = []
     for order in orders:
         raw = str(order.get("ttn_number") or "")
+        if str(raw).upper().startswith("RMP-"):
+            continue
         digits = re.sub(r"\D+", "", raw)
         if _looks_like_np_ttn(raw) and digits:
             ttns.append(digits)
@@ -465,17 +505,81 @@ def _drop_sheet_orders_left_via_np(
         return orders
     kept: list[dict[str, Any]] = []
     for order in orders:
-        digits = re.sub(r"\D+", "", str(order.get("ttn_number") or ""))
+        raw = str(order.get("ttn_number") or "")
+        if str(raw).upper().startswith("RMP-"):
+            kept.append(order)
+            continue
+        digits = re.sub(r"\D+", "", raw)
         row = info.get(digits) or {}
         if not row:
             kept.append(order)
             continue
         mapped = map_np_status_code(row.get("status_code"), row.get("status") or "")
-        if mapped in SHIPPED_OR_FINAL_STATUSES:
+        np_text = str(row.get("status") or "").strip()
+        left = mapped in SHIPPED_OR_FINAL_STATUSES or (
+            bool(np_text) and not _is_sheet_row_still_packing(np_text)
+        )
+        if left:
+            _persist_sqlite_left_warehouse(storage, order, mapped or "in_transit")
             continue
-        if str(row.get("status") or "").strip() and not _is_sheet_row_still_packing(
-            str(row.get("status") or "")
-        ):
+        kept.append(order)
+    return kept
+
+
+def _is_rozetka_queue_order(order: dict[str, Any]) -> bool:
+    payload = order.get("payload") or {}
+    ttn = str(order.get("ttn_number") or payload.get("ttn_number") or "")
+    if ttn.upper().startswith("RMP-"):
+        return True
+    src = str(
+        payload.get("market_source") or order.get("source_label") or ""
+    ).casefold()
+    return "розет" in src or "rozetka" in src
+
+
+def _cached_rozetka_status_labels(order_nos: list[str]) -> dict[str, str]:
+    global _rozetka_live_cache_at, _rozetka_live_cache_key, _rozetka_live_cache_data
+    from bot.marketplace_ext import fetch_rozetka_status_labels
+
+    key = frozenset(order_nos)
+    now = time.monotonic()
+    if (
+        key
+        and key == _rozetka_live_cache_key
+        and now - _rozetka_live_cache_at < _ROZETKA_LIVE_CACHE_TTL_SEC
+    ):
+        return _rozetka_live_cache_data
+    data = fetch_rozetka_status_labels(order_nos)
+    if data:
+        _rozetka_live_cache_at = now
+        _rozetka_live_cache_key = key
+        _rozetka_live_cache_data = data
+    return data
+
+
+def _drop_orders_left_via_rozetka(
+    storage: AppStorage, orders: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """Прибрати Rozetka, які вже передані службі доставки."""
+    ids = [
+        str(o.get("order_number") or "").strip()
+        for o in orders
+        if _is_rozetka_queue_order(o) and str(o.get("order_number") or "").strip()
+    ]
+    if not ids:
+        return orders
+    try:
+        labels = _cached_rozetka_status_labels(ids)
+    except Exception:
+        logger.exception("warehouse: Rozetka live status check failed")
+        return orders
+    if not labels:
+        return orders
+    kept: list[dict[str, Any]] = []
+    for order in orders:
+        no = str(order.get("order_number") or "").strip()
+        label = str(labels.get(no) or "").strip()
+        if label and not _is_sheet_row_still_packing(label):
             continue
         kept.append(order)
     return kept
@@ -572,6 +676,8 @@ def list_warehouse_queue(
         out.append(order)
         if no:
             seen_nos.add(no)
+    out = _drop_sheet_orders_left_via_np(storage, out)
+    out = _drop_orders_left_via_rozetka(storage, out)
     # новіші зверху (created_at DESC уже з SQL, але підстрахуємо)
     out.sort(key=lambda o: str(o.get("created_at") or ""), reverse=True)
     return out
