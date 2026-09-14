@@ -61,8 +61,12 @@ def is_terminal_sheet_status(status: str) -> bool:
     st = str(status or "").casefold().strip()
     if not st:
         return False
+    # «Очікує отримання від продавця» — ще на складі, не «Отримано» клієнтом.
+    awaiting_handover = ("очікує" in st or "ожидает" in st) and (
+        "отриман" in st or "получ" in st
+    )
     # Отримано / виконано
-    if any(
+    if not awaiting_handover and any(
         w in st
         for w in (
             "отриман",

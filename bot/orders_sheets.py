@@ -840,6 +840,8 @@ def status_n_fill_rgb(status: str) -> tuple[float, float, float]:
         return _STATUS_N_WHITE
     if "видален" in st or "удален" in st:
         return _STATUS_N_RED
+    if ("очікує" in st or "ожидает" in st) and ("отриман" in st or "получ" in st):
+        return _STATUS_N_WHITE
     if any(word in st for word in _STATUS_N_GREEN_MARKERS):
         return _STATUS_N_GREEN
     return _STATUS_N_WHITE
