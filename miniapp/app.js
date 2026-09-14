@@ -149,6 +149,7 @@
     warehousePackingList: document.getElementById("warehousePackingList"),
     warehouseShippingList: document.getElementById("warehouseShippingList"),
     warehousePrintBtn: document.getElementById("warehousePrintBtn"),
+    warehouseDismissBtn: document.getElementById("warehouseDismissBtn"),
     warehouseSelectAllBtn: document.getElementById("warehouseSelectAllBtn"),
     warehouseDeselectAllBtn: document.getElementById("warehouseDeselectAllBtn"),
     orderMain: document.getElementById("orderMain"),
@@ -6833,6 +6834,9 @@ ${
               <input type="checkbox" data-wh-print="${escapeHtml(String(order.id))}" />
               Друкувати
             </label>
+            <button type="button" class="btn primary" data-wh-shipped="${escapeHtml(
+              String(order.id)
+            )}">Відправлено</button>
             <button type="button" class="btn secondary" data-wh-back="${escapeHtml(
               String(order.id)
             )}">← На пакування</button>
@@ -6861,9 +6865,47 @@ ${
   }
 
   function syncWarehousePrintButton() {
-    if (!els.warehousePrintBtn) return;
     const selected = getSelectedWarehousePrintIds();
-    els.warehousePrintBtn.disabled = selected.length === 0;
+    const empty = selected.length === 0;
+    if (els.warehousePrintBtn) els.warehousePrintBtn.disabled = empty;
+    if (els.warehouseDismissBtn) els.warehouseDismissBtn.disabled = empty;
+  }
+
+  async function markWarehouseOrdersShipped(ids) {
+    const unique = [...new Set((ids || []).map((id) => String(id || "").trim()).filter(Boolean))];
+    if (!unique.length) {
+      showToast("Виберіть хоча б одне замовлення");
+      return false;
+    }
+    const label =
+      unique.length === 1
+        ? "Прибрати це замовлення з «На відправлення»?"
+        : `Прибрати вибрані замовлення з «На відправлення» (${unique.length})?`;
+    if (!window.confirm(label)) return false;
+    const errors = [];
+    for (const id of unique) {
+      try {
+        const response = await fetch(
+          `/api/warehouse/orders/${encodeURIComponent(id)}/shipped?${warehouseAuthParams()}`,
+          { method: "POST" }
+        );
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(data.detail || "Помилка");
+      } catch (error) {
+        errors.push(error.message || "Помилка");
+      }
+    }
+    await loadWarehouseQueue("ready_to_ship");
+    if (errors.length) {
+      showToast(errors[0]);
+      return false;
+    }
+    showToast(
+      unique.length === 1
+        ? "Знято з черги відправлення"
+        : `Знято з черги: ${unique.length}`
+    );
+    return true;
   }
 
   function setAllWarehousePrintChecks(checked) {
@@ -6977,6 +7019,12 @@ ${
 
   if (els.warehouseShippingList) {
     els.warehouseShippingList.addEventListener("click", async (event) => {
+      const shippedBtn = event.target.closest("[data-wh-shipped]");
+      if (shippedBtn) {
+        const id = shippedBtn.getAttribute("data-wh-shipped");
+        if (id) await markWarehouseOrdersShipped([id]);
+        return;
+      }
       const btn = event.target.closest("[data-wh-back]");
       if (!btn) return;
       const id = btn.getAttribute("data-wh-back");
@@ -7007,6 +7055,17 @@ ${
   if (els.warehouseDeselectAllBtn) {
     els.warehouseDeselectAllBtn.addEventListener("click", () => {
       setAllWarehousePrintChecks(false);
+    });
+  }
+
+  if (els.warehouseDismissBtn) {
+    els.warehouseDismissBtn.addEventListener("click", async () => {
+      const ids = getSelectedWarehousePrintIds();
+      if (!ids.length) {
+        showToast("Виберіть хоча б одне замовлення");
+        return;
+      }
+      await markWarehouseOrdersShipped(ids);
     });
   }
 

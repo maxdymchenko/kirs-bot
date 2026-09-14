@@ -3554,6 +3554,24 @@ def create_web_app(
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         return {"ok": True, "order": order}
 
+    @app.post("/api/warehouse/orders/{order_id}/shipped")
+    async def warehouse_mark_shipped(
+        order_id: str,
+        chat_id: str = Query("", max_length=64),
+        user_id: str = Query("", max_length=64),
+        username: str = Query("", max_length=64),
+    ) -> dict:
+        from bot.warehouse import mark_order_shipped
+
+        _require_warehouse(chat_id=chat_id, user_id=user_id, username=username)
+        try:
+            order = mark_order_shipped(
+                storage, order_id, actor_user_id=user_id
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {"ok": True, "order": order}
+
     @app.get("/api/warehouse/print-labels.pdf")
     async def warehouse_print_labels(
         chat_id: str = Query("", max_length=64),

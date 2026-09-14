@@ -17,6 +17,8 @@ logger = logging.getLogger(__name__)
 
 STAGE_PACKING = "packing"
 STAGE_READY = "ready_to_ship"
+STAGE_SHIPPED = "shipped"
+WAREHOUSE_STAGES = frozenset({STAGE_PACKING, STAGE_READY, STAGE_SHIPPED})
 SHEET_ID_PREFIX = "sheet:"
 SHEET_STAGE_KEY = "sheet_warehouse_stages"
 
@@ -74,13 +76,20 @@ _rozetka_live_cache_key: frozenset[str] = frozenset()
 _rozetka_live_cache_data: dict[str, str] = {}
 
 
+def normalize_warehouse_stage(stage: str | None) -> str:
+    raw = str(stage or "").strip()
+    if raw in WAREHOUSE_STAGES:
+        return raw
+    return STAGE_PACKING
+
+
 def order_warehouse_stage(order: dict[str, Any]) -> str:
     raw = str(order.get("warehouse_stage") or "").strip()
-    if raw in {STAGE_PACKING, STAGE_READY}:
+    if raw in WAREHOUSE_STAGES:
         return raw
     payload = order.get("payload") or {}
     raw2 = str(payload.get("warehouse_stage") or "").strip()
-    if raw2 in {STAGE_PACKING, STAGE_READY}:
+    if raw2 in WAREHOUSE_STAGES:
         return raw2
     return STAGE_PACKING
 
@@ -92,6 +101,10 @@ def is_packable_order(order: dict[str, Any]) -> bool:
         return False
     payload = order.get("payload") or {}
     if payload.get("ttn_pdf_hold") is True:
+        return False
+    if payload.get("warehouse_left_manually") or payload.get("warehouse_left_via_tracking"):
+        return False
+    if order_warehouse_stage(order) == STAGE_SHIPPED:
         return False
     ttn = str(order.get("ttn_status") or "none").strip() or "none"
     if ttn in SHIPPED_OR_FINAL_STATUSES:
@@ -206,7 +219,7 @@ def _load_sheet_stages(storage: AppStorage) -> dict[str, str]:
     for key, val in data.items():
         no = str(key or "").strip()
         stage = str(val or "").strip()
-        if no and stage in {STAGE_PACKING, STAGE_READY}:
+        if no and stage in WAREHOUSE_STAGES:
             out[no] = stage
     return out
 
@@ -217,7 +230,7 @@ def _save_sheet_stages(storage: AppStorage, stages: dict[str, str]) -> None:
     cleaned = {
         str(k).strip(): str(v)
         for k, v in (stages or {}).items()
-        if str(k).strip() and str(v) in {STAGE_PACKING, STAGE_READY}
+        if str(k).strip() and str(v) in WAREHOUSE_STAGES
     }
     payload = json.dumps(cleaned, ensure_ascii=False)
     with storage._connect() as conn:
@@ -238,7 +251,7 @@ def set_sheet_warehouse_stage(
     storage: AppStorage, order_no: str, stage: str
 ) -> None:
     no = str(order_no or "").strip()
-    stage_key = STAGE_READY if stage == STAGE_READY else STAGE_PACKING
+    stage_key = normalize_warehouse_stage(stage)
     if not no:
         raise ValueError("Немає номера замовлення")
     stages = _load_sheet_stages(storage)
@@ -385,9 +398,7 @@ def _sheet_order_from_lines(
     else:
         ttn_status = "created" if ttn else "none"
         status = "new"
-    stage = (stages or {}).get(order_no) or STAGE_PACKING
-    if stage not in {STAGE_PACKING, STAGE_READY}:
-        stage = STAGE_PACKING
+    stage = normalize_warehouse_stage((stages or {}).get(order_no) or STAGE_PACKING)
     return {
         "id": sheet_order_id(order_no),
         "order_number": order_no,
@@ -445,10 +456,13 @@ def _persist_sqlite_left_warehouse(
     if prev == status:
         return
     try:
-        storage.update_order_flags(oid, ttn_status=status)
+        storage.update_order_flags(
+            oid, ttn_status=status, warehouse_stage=STAGE_SHIPPED
+        )
         storage.merge_order_payload(
             oid,
             {
+                "warehouse_stage": STAGE_SHIPPED,
                 "warehouse_left_via_tracking": True,
                 "warehouse_left_at": datetime.now().isoformat(timespec="seconds"),
             },
@@ -827,6 +841,87 @@ def mark_order_back_to_packing(
                 "field": "warehouse_stage",
                 "old": STAGE_READY,
                 "new": STAGE_PACKING,
+            }
+        ],
+    )
+    return storage.get_order(sqlite_id) or order
+
+
+def mark_order_shipped(
+    storage: AppStorage,
+    order_id: int | str,
+    *,
+    actor_user_id: str = "",
+) -> dict[str, Any]:
+    """Прибрати замовлення з черги складу вручну (вже віддали НП / службі)."""
+    sheet_no = parse_sheet_order_id(order_id)
+    left_at = datetime.now().isoformat(timespec="seconds")
+    if sheet_no:
+        order = get_sheet_warehouse_order(storage, sheet_no)
+        set_sheet_warehouse_stage(storage, sheet_no, STAGE_SHIPPED)
+        if not order:
+            return {
+                "id": sheet_order_id(sheet_no),
+                "order_number": sheet_no,
+                "warehouse_stage": STAGE_SHIPPED,
+                "payload": {
+                    "sheet_order": True,
+                    "warehouse_stage": STAGE_SHIPPED,
+                    "warehouse_left_manually": True,
+                    "warehouse_left_at": left_at,
+                    "warehouse_shipped_by": str(actor_user_id or ""),
+                },
+            }
+        order["warehouse_stage"] = STAGE_SHIPPED
+        payload = dict(order.get("payload") or {})
+        payload["warehouse_stage"] = STAGE_SHIPPED
+        payload["warehouse_left_manually"] = True
+        payload["warehouse_left_at"] = left_at
+        payload["warehouse_shipped_by"] = str(actor_user_id or "")
+        order["payload"] = payload
+        return order
+    try:
+        sqlite_id = int(order_id)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("Замовлення не знайдено") from exc
+    order = storage.get_order(sqlite_id)
+    if not order:
+        raise ValueError("Замовлення не знайдено")
+    if str(order.get("status") or "") == "cancelled":
+        raise ValueError("Замовлення скасовано")
+    prev_stage = order_warehouse_stage(order)
+    if prev_stage == STAGE_SHIPPED:
+        return order
+    prev_ttn = str(order.get("ttn_status") or "none").strip() or "none"
+    next_ttn = prev_ttn
+    if prev_ttn in PACKABLE_TTN_STATUSES:
+        next_ttn = "in_transit"
+    flags: dict[str, Any] = {"warehouse_stage": STAGE_SHIPPED}
+    if next_ttn != prev_ttn:
+        flags["ttn_status"] = next_ttn
+    storage.update_order_flags(sqlite_id, **flags)
+    storage.merge_order_payload(
+        sqlite_id,
+        {
+            "warehouse_stage": STAGE_SHIPPED,
+            "warehouse_left_manually": True,
+            "warehouse_left_at": left_at,
+            "warehouse_shipped_by": str(actor_user_id or ""),
+        },
+    )
+    storage.add_order_change(
+        order_id=sqlite_id,
+        order_number=str(order.get("order_number") or ""),
+        actor_role="warehouse",
+        actor_user_id=str(actor_user_id or ""),
+        actor_label="Комірник",
+        change_type="status",
+        summary="Знято з черги «На відправлення» (вручну)",
+        diff=[
+            {
+                "field": "warehouse_stage",
+                "old": prev_stage,
+                "new": STAGE_SHIPPED,
             }
         ],
     )
