@@ -697,6 +697,31 @@ def find_sheet_rows_by_order_number(
     return out
 
 
+def delete_sheet_rows_for_order_numbers(
+    storage: AppStorage, order_numbers: list[str]
+) -> dict[str, Any]:
+    """Прибрати рядки листа «Заказы» з указаними № замовлення (знизу вгору)."""
+    wanted = {str(n or "").strip() for n in order_numbers if str(n or "").strip()}
+    if not wanted:
+        return {"deleted_rows": 0, "row_numbers": []}
+    ws = _open_orders_worksheet(storage)
+    col = ws.col_values(COL_ORDER_NO)
+    rows: list[int] = []
+    for idx, value in enumerate(col):
+        if idx == 0:
+            continue
+        if str(value or "").strip() in wanted:
+            rows.append(idx + 1)
+    for row in sorted(rows, reverse=True):
+        ws.delete_rows(row)
+    logger.info(
+        "orders sheet deleted rows=%s for orders=%s",
+        rows,
+        sorted(wanted),
+    )
+    return {"deleted_rows": len(rows), "row_numbers": rows}
+
+
 def _save_sheet_meta(
     storage: AppStorage,
     order: dict[str, Any],

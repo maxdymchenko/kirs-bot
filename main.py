@@ -58,6 +58,20 @@ async def main() -> None:
         ctx.storage.db_path,
     )
 
+    async def requested_order_purge_once() -> None:
+        await asyncio.sleep(8)
+        try:
+            from bot.order_purge import run_vlad_price_july2026_purge
+
+            stats = await asyncio.to_thread(
+                run_vlad_price_july2026_purge, app_storage
+            )
+            logger.info("Requested order purge: %s", stats)
+        except Exception:
+            logger.exception("Requested order purge failed")
+
+    asyncio.create_task(requested_order_purge_once(), name="order-purge-once")
+
     stop_event = asyncio.Event()
 
     def request_stop(*_args) -> None:

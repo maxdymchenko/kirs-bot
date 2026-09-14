@@ -142,6 +142,13 @@ class DropperBroadcastRequest(BaseModel):
     chat_ids: list[str] = Field(default_factory=list)
 
 
+class OwnerPurgeOrdersRequest(BaseModel):
+    owner_chat_id: str = Field("", max_length=64)
+    owner_user_id: str = Field("", max_length=64)
+    dropper_name: str = Field(..., min_length=2, max_length=150)
+    order_numbers: list[str] = Field(default_factory=list)
+
+
 class DropperSettingsUpdateRequest(BaseModel):
     owner_chat_id: str = Field("", max_length=64)
     owner_user_id: str = Field("", max_length=64)
@@ -1314,6 +1321,32 @@ def create_web_app(
         if not ok:
             raise HTTPException(status_code=404, detail="Дроппера не знайдено")
         return {"ok": True, "deleted": name, "chat_id": chat_id}
+
+    @app.post("/api/owner/orders/purge")
+    async def owner_purge_orders(payload: OwnerPurgeOrdersRequest) -> dict:
+        from bot.order_purge import purge_dropper_orders
+
+        _require_owner(payload.owner_chat_id, payload.owner_user_id)
+        numbers = [
+            str(x or "").strip()
+            for x in (payload.order_numbers or [])
+            if str(x or "").strip()
+        ]
+        if not numbers:
+            raise HTTPException(status_code=400, detail="Вкажіть номери замовлень")
+        if len(numbers) > 50:
+            raise HTTPException(status_code=400, detail="Занадто багато номерів (макс. 50)")
+        result = purge_dropper_orders(
+            storage,
+            dropper_name=payload.dropper_name,
+            order_numbers=numbers,
+        )
+        if not result.get("ok"):
+            raise HTTPException(
+                status_code=404,
+                detail=str(result.get("error") or "Дроппера не знайдено"),
+            )
+        return result
 
     @app.get("/api/products/colors")
     async def product_colors(

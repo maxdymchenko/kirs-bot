@@ -1865,6 +1865,26 @@ class AppStorage:
             ).fetchone()
         return self._row_order(row) if row else None
 
+    def purge_order(self, order_id: int) -> bool:
+        """Повністю видалити замовлення з SQLite (історія, ledger, рядок)."""
+        order = self.get_order(int(order_id))
+        if not order:
+            return False
+        oid = int(order["id"])
+        order_number = str(order.get("order_number") or "").strip()
+        related = [x for x in (order_number, str(oid)) if x]
+        with self._connect() as conn:
+            if related:
+                placeholders = ",".join("?" * len(related))
+                conn.execute(
+                    f"DELETE FROM balance_ledger WHERE related_order_id IN ({placeholders})",
+                    related,
+                )
+            conn.execute("DELETE FROM order_changes WHERE order_id = ?", (oid,))
+            conn.execute("DELETE FROM orders WHERE id = ?", (oid,))
+            conn.commit()
+        return True
+
     def list_orders_for_dropper(
         self, dropper_id: int, limit: int = 50
     ) -> list[dict[str, Any]]:
