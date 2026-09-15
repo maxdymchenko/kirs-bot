@@ -156,6 +156,7 @@
     warehousePackingDeselectAllBtn: document.getElementById("warehousePackingDeselectAllBtn"),
     warehousePackingReadyBtn: document.getElementById("warehousePackingReadyBtn"),
     warehousePackingSelectedCount: document.getElementById("warehousePackingSelectedCount"),
+    warehousePackingSendDigestBtn: document.getElementById("warehousePackingSendDigestBtn"),
     orderMain: document.getElementById("orderMain"),
     searchForm: document.getElementById("searchForm"),
     searchInput: document.getElementById("searchInput"),
@@ -7086,6 +7087,45 @@ ${
   if (els.warehousePackingDeselectAllBtn) {
     els.warehousePackingDeselectAllBtn.addEventListener("click", () => {
       setAllWarehousePackingChecks(false);
+    });
+  }
+
+  if (els.warehousePackingSendDigestBtn) {
+    els.warehousePackingSendDigestBtn.addEventListener("click", async () => {
+      const count = els.warehousePackingList
+        ? els.warehousePackingList.querySelectorAll("[data-wh-ready]").length
+        : 0;
+      if (!count) {
+        showToast("Немає замовлень на пакування");
+        return;
+      }
+      const ok = window.confirm(
+        `Надіслати поточну чергу (${count}) у групу УПАКОВКА?`
+      );
+      if (!ok) return;
+      els.warehousePackingSendDigestBtn.disabled = true;
+      try {
+        const response = await fetch(
+          `/api/warehouse/queue/send-digest?${warehouseAuthParams()}`,
+          { method: "POST" }
+        );
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(data.detail || "Помилка");
+        if (data.reason === "empty" || Number(data.count || 0) === 0) {
+          showToast("Немає замовлень на пакування");
+        } else {
+          const moved = Number(data.count || 0);
+          showToast(
+            moved === 1
+              ? "Надіслано 1 замовлення в групу"
+              : `Надіслано ${moved} замовлень у групу`
+          );
+        }
+      } catch (error) {
+        showToast(error.message || "Помилка");
+      } finally {
+        els.warehousePackingSendDigestBtn.disabled = false;
+      }
     });
   }
 

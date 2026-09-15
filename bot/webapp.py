@@ -398,7 +398,7 @@ def create_web_app(
             return app_settings.droppers[raw]
         return None
 
-    async def _notify(chat_id: str, text: str) -> None:
+    async def _notify(chat_id: str, text: str, *, raise_on_error: bool = False) -> None:
         cfg = _require_settings()
 
         def _send() -> None:
@@ -428,6 +428,8 @@ def create_web_app(
             await asyncio.to_thread(_send)
         except Exception:
             logger.exception("Не удалось отправить Telegram сообщение в %s", chat_id)
+            if raise_on_error:
+                raise
 
     async def _notify_owners(text: str) -> None:
         cfg = _require_settings()
@@ -3539,6 +3541,43 @@ def create_web_app(
             payload.order_ids,
             actor_user_id=payload.user_id,
         )
+        return {"ok": True, **result}
+
+    @app.post("/api/warehouse/queue/send-digest")
+    async def warehouse_send_packing_digest(
+        chat_id: str = Query("", max_length=64),
+        user_id: str = Query("", max_length=64),
+        username: str = Query("", max_length=64),
+    ) -> dict:
+        from bot.packing_digest import send_packing_queue_now
+
+        cfg, _actor = _require_warehouse(
+            chat_id=chat_id, user_id=user_id, username=username
+        )
+        target = (
+            storage.resolve_chat_id(cfg.packing_digest_chat_id)
+            or str(cfg.packing_digest_chat_id or "").strip()
+        )
+        if not target:
+            raise HTTPException(
+                status_code=400,
+                detail="Не налаштовано групу дайджесту пакування",
+            )
+
+        async def _notify_group(group_id: str, text: str) -> None:
+            await _notify(group_id, text, raise_on_error=True)
+
+        result = await send_packing_queue_now(
+            storage,
+            _notify_group,
+            chat_id=target,
+            catalog=catalog,
+        )
+        if result.get("errors"):
+            raise HTTPException(
+                status_code=502,
+                detail="Не вдалося надіслати список у групу",
+            )
         return {"ok": True, **result}
 
     @app.post("/api/warehouse/orders/{order_id}/ready")

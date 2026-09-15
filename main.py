@@ -183,7 +183,7 @@ async def main() -> None:
                     pass
 
     async def packing_digest_loop() -> None:
-        """О 12:00 і 14:00 Київ — черга пакування в групу УПАКОВКА."""
+        """О 14:00 Київ — нові замовлення в групу УПАКОВКА після ручного списку."""
         from bot.packing_digest import (
             run_packing_digest_pass,
             seconds_until_next_digest_slot,

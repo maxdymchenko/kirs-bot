@@ -274,7 +274,7 @@
           <div class="form-section">
             <h3 class="section-title">Градація розташування на складі (маршрут збору)</h3>
             <p class="hint">
-              Встановіть черговість складів / кімнат. Дайджест пакування о 12:00 та 14:00 для комірника буде згруповано та відсортовано за цим маршрутом, щоб збирати замовлення по порядку без зайвих переміщень.
+              Встановіть черговість складів / кімнат. Список пакування для комірника (кнопка «Надіслати список у групу» і доповнення о 14:00) буде згруповано та відсортовано за цим маршрутом, щоб збирати замовлення по порядку без зайвих переміщень.
             </p>
             <div id="warehouseLocationsList" class="locations-priority-list"></div>
             <div class="locations-actions-row">
@@ -914,8 +914,15 @@
           <button type="button" class="btn primary" id="warehousePackingReadyBtn" disabled>На відправлення</button>
           <span id="warehousePackingSelectedCount" class="warehouse-selected-count">Вибрано: 0</span>
         </div>
+        <div class="orders-toolbar warehouse-shipping-toolbar" style="margin-bottom:10px">
+          <button type="button" class="btn secondary" id="warehousePackingSendDigestBtn">
+            Надіслати список у групу
+          </button>
+        </div>
         <p class="hint" style="margin-top:0">
           Відмітьте замовлення чекбоксом і натисніть «На відправлення».
+          Список у групу УПАКОВКА більше не йде сам о 12:00 — надішліть кнопкою, коли будете готові.
+          О 14:00 в групу підуть лише нові замовлення після цього списку.
         </p>
         <div id="warehousePackingList" class="warehouse-order-list"></div>
       </div>
@@ -942,6 +949,6 @@
   </div>
 
   <button type="button" id="photoZoomBackdrop" class="photo-zoom-backdrop hidden" aria-label="Закрити фото"></button>
-  <script src="/static/app.js?v=20260915pack1"></script>
+  <script src="/static/app.js?v=20260915pack2"></script>
 </body>
 </html>

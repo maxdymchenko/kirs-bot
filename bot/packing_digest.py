@@ -1,8 +1,8 @@
-"""Дайджест у групу упаковки: 12:00 і 14:00 (Київ).
+"""Дайджест у групу упаковки.
 
-12:00 — черга «На пакування»: замовлення дропперов + Prom/Rozetka/ручні з листа «Заказы».
-14:00 — лише ті, що зʼявились після полудня (не були в списку 12:00).
-Якщо замовлень немає — повідомлення не надсилаємо.
+Повний список «На пакування» надсилається кнопкою з кабінету комірника
+(не автоматично о 12:00). О 14:00 Київ — лише нові замовлення після
+останнього надісланого списку. Якщо замовлень немає — повідомлення не надсилаємо.
 """
 
 from __future__ import annotations
@@ -19,7 +19,7 @@ from bot.warehouse import is_sheet_queue_order, list_warehouse_queue
 logger = logging.getLogger(__name__)
 
 KYIV = ZoneInfo("Europe/Kyiv")
-DIGEST_HOURS = (12, 14)
+DIGEST_HOURS = (14,)
 HOUR_NOON = 12
 HOUR_AFTERNOON = 14
 SETTINGS_KEY = "packing_digest_state"
@@ -158,12 +158,36 @@ def _digest_sqlite_id(order: dict[str, Any]) -> int | None:
     return None
 
 
+def _clock_label(now: datetime | None = None) -> str:
+    dt = now_kyiv(now)
+    return f"{dt.hour:02d}:{dt.minute:02d}"
+
+
+def _remember_baseline(
+    state: dict[str, Any], day: str, orders: list[dict[str, Any]]
+) -> None:
+    state.setdefault("noon_ids_by_day", {})[day] = [
+        oid for o in orders if (oid := _digest_sqlite_id(o)) is not None
+    ]
+    state.setdefault("noon_sheet_keys_by_day", {})[day] = [
+        key for o in orders if (key := _digest_sheet_token(o))
+    ]
+
+
+def _has_baseline(state: dict[str, Any], day: str) -> bool:
+    ids = (state.get("noon_ids_by_day") or {}).get(day) or []
+    sheets = (state.get("noon_sheet_keys_by_day") or {}).get(day) or []
+    return bool(ids or sheets)
+
+
 def format_packing_digest_messages(
     orders: list[dict[str, Any]],
     locations_order: list[str] | None = None,
     *,
     catalog: Any = None,
     is_noon: bool = True,
+    kind: str | None = None,
+    clock_label: str = "",
     max_len: int = 3800,
 ) -> list[str]:
     """Формує структуровані повідомлення дайджесту пакування за градацією локацій."""
@@ -191,11 +215,22 @@ def format_packing_digest_messages(
 
     sorted_locs = sorted(grouped.keys(), key=_sort_key)
 
-    title = "📦 На пакування (12:00)" if is_noon else "📦 Доповнення до пакування (14:00)"
+    mode = kind or ("full" if is_noon else "delta")
+    clock = str(clock_label or "").strip() or (
+        "12:00" if mode == "full" else "14:00"
+    )
+    title = (
+        f"📦 На пакування ({clock})"
+        if mode == "full"
+        else f"📦 Доповнення до пакування ({clock})"
+    )
     subtitle = (
         f"Замовлень: {count} {_orders_word(count)} · Всього: {total_qty} шт."
-        if is_noon
-        else f"Нових замовлень після 12:00: {count} {_orders_word(count)} · Всього: {total_qty} шт."
+        if mode == "full"
+        else (
+            f"Нових замовлень після попереднього списку: {count} "
+            f"{_orders_word(count)} · Всього: {total_qty} шт."
+        )
     )
 
     blocks: list[str] = [f"{title}\n{subtitle}"]
@@ -351,7 +386,7 @@ def seconds_until_next_digest_slot(
     now: datetime | None = None,
     allow_current_hour: bool = False,
 ) -> tuple[float, int]:
-    """Секунди до наступного слоту 12:00 або 14:00 (Київ)."""
+    """Секунди до наступного автоматичного слоту 14:00 (Київ)."""
     now = now_kyiv(now)
     if allow_current_hour and now.hour in DIGEST_HOURS:
         return 0.0, now.hour
@@ -411,19 +446,23 @@ async def run_packing_digest_pass(
         selected = orders
         messages = (
             format_packing_digest_messages(
-                selected, locations_order, catalog=catalog, is_noon=True
+                selected,
+                locations_order,
+                catalog=catalog,
+                kind="full",
+                clock_label=_clock_label(now),
             )
             if selected
             else []
         )
-        # навіть якщо 0 — зберігаємо порожній список, щоб 14:00 знала базу
-        state.setdefault("noon_ids_by_day", {})[day] = [
-            oid for o in selected if (oid := _digest_sqlite_id(o)) is not None
-        ]
-        state.setdefault("noon_sheet_keys_by_day", {})[day] = [
-            key for o in selected if (key := _digest_sheet_token(o))
-        ]
+        _remember_baseline(state, day, selected)
     else:
+        if not _has_baseline(state, day):
+            state["sent"] = [*(state.get("sent") or []), key]
+            _save_state(storage, state)
+            stats["skipped"] = 1
+            stats["reason"] = "no_baseline"
+            return stats
         noon_ids = {
             int(x)
             for x in (state.get("noon_ids_by_day") or {}).get(day, [])
@@ -444,7 +483,11 @@ async def run_packing_digest_pass(
                     selected.append(o)
         messages = (
             format_packing_digest_messages(
-                selected, locations_order, catalog=catalog, is_noon=False
+                selected,
+                locations_order,
+                catalog=catalog,
+                kind="delta",
+                clock_label="14:00",
             )
             if selected
             else []
@@ -473,5 +516,65 @@ async def run_packing_digest_pass(
         logger.exception(
             "packing digest notify failed hour=%s chat=%s", slot_hour, target
         )
+    return stats
+
+
+async def send_packing_queue_now(
+    storage: AppStorage,
+    notify: NotifyFn,
+    *,
+    chat_id: str,
+    now: datetime | None = None,
+    catalog: Any = None,
+) -> dict[str, Any]:
+    """Надіслати поточну чергу «На пакування» в групу (кнопка з кабінету)."""
+    now = now_kyiv(now)
+    target = str(chat_id or "").strip()
+    stats: dict[str, Any] = {
+        "hour": now.hour,
+        "count": 0,
+        "sent": 0,
+        "skipped": 0,
+        "errors": 0,
+        "chat_id": target,
+        "reason": "",
+    }
+    if not target:
+        stats["skipped"] = 1
+        stats["reason"] = "no_chat"
+        return stats
+
+    orders = packing_orders(storage)
+    stats["count"] = len(orders)
+    if not orders:
+        stats["skipped"] = 1
+        stats["reason"] = "empty"
+        return stats
+
+    locations_order = storage.get_warehouse_locations_order()
+    messages = format_packing_digest_messages(
+        orders,
+        locations_order,
+        catalog=catalog,
+        kind="full",
+        clock_label=_clock_label(now),
+    )
+    if not messages:
+        stats["skipped"] = 1
+        stats["reason"] = "empty"
+        return stats
+
+    try:
+        for msg in messages:
+            result = notify(target, msg)
+            if hasattr(result, "__await__"):
+                await result
+        state = _load_state(storage)
+        _remember_baseline(state, _day_key(now), orders)
+        _save_state(storage, state)
+        stats["sent"] = len(messages)
+    except Exception:
+        stats["errors"] = 1
+        logger.exception("packing digest manual send failed chat=%s", target)
     return stats
 
