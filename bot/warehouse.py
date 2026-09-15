@@ -23,6 +23,7 @@ STAGE_SHIPPED = "shipped"
 WAREHOUSE_STAGES = frozenset({STAGE_PACKING, STAGE_READY, STAGE_SHIPPED})
 SHEET_ID_PREFIX = "sheet:"
 SHEET_STAGE_KEY = "sheet_warehouse_stages"
+SHEET_ENTERED_KEY = "sheet_packing_entered_at"
 
 # Власна ТТН дроппера теж пакується на складі, поки НП ще не забрала.
 PACKABLE_TTN_STATUSES = frozenset(AWAITING_SHIPMENT_STATUSES | {"provided"})
@@ -318,6 +319,71 @@ def set_sheet_warehouse_stage(
     _save_sheet_stages(storage, stages)
 
 
+def _load_sheet_entered_at(storage: AppStorage) -> dict[str, str]:
+    with storage._connect() as conn:
+        row = conn.execute(
+            "SELECT value_json FROM app_settings WHERE key = ?",
+            (SHEET_ENTERED_KEY,),
+        ).fetchone()
+    if not row:
+        return {}
+    try:
+        data = json.loads(row["value_json"] or "{}")
+    except json.JSONDecodeError:
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    out: dict[str, str] = {}
+    for key, val in data.items():
+        no = str(key or "").strip()
+        when = str(val or "").strip()
+        if no and when:
+            out[no] = when
+    return out
+
+
+def _save_sheet_entered_at(storage: AppStorage, stamps: dict[str, str]) -> None:
+    from bot.accounts import _now
+
+    cleaned = {
+        str(k).strip(): str(v).strip()
+        for k, v in (stamps or {}).items()
+        if str(k).strip() and str(v).strip()
+    }
+    payload = json.dumps(cleaned, ensure_ascii=False)
+    with storage._connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO app_settings (key, value_json, updated_at)
+            VALUES (?, ?, ?)
+            ON CONFLICT(key) DO UPDATE SET
+                value_json = excluded.value_json,
+                updated_at = excluded.updated_at
+            """,
+            (SHEET_ENTERED_KEY, payload, _now()),
+        )
+        conn.commit()
+
+
+def remember_sheet_entered_at(
+    storage: AppStorage, order_numbers: list[str] | tuple[str, ...]
+) -> None:
+    """Запам'ятати час першого запису в таблицю «Заказы» (вкладка «На пакування»)."""
+    nos = [str(n or "").strip() for n in (order_numbers or []) if str(n or "").strip()]
+    if not nos:
+        return
+    stamps = _load_sheet_entered_at(storage)
+    now = datetime.now(KYIV).isoformat(timespec="seconds")
+    changed = False
+    for no in nos:
+        if no in stamps:
+            continue
+        stamps[no] = now
+        changed = True
+    if changed:
+        _save_sheet_entered_at(storage, stamps)
+
+
 def _sheet_money(raw: Any) -> float:
     text = str(raw or "").strip().replace(" ", "").replace(",", ".")
     if not text:
@@ -431,6 +497,7 @@ def _sheet_order_from_lines(
     *,
     stages: dict[str, str] | None = None,
     for_history: bool = False,
+    entered_at: str = "",
 ) -> dict[str, Any]:
     lines = sorted(lines, key=lambda x: int(x.get("row_idx") or 0))
     latest = lines[-1]
@@ -448,7 +515,9 @@ def _sheet_order_from_lines(
         (str(x.get("payment") or "").strip() for x in lines if x.get("payment")),
         "",
     )
-    created_at = _sheet_created_at(latest.get("created_raw"), latest.get("row_idx") or 0)
+    created_at = str(entered_at or "").strip() or _sheet_created_at(
+        latest.get("created_raw"), latest.get("row_idx") or 0
+    )
     source_label = " · ".join(sources)
     total = round(sum(float(x.get("retail") or 0) * int(x.get("qty") or 1) for x in lines), 2)
     if for_history:
@@ -664,8 +733,15 @@ def list_sheet_warehouse_orders(storage: AppStorage) -> list[dict[str, Any]]:
     """Prom / Rozetka / ручні з листа «Заказы», які ще на складі (1 картка = 1 №)."""
     groups = _load_sheet_market_groups(storage, packing_only=True)
     stages = _load_sheet_stages(storage)
+    entered = _load_sheet_entered_at(storage)
     orders = [
-        _sheet_order_from_lines(order_no, lines, stages=stages, for_history=False)
+        _sheet_order_from_lines(
+            order_no,
+            lines,
+            stages=stages,
+            for_history=False,
+            entered_at=entered.get(order_no, ""),
+        )
         for order_no, lines in groups.items()
     ]
     return _drop_sheet_orders_left_via_np(storage, orders)

@@ -743,6 +743,7 @@ def _save_sheet_meta(
 def append_order_rows(
     ws: gspread.Worksheet,
     rows: list[list[Any]],
+    storage: AppStorage | None = None,
 ) -> list[int]:
     if not rows:
         return []
@@ -774,6 +775,13 @@ def append_order_rows(
             for i, row_num in enumerate(written)
         ],
     )
+    if storage is not None:
+        from bot.warehouse import remember_sheet_entered_at
+
+        remember_sheet_entered_at(
+            storage,
+            [str(row[1]).strip() for row in rows if len(row) > 1],
+        )
     return written
 
 
@@ -1075,7 +1083,7 @@ def sync_order_to_sheet(
             )
 
         if not row_numbers:
-            row_numbers = append_order_rows(ws, built)
+            row_numbers = append_order_rows(ws, built, storage=storage)
             meta = []
             cart = (order.get("payload") or {}).get("cart") or []
             for i, row_num in enumerate(row_numbers):
@@ -1100,7 +1108,7 @@ def sync_order_to_sheet(
         if full or len(row_numbers) != len(built):
             # дописуємо зайві рядки кошика; зайві старі — чистимо в update_rows_values
             if len(built) > len(row_numbers):
-                extra = append_order_rows(ws, built[len(row_numbers) :])
+                extra = append_order_rows(ws, built[len(row_numbers) :], storage=storage)
                 row_numbers = [*row_numbers, *extra]
             update_rows_values(ws, row_numbers, built)
         else:

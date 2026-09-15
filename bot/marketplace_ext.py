@@ -877,16 +877,96 @@ _ROZETKA_STATUS_BY_ID = {
     "4": "Передано до служби доставки",
     "5": "Доставляється",
 }
+_MAX_LINE_QTY = 999
+
+
+def _as_number(value: Any) -> float | None:
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        n = float(value)
+        if n != n:  # NaN
+            return None
+        return n
+    text = str(value).replace("\xa0", "").replace(" ", "").replace(",", ".")
+    if not text:
+        return None
+    try:
+        return float(text)
+    except ValueError:
+        return None
+
+
+def _as_qty(value: Any) -> int:
+    n = _as_number(value)
+    if n is None:
+        return 0
+    q = int(round(n))
+    return q if q >= 1 else 0
+
+
+def _sane_line_qty(value: Any) -> int:
+    q = _as_qty(value)
+    if 1 <= q <= _MAX_LINE_QTY:
+        return q
+    return 1
+
+
+def _rozetka_qty_from_cost(purchase: dict[str, Any]) -> int:
+    """Штуки з суми рядка: cost / price. У кабінеті Rozetka quantity інколи = 1 рядок, не 2 шт."""
+    price = _as_number(purchase.get("price_with_discount")) or _as_number(
+        purchase.get("price")
+    )
+    cost = _as_number(purchase.get("cost_with_discount")) or _as_number(
+        purchase.get("cost")
+    )
+    if not price or not cost or price <= 0:
+        return 0
+    q = int(round(cost / price))
+    if q < 1 or q > _MAX_LINE_QTY:
+        return 0
+    if abs(cost - price * q) > max(1.0, price * 0.05):
+        return 0
+    return q
+
+
+def _rozetka_line_qty(
+    purchase: dict[str, Any], item: dict[str, Any], order_total_qty: int = 0
+) -> int:
+    raw = _as_qty(purchase.get("quantity")) or _as_qty(item.get("quantity"))
+    inferred = _rozetka_qty_from_cost(purchase)
+    if inferred and (raw < 1 or raw > _MAX_LINE_QTY or inferred > raw):
+        return inferred
+    if 1 <= raw <= _MAX_LINE_QTY:
+        return raw
+    if 1 <= order_total_qty <= _MAX_LINE_QTY:
+        return order_total_qty
+    return 1
+
+
+def _rozetka_unit_retail(purchase: dict[str, Any], qty: int) -> Any:
+    unit = purchase.get("price_with_discount")
+    if unit in (None, ""):
+        unit = purchase.get("price")
+    if unit not in (None, ""):
+        return unit
+    cost = purchase.get("cost_with_discount")
+    if cost in (None, ""):
+        cost = purchase.get("cost")
+    n = _as_number(cost)
+    if n is not None and qty > 1:
+        return n / qty
+    return cost
 
 
 def _map_rozetka(content: dict[str, Any], source: dict[str, str]) -> dict[str, Any]:
     user = content.get("user") if isinstance(content.get("user"), dict) else {}
     delivery = content.get("delivery") if isinstance(content.get("delivery"), dict) else {}
     service = content.get("delivery_service") if isinstance(content.get("delivery_service"), dict) else {}
+    purchases = [p for p in _as_list(content.get("purchases")) if isinstance(p, dict)]
+    order_total_qty = _as_qty(content.get("total_quantity"))
     items = []
-    for p in _as_list(content.get("purchases")):
-        if not isinstance(p, dict):
-            continue
+    for p in purchases:
         item = p.get("item") if isinstance(p.get("item"), dict) else {}
         blobs = _rozetka_purchase_blobs(p, item)
         name = _pick(p.get("item_name"), item.get("name"), item.get("name_ua"))
@@ -901,6 +981,9 @@ def _map_rozetka(content: dict[str, Any], source: dict[str, str]) -> dict[str, A
         )
         if conf_color and conf_color not in candidates:
             candidates.append(conf_color)
+        qty = _rozetka_line_qty(
+            p, item, order_total_qty if len(purchases) == 1 else 0
+        )
         items.append(
             {
                 "name": name,
@@ -908,10 +991,16 @@ def _map_rozetka(content: dict[str, Any], source: dict[str, str]) -> dict[str, A
                 "color": color,
                 "color_candidates": candidates,
                 "item_id": _pick(p.get("item_id"), item.get("id")),
-                "qty": max(1, int(p.get("quantity") or 1)),
-                "retail": p.get("price") or p.get("price_with_discount") or p.get("cost"),
+                "qty": qty,
+                "retail": _rozetka_unit_retail(p, qty),
             }
         )
+    if (
+        len(items) == 1
+        and 1 <= order_total_qty <= _MAX_LINE_QTY
+        and order_total_qty > int(items[0].get("qty") or 1)
+    ):
+        items[0]["qty"] = order_total_qty
     place = " ".join(
         _trim(delivery.get(k))
         for k in ("place_street", "place_house", "place_flat")
@@ -1055,7 +1144,7 @@ def _fetch_rozetka(source: dict[str, str], token: str, order_id: str) -> dict[st
     oid = str(order_id).lstrip("#")
     expand = (
         "user,delivery,purchases,delivery_service,payment_type_name,"
-        "status_data,item_details"
+        "status_data,item_details,total_quantity"
     )
     headers = _rozetka_headers(token)
     details_url = f"https://api-seller.rozetka.com.ua/orders/{oid}?expand={expand}"
@@ -1401,12 +1490,17 @@ def build_sheet_rows(
             code = catalog_code
         item_name = catalog_name or _trim(item.get("name"))
         item_retail = _fmt_money(item.get("retail"))
+        qty = _sane_line_qty(item.get("qty"))
         if item.get("prefer_item_retail") and item_retail:
             sale = item_retail
         else:
             sale = catalog_retail or item_retail
         if not sale and len(items) == 1:
-            sale = order_sum
+            if qty > 1:
+                total = _as_number(mapped.get("order_sum"))
+                sale = _fmt_money(total / qty) if total else ""
+            else:
+                sale = order_sum
         drop = catalog_drop
         rows.append(
             [
@@ -1417,7 +1511,7 @@ def build_sheet_rows(
                 item_name,
                 code,
                 color,
-                item.get("qty") or 1,
+                qty,
                 sale,
                 drop,
                 mapped.get("source_label") or "",
@@ -1495,7 +1589,7 @@ def write_marketplace_order(
                 f"в строках {', '.join(str(x) for x in written)}"
             ),
         }
-    written = append_order_rows(ws, rows)
+    written = append_order_rows(ws, rows, storage=storage)
 
     # Списання залишків з таблиці наявності для нового замовлення
     stock_res = None
@@ -1670,7 +1764,7 @@ def write_manual_order(
     rows = build_sheet_rows(
         mapped, comment, catalog=catalog, carrier_status=carrier_status
     )
-    written = append_order_rows(ws, rows)
+    written = append_order_rows(ws, rows, storage=storage)
 
     stock_res = None
     if catalog and hasattr(catalog, "consume_cart_stock"):
