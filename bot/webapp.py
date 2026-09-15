@@ -3439,6 +3439,8 @@ def create_web_app(
         limit: int = Query(200, ge=1, le=500),
     ) -> dict:
         from bot.warehouse import (
+            created_at_sort_value,
+            format_warehouse_entered_label,
             list_warehouse_queue,
             merge_ready_ttn_pdfs,
             order_has_ttn_pdf,
@@ -3469,6 +3471,7 @@ def create_web_app(
                         dropper_names[did] = ""
                 dropper_name = dropper_names.get(did) or ""
             source_label = str(payload.get("market_source") or "").strip()
+            created_at = o.get("created_at")
             enriched.append(
                 {
                     **o,
@@ -3476,6 +3479,8 @@ def create_web_app(
                     "has_ttn_pdf": order_has_ttn_pdf(o),
                     "dropper_name": dropper_name,
                     "source_label": source_label or dropper_name,
+                    "entered_label": format_warehouse_entered_label(created_at),
+                    "created_sort": created_at_sort_value(created_at),
                     "cart_summary": [
                         {
                             "code": str(x.get("code") or ""),

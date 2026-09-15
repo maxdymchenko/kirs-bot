@@ -9,11 +9,13 @@ import re
 import time
 from datetime import datetime
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from bot.accounts import AppStorage
 from bot.np_fulfillment import AWAITING_SHIPMENT_STATUSES, SHIPPED_OR_FINAL_STATUSES
 
 logger = logging.getLogger(__name__)
+KYIV = ZoneInfo("Europe/Kyiv")
 
 STAGE_PACKING = "packing"
 STAGE_READY = "ready_to_ship"
@@ -194,6 +196,63 @@ def _sheet_created_at(raw: Any, row_idx: int) -> str:
         except ValueError:
             continue
     return f"1970-01-01 {max(0, int(row_idx)):08d}"
+
+
+def _parse_created_dt(raw: Any) -> datetime | None:
+    text = str(raw or "").strip()
+    if not text:
+        return None
+    iso = text.replace("Z", "+00:00")
+    try:
+        dt = datetime.fromisoformat(iso)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=KYIV)
+        return dt
+    except ValueError:
+        pass
+    for fmt, size in (
+        ("%d.%m.%Y %H:%M:%S", 19),
+        ("%d.%m.%Y %H:%M", 16),
+        ("%Y-%m-%d %H:%M:%S", 19),
+        ("%Y-%m-%d %H:%M", 16),
+        ("%d.%m.%Y", 10),
+        ("%Y-%m-%d", 10),
+    ):
+        try:
+            return datetime.strptime(text[:size], fmt).replace(tzinfo=KYIV)
+        except ValueError:
+            continue
+    return None
+
+
+def created_at_sort_value(created_at: Any) -> float:
+    dt = _parse_created_dt(created_at)
+    if dt is None:
+        return 0.0
+    return dt.timestamp()
+
+
+def format_warehouse_entered_label(created_at: Any) -> str:
+    """Підпис для картки комірника: «внесено 14.09.26 о 12:01»."""
+    dt = _parse_created_dt(created_at)
+    if dt is None:
+        return ""
+    local = dt.astimezone(KYIV)
+    date = local.strftime("%d.%m.%y")
+    text = str(created_at or "").strip()
+    date_only = bool(re.fullmatch(r"\d{4}-\d{2}-\d{2} 00:00:00", text))
+    if date_only:
+        return f"внесено {date}"
+    return f"внесено {date} о {local.strftime('%H:%M')}"
+
+
+def _queue_sort_key(order: dict[str, Any]) -> tuple[float, float]:
+    extra = 0.0
+    try:
+        extra = float(order.get("id") or 0)
+    except (TypeError, ValueError):
+        extra = float(order.get("sheet_row") or 0)
+    return (created_at_sort_value(order.get("created_at")), extra)
 
 
 def _looks_like_np_ttn(ttn: str) -> bool:
@@ -405,6 +464,8 @@ def _sheet_order_from_lines(
         "ttn_number": ttn,
         "own_ttn": False,
         "created_at": created_at,
+        "sheet_row": int(latest.get("row_idx") or 0),
+        "entered_label": format_warehouse_entered_label(created_at),
         "warehouse_stage": stage,
         "status": status,
         "ttn_status": ttn_status,
@@ -692,8 +753,7 @@ def list_warehouse_queue(
             seen_nos.add(no)
     out = _drop_sheet_orders_left_via_np(storage, out)
     out = _drop_orders_left_via_rozetka(storage, out)
-    # новіші зверху (created_at DESC уже з SQL, але підстрахуємо)
-    out.sort(key=lambda o: str(o.get("created_at") or ""), reverse=True)
+    out.sort(key=_queue_sort_key, reverse=True)
     return out
 
 

@@ -1780,6 +1780,37 @@
     }
   }
 
+  function formatWarehouseEnteredLabel(raw) {
+    const text = String(raw || "").trim();
+    if (!text) return "";
+    if (text.startsWith("внесено ")) return text;
+    const iso =
+      /T|\+|Z/.test(text) || /^\d{4}-\d{2}-\d{2} /.test(text)
+        ? text.replace(" ", "T")
+        : text;
+    const d = new Date(iso);
+    if (Number.isNaN(d.getTime())) return "";
+    const parts = {};
+    new Intl.DateTimeFormat("uk-UA", {
+      timeZone: "Europe/Kyiv",
+      day: "2-digit",
+      month: "2-digit",
+      year: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      hourCycle: "h23",
+    })
+      .formatToParts(d)
+      .forEach((p) => {
+        if (p.type !== "literal") parts[p.type] = p.value;
+      });
+    const date = `${parts.day}.${parts.month}.${parts.year}`;
+    if (/^\d{4}-\d{2}-\d{2} 00:00:00$/.test(text)) {
+      return `внесено ${date}`;
+    }
+    return `внесено ${date} о ${parts.hour}:${parts.minute}`;
+  }
+
   function renderConfirmSummary(data) {
     if (!els.confirmSummary) return;
     const cartLines = (data.cart || [])
@@ -6818,7 +6849,11 @@ ${
     const titleBits = [`<b>${escapeHtml(order.order_number || "")}</b>`];
     if (dropperName) titleBits.push(escapeHtml(dropperName));
     if (ttn) titleBits.push(`ТТН ${escapeHtml(ttn)}`);
-    const subBits = [escapeHtml(order.recipient_name || "—")];
+    const entered =
+      String(order.entered_label || "").trim() ||
+      formatWarehouseEnteredLabel(order.created_at);
+    const subBits = [];
+    if (entered) subBits.push(escapeHtml(entered));
     if (!sourceLabel) {
       subBits.push(escapeHtml(order.own_ttn ? "власна ТТН" : "ТТН власника"));
     }
@@ -6930,7 +6965,14 @@ ${
       const response = await fetch(`/api/warehouse/queue?${params}`);
       const data = await response.json();
       if (!response.ok) throw new Error(data.detail || "Помилка черги");
-      const items = data.items || [];
+      const items = (data.items || []).slice().sort((a, b) => {
+        const tb = Number(b.created_sort);
+        const ta = Number(a.created_sort);
+        if (Number.isFinite(tb) && Number.isFinite(ta) && tb !== ta) {
+          return tb - ta;
+        }
+        return String(b.created_at || "").localeCompare(String(a.created_at || ""));
+      });
       if (!items.length) {
         listEl.innerHTML = `<div class="empty">${
           stage === "ready_to_ship"
