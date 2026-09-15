@@ -152,6 +152,9 @@
     warehouseDismissBtn: document.getElementById("warehouseDismissBtn"),
     warehouseSelectAllBtn: document.getElementById("warehouseSelectAllBtn"),
     warehouseDeselectAllBtn: document.getElementById("warehouseDeselectAllBtn"),
+    warehouseShippingSelectedCount: document.getElementById(
+      "warehouseShippingSelectedCount"
+    ),
     warehousePackingSelectAllBtn: document.getElementById("warehousePackingSelectAllBtn"),
     warehousePackingDeselectAllBtn: document.getElementById("warehousePackingDeselectAllBtn"),
     warehousePackingReadyBtn: document.getElementById("warehousePackingReadyBtn"),
@@ -6924,9 +6927,12 @@ ${
 
   function syncWarehousePrintButton() {
     const selected = getSelectedWarehousePrintIds();
-    const empty = selected.length === 0;
-    if (els.warehousePrintBtn) els.warehousePrintBtn.disabled = empty;
-    if (els.warehouseDismissBtn) els.warehouseDismissBtn.disabled = empty;
+    const n = selected.length;
+    if (els.warehousePrintBtn) els.warehousePrintBtn.disabled = n === 0;
+    if (els.warehouseDismissBtn) els.warehouseDismissBtn.disabled = n === 0;
+    if (els.warehouseShippingSelectedCount) {
+      els.warehouseShippingSelectedCount.textContent = `Вибрано: ${n}`;
+    }
   }
 
   function syncWarehousePackingSelection() {
