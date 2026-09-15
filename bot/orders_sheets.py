@@ -234,6 +234,13 @@ def sheet_carrier_label(order: dict[str, Any]) -> str:
     return "НП"
 
 
+def _sheet_phone_display(raw: str) -> str:
+    digits = AppStorage.normalize_client_phone(raw)
+    if digits:
+        return f"+{digits}"
+    return str(raw or "").strip()
+
+
 def sheet_client_line(order: dict[str, Any]) -> str:
     payload = order.get("payload") or {}
     recipient = payload.get("recipient") or {}
@@ -247,7 +254,10 @@ def sheet_client_line(order: dict[str, Any]) -> str:
         )
         if str(x or "").strip()
     ).strip()
-    phone = str(recipient.get("phone") or "").strip()
+    phone = _sheet_phone_display(str(recipient.get("phone") or "").strip())
+    own_ttn = bool(order.get("own_ttn") or payload.get("own_ttn"))
+    if own_ttn:
+        return " ".join(p for p in ("ТТН власна", name, phone) if p)
     city = str(delivery.get("city") or "").strip()
     if str(delivery.get("method") or "") in {"np_courier", "courier"}:
         addr = " ".join(

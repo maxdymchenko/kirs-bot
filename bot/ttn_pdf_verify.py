@@ -297,6 +297,174 @@ def verify_ttn_pdf(
     }
 
 
+_RECIPIENT_HEADER_RE = re.compile(
+    r"(одержувач|отримувач|получател[ья]?|recipient)\b",
+    re.IGNORECASE,
+)
+_SENDER_HEADER_RE = re.compile(
+    r"(відправник|отправитель|sender)\b",
+    re.IGNORECASE,
+)
+_NAME_STOP_RE = re.compile(
+    r"(телефон|тел\.|phone|адреса|місто|город|відділення|отделение|"
+    r"поштомат|почтомат|nova\s*poshta|нова\s*пошта|накладна|barcode|"
+    r"вага|weight|\bкг\b|грн|область|район|вулиця|\bвул\.|"
+    r"оціночн|объявлен|declared)",
+    re.IGNORECASE,
+)
+_NAME_WORD_RE = re.compile(
+    r"^[A-ZА-ЯІЇЄҐЁ][A-Za-zА-Яа-яІЇЄҐёЁ'’\-]*$",
+)
+
+
+def extract_pdf_plaintext(pdf_bytes: bytes) -> str:
+    texts: list[str] = []
+    try:
+        from pypdf import PdfReader
+
+        reader = PdfReader(io.BytesIO(pdf_bytes))
+        for page in reader.pages:
+            try:
+                texts.append(page.extract_text() or "")
+            except Exception:
+                logger.debug("pypdf page extract failed", exc_info=True)
+    except Exception:
+        logger.debug("pypdf read failed", exc_info=True)
+    return "\n".join(texts)
+
+
+def _clean_name_line(raw: str) -> str:
+    return " ".join(str(raw or "").replace("\u00a0", " ").split()).strip(" :-–—")
+
+
+def _looks_like_person_name(line: str) -> bool:
+    text = _clean_name_line(line)
+    if len(text) < 5 or len(text) > 80:
+        return False
+    if _NAME_STOP_RE.search(text):
+        return False
+    if _RECIPIENT_HEADER_RE.search(text) or _SENDER_HEADER_RE.search(text):
+        return False
+    if re.search(r"\d", text):
+        return False
+    words = text.split()
+    if not (2 <= len(words) <= 4):
+        return False
+    return all(_NAME_WORD_RE.match(word) for word in words)
+
+
+def split_person_name(full: str) -> dict[str, str]:
+    words = [w for w in re.split(r"\s+", _clean_name_line(full)) if w]
+    if not words:
+        return {"last_name": "", "first_name": "", "patronymic": ""}
+    if len(words) == 1:
+        return {"last_name": words[0], "first_name": "", "patronymic": ""}
+    if len(words) == 2:
+        return {"last_name": words[0], "first_name": words[1], "patronymic": ""}
+    return {
+        "last_name": words[0],
+        "first_name": words[1],
+        "patronymic": " ".join(words[2:]),
+    }
+
+
+def extract_recipient_name_from_pdf(pdf_bytes: bytes) -> str:
+    """ПІБ одержувача з текстового шару етикетки НП / Rozetka (не зі скану-фото)."""
+    blob = extract_pdf_plaintext(pdf_bytes)
+    if not str(blob or "").strip():
+        return ""
+    lines = [_clean_name_line(ln) for ln in str(blob).splitlines()]
+    lines = [ln for ln in lines if ln]
+
+    for line in lines:
+        match = _RECIPIENT_HEADER_RE.search(line)
+        if not match:
+            continue
+        rest = _clean_name_line(line[match.end() :])
+        if _looks_like_person_name(rest):
+            return rest
+
+    capture = False
+    block: list[str] = []
+    for line in lines:
+        if _RECIPIENT_HEADER_RE.search(line):
+            capture = True
+            continue
+        if capture and _SENDER_HEADER_RE.search(line):
+            break
+        if capture:
+            block.append(line)
+            if len(block) >= 8:
+                break
+    for line in block:
+        if _looks_like_person_name(line):
+            return line
+
+    before_sender: list[str] = []
+    for line in lines:
+        if _SENDER_HEADER_RE.search(line):
+            break
+        before_sender.append(line)
+    candidates = [ln for ln in before_sender if _looks_like_person_name(ln)]
+    if candidates:
+        return candidates[-1]
+    return ""
+
+
+def fill_own_ttn_recipient(
+    storage: "AppStorage",
+    order: dict[str, Any],
+    *,
+    pdf_bytes: bytes | None = None,
+) -> dict[str, Any]:
+    """Дописати прізвище/імʼя одержувача з PDF, інакше з трекінгу НП."""
+    if not order or not order.get("id"):
+        return order
+    payload = dict(order.get("payload") or {})
+    if not (order.get("own_ttn") or payload.get("own_ttn")):
+        return order
+    recipient = dict(payload.get("recipient") or {})
+    already = " ".join(
+        str(recipient.get(k) or "").strip()
+        for k in ("last_name", "first_name", "patronymic")
+    ).strip()
+    full = ""
+    if pdf_bytes:
+        try:
+            full = extract_recipient_name_from_pdf(pdf_bytes)
+        except Exception:
+            logger.debug("own ttn pdf name extract failed", exc_info=True)
+            full = ""
+    carrier = str(payload.get("own_ttn_carrier") or "").strip().lower()
+    if not full and carrier != "rozetka":
+        try:
+            from bot.sheet_tracking import lookup_ttn_details
+
+            ttn = str(order.get("ttn_number") or payload.get("ttn_number") or "")
+            details = lookup_ttn_details(storage, ttn)
+            full = str(details.get("name") or "").strip()
+        except Exception:
+            logger.debug("own ttn NP name lookup failed", exc_info=True)
+            full = ""
+    if not full:
+        return order
+    parts = split_person_name(full)
+    if not already:
+        recipient["last_name"] = parts["last_name"]
+        recipient["first_name"] = parts["first_name"]
+        recipient["patronymic"] = parts["patronymic"]
+    elif not str(recipient.get("last_name") or "").strip():
+        recipient["last_name"] = parts["last_name"]
+        if not str(recipient.get("first_name") or "").strip():
+            recipient["first_name"] = parts["first_name"]
+        if not str(recipient.get("patronymic") or "").strip():
+            recipient["patronymic"] = parts["patronymic"]
+    else:
+        return order
+    saved = storage.merge_order_payload(int(order["id"]), {"recipient": recipient})
+    return saved or order
+
+
 def verify_ttn_pdf_base64(
     *,
     pdf_b64: str,
@@ -348,12 +516,22 @@ def apply_ttn_pdf_check(
         if filename is not None
         else (payload.get("ttn_pdf_name") or "")
     )
-    check = verify_ttn_pdf_base64(
-        pdf_b64=pdf_b64,
-        ttn_number=number,
-        carrier=carr,
-        filename=pdf_name,
-    )
+    pdf_bytes: bytes | None = None
+    try:
+        pdf_bytes = decode_pdf_base64(pdf_b64)
+        check = verify_ttn_pdf(
+            pdf_bytes=pdf_bytes,
+            ttn_number=number,
+            carrier=carr,
+            filename=pdf_name,
+        )
+    except ValueError as exc:
+        check = {
+            "ok": False,
+            "expected": normalize_waybill(number, carr),
+            "found": [],
+            "message": str(exc),
+        }
     now = datetime.now(timezone.utc).isoformat(timespec="seconds")
     ok = bool(check.get("ok"))
     patch = {
@@ -376,10 +554,15 @@ def apply_ttn_pdf_check(
         )
     else:
         storage.update_order_flags(int(order["id"]), sheets_sync_status="hold_pdf")
+    latest = storage.get_order(int(order["id"])) or saved or order
+    try:
+        latest = fill_own_ttn_recipient(storage, latest, pdf_bytes=pdf_bytes)
+    except Exception:
+        logger.debug("own ttn recipient fill failed", exc_info=True)
     return {
         "ok": ok,
         "check": check,
-        "order": storage.get_order(int(order["id"])) or saved or order,
+        "order": storage.get_order(int(order["id"])) or latest or order,
     }
 
 

@@ -1964,6 +1964,21 @@ def create_web_app(
                         order.get("order_number"),
                     )
 
+            try:
+                from bot.ttn_pdf_verify import decode_pdf_base64, fill_own_ttn_recipient
+
+                pdf_bytes = decode_pdf_base64(pdf_b64) if pdf_b64 else None
+                order = fill_own_ttn_recipient(
+                    storage,
+                    storage.get_order(order["id"]) or order,
+                    pdf_bytes=pdf_bytes,
+                )
+            except Exception:
+                logger.exception(
+                    "own ttn recipient fill after order %s failed",
+                    order.get("order_number"),
+                )
+
         # Дзеркало в Google Sheet «Заказы» (не при hold_pdf)
         try:
             from bot.orders_sheets import sync_order_to_sheet
