@@ -2558,9 +2558,16 @@ input[type="file"] {
   transition: all 0.15s ease;
 }
 
-.chip-tag:hover {
+.chip-tag.active {
   background: var(--accent);
   border-color: var(--accent);
   color: #fff;
+}
+
+.warehouse-carrier-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 10px;
 }
 

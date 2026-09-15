@@ -3469,6 +3469,8 @@ def create_web_app(
             merge_ready_ttn_pdfs,
             order_has_ttn_pdf,
             order_warehouse_stage,
+            warehouse_delivery_carrier,
+            warehouse_delivery_carrier_label,
         )
 
         _require_warehouse(chat_id=chat_id, user_id=user_id, username=username)
@@ -3496,6 +3498,7 @@ def create_web_app(
                 dropper_name = dropper_names.get(did) or ""
             source_label = str(payload.get("market_source") or "").strip()
             created_at = o.get("created_at")
+            delivery_carrier = warehouse_delivery_carrier(o)
             enriched.append(
                 {
                     **o,
@@ -3503,6 +3506,10 @@ def create_web_app(
                     "has_ttn_pdf": order_has_ttn_pdf(o),
                     "dropper_name": dropper_name,
                     "source_label": source_label or dropper_name,
+                    "delivery_carrier": delivery_carrier,
+                    "delivery_carrier_label": warehouse_delivery_carrier_label(
+                        delivery_carrier
+                    ),
                     "entered_label": format_warehouse_entered_label(created_at),
                     "created_sort": created_at_sort_value(created_at),
                     "cart_summary": [

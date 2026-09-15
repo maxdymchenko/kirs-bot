@@ -157,6 +157,9 @@
     warehousePackingReadyBtn: document.getElementById("warehousePackingReadyBtn"),
     warehousePackingSelectedCount: document.getElementById("warehousePackingSelectedCount"),
     warehousePackingSendDigestBtn: document.getElementById("warehousePackingSendDigestBtn"),
+    warehouseShippingCarrierFilters: document.getElementById(
+      "warehouseShippingCarrierFilters"
+    ),
     orderMain: document.getElementById("orderMain"),
     searchForm: document.getElementById("searchForm"),
     searchInput: document.getElementById("searchInput"),
@@ -280,6 +283,8 @@
   };
 
   let warehouseTabState = "catalog";
+  let warehouseShippingItems = [];
+  let warehouseShippingCarrierFilter = "all";
 
   const previewState = {
     mode: "owner",
@@ -6853,6 +6858,10 @@ ${
     const ttn = String(order.ttn_number || "").trim();
     const titleBits = [`<b>${escapeHtml(order.order_number || "")}</b>`];
     if (dropperName) titleBits.push(escapeHtml(dropperName));
+    const carrierLabel = String(order.delivery_carrier_label || "").trim();
+    if (carrierLabel && stage === "shipping") {
+      titleBits.push(escapeHtml(carrierLabel));
+    }
     if (ttn) titleBits.push(`ТТН ${escapeHtml(ttn)}`);
     const entered =
       String(order.entered_label || "").trim() ||
@@ -6984,6 +6993,49 @@ ${
     syncWarehousePrintButton();
   }
 
+  function warehouseShippingCarrierOf(order) {
+    return String(order.delivery_carrier || "np").trim() || "np";
+  }
+
+  function syncWarehouseShippingCarrierFilters() {
+    if (!els.warehouseShippingCarrierFilters) return;
+    els.warehouseShippingCarrierFilters
+      .querySelectorAll("[data-wh-carrier]")
+      .forEach((btn) => {
+        btn.classList.toggle(
+          "active",
+          btn.getAttribute("data-wh-carrier") === warehouseShippingCarrierFilter
+        );
+      });
+  }
+
+  function renderWarehouseShippingList() {
+    const listEl = els.warehouseShippingList;
+    if (!listEl) return;
+    const filter = warehouseShippingCarrierFilter || "all";
+    const items = warehouseShippingItems.filter((o) => {
+      if (filter === "all") return true;
+      return warehouseShippingCarrierOf(o) === filter;
+    });
+    if (!warehouseShippingItems.length) {
+      listEl.innerHTML = `<div class="empty">Немає замовлень на відправлення</div>`;
+      syncWarehousePrintButton();
+      syncWarehouseShippingCarrierFilters();
+      return;
+    }
+    if (!items.length) {
+      listEl.innerHTML = `<div class="empty">Немає замовлень цієї служби доставки</div>`;
+      syncWarehousePrintButton();
+      syncWarehouseShippingCarrierFilters();
+      return;
+    }
+    listEl.innerHTML = items
+      .map((o) => renderWarehouseOrderCard(o, { stage: "shipping" }))
+      .join("");
+    syncWarehousePrintButton();
+    syncWarehouseShippingCarrierFilters();
+  }
+
   async function loadWarehouseQueue(stage) {
     const listEl =
       stage === "ready_to_ship" ? els.warehouseShippingList : els.warehousePackingList;
@@ -7004,31 +7056,30 @@ ${
         }
         return String(b.created_at || "").localeCompare(String(a.created_at || ""));
       });
+      if (stage === "ready_to_ship") {
+        warehouseShippingItems = items;
+        renderWarehouseShippingList();
+        return;
+      }
       if (!items.length) {
-        listEl.innerHTML = `<div class="empty">${
-          stage === "ready_to_ship"
-            ? "Немає замовлень на відправлення"
-            : "Немає замовлень на пакування"
-        }</div>`;
-        if (stage === "ready_to_ship") syncWarehousePrintButton();
-        else syncWarehousePackingSelection();
+        listEl.innerHTML = `<div class="empty">Немає замовлень на пакування</div>`;
+        syncWarehousePackingSelection();
         return;
       }
       listEl.innerHTML = items
-        .map((o) =>
-          renderWarehouseOrderCard(o, {
-            stage: stage === "ready_to_ship" ? "shipping" : "packing",
-          })
-        )
+        .map((o) => renderWarehouseOrderCard(o, { stage: "packing" }))
         .join("");
-      if (stage === "ready_to_ship") syncWarehousePrintButton();
-      else syncWarehousePackingSelection();
+      syncWarehousePackingSelection();
     } catch (error) {
       listEl.innerHTML = `<div class="empty">${escapeHtml(
         error.message || "Помилка"
       )}</div>`;
-      if (stage === "ready_to_ship") syncWarehousePrintButton();
-      else syncWarehousePackingSelection();
+      if (stage === "ready_to_ship") {
+        warehouseShippingItems = [];
+        syncWarehousePrintButton();
+      } else {
+        syncWarehousePackingSelection();
+      }
     }
   }
 
@@ -7213,6 +7264,15 @@ ${
   if (els.warehouseDeselectAllBtn) {
     els.warehouseDeselectAllBtn.addEventListener("click", () => {
       setAllWarehousePrintChecks(false);
+    });
+  }
+
+  if (els.warehouseShippingCarrierFilters) {
+    els.warehouseShippingCarrierFilters.addEventListener("click", (event) => {
+      const btn = event.target.closest("[data-wh-carrier]");
+      if (!btn) return;
+      warehouseShippingCarrierFilter = btn.getAttribute("data-wh-carrier") || "all";
+      renderWarehouseShippingList();
     });
   }
 

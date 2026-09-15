@@ -261,6 +261,54 @@ def _looks_like_np_ttn(ttn: str) -> bool:
     return len(digits) >= 11
 
 
+def warehouse_delivery_carrier(order: dict[str, Any]) -> str:
+    """Служба доставки для фільтра: np | rozetka | ukrposhta."""
+    payload = order.get("payload") if isinstance(order.get("payload"), dict) else {}
+    ttn = str(order.get("ttn_number") or payload.get("ttn_number") or "").strip()
+    if ttn.upper().startswith("RMP-"):
+        return "rozetka"
+    own = str(payload.get("own_ttn_carrier") or "").strip().lower().replace("-", "_")
+    if own in {"rozetka", "rz", "rmp"}:
+        return "rozetka"
+    if "ukr" in own or "укрпошт" in own:
+        return "ukrposhta"
+    if own in {"nova_poshta", "novaposhta", "np", "нп"}:
+        return "np"
+    delivery = payload.get("delivery") if isinstance(payload.get("delivery"), dict) else {}
+    bits = " ".join(
+        str(x or "")
+        for x in (
+            payload.get("carrier"),
+            payload.get("delivery_carrier"),
+            delivery.get("carrier"),
+            delivery.get("method"),
+            order.get("delivery_method"),
+        )
+    ).casefold()
+    if "укрпошт" in bits or "ukrposht" in bits:
+        return "ukrposhta"
+    if "розет" in bits or "rozetka" in bits or "rmp" in bits:
+        return "rozetka"
+    if "нов" in bits and ("пошт" in bits or "почт" in bits):
+        return "np"
+    if bits in {"нп", "np"} or "nova_poshta" in bits or "novaposhta" in bits:
+        return "np"
+    digits = "".join(ch for ch in ttn if ch.isdigit())
+    if digits.startswith(("204", "205", "206", "207", "208", "590", "591")) and 13 <= len(digits) <= 14:
+        return "np"
+    if _looks_like_np_ttn(ttn):
+        return "np"
+    return "np"
+
+
+def warehouse_delivery_carrier_label(code: str) -> str:
+    return {
+        "rozetka": "Розетка",
+        "ukrposhta": "Укрпошта",
+        "np": "Нова Пошта",
+    }.get(str(code or "").strip(), "Нова Пошта")
+
+
 def _load_sheet_stages(storage: AppStorage) -> dict[str, str]:
     with storage._connect() as conn:
         row = conn.execute(
@@ -470,6 +518,7 @@ def _load_sheet_market_groups(
                 "qty": _sheet_qty(row[7]),
                 "retail": _sheet_money(row[8]),
                 "source": source,
+                "carrier": str(row[3] or "").strip(),
                 "client": str(row[11] or "").strip(),
                 "ttn": str(row[12] or "").strip(),
                 "status": status,
@@ -515,6 +564,10 @@ def _sheet_order_from_lines(
         (str(x.get("payment") or "").strip() for x in lines if x.get("payment")),
         "",
     )
+    carrier = next(
+        (str(x.get("carrier") or "").strip() for x in lines if x.get("carrier")),
+        "",
+    )
     created_at = str(entered_at or "").strip() or _sheet_created_at(
         latest.get("created_raw"), latest.get("row_idx") or 0
     )
@@ -546,6 +599,7 @@ def _sheet_order_from_lines(
             "market_source": source_label,
             "warehouse_stage": stage,
             "ttn_number": ttn,
+            "carrier": carrier,
             "comment": source_label,
             "recipient": {
                 "first_name": client,

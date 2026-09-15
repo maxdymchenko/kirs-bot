@@ -934,6 +934,12 @@
           <button type="button" class="btn primary" id="warehousePrintBtn" disabled>Друк накладних</button>
           <button type="button" class="btn secondary" id="warehouseDismissBtn" disabled>Зняти вибрані</button>
         </div>
+        <div class="warehouse-carrier-filters" id="warehouseShippingCarrierFilters">
+          <button type="button" class="chip-tag active" data-wh-carrier="all">Усі</button>
+          <button type="button" class="chip-tag" data-wh-carrier="np">Нова Пошта</button>
+          <button type="button" class="chip-tag" data-wh-carrier="rozetka">Розетка</button>
+          <button type="button" class="chip-tag" data-wh-carrier="ukrposhta">Укрпошта</button>
+        </div>
         <p class="hint" style="margin-top:0">
           Відмітьте накладні чекбоксом. Кнопка друку активна лише коли вибрано хоча б одну.
           PDF обʼєднується в один файл (кожна накладна з нового аркуша).
@@ -949,6 +955,6 @@
   </div>
 
   <button type="button" id="photoZoomBackdrop" class="photo-zoom-backdrop hidden" aria-label="Закрити фото"></button>
-  <script src="/static/app.js?v=20260915pack2"></script>
+  <script src="/static/app.js?v=20260915ship1"></script>
 </body>
 </html>
