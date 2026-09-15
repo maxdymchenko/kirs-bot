@@ -868,6 +868,53 @@ def mark_packing_queue_ready_to_ship(
     }
 
 
+def mark_packing_orders_ready_to_ship(
+    storage: AppStorage,
+    order_ids: list[Any],
+    *,
+    actor_user_id: str = "",
+) -> dict[str, Any]:
+    """Вибрані замовлення з «На пакування» → «На відправлення»."""
+    wanted = [str(x or "").strip() for x in (order_ids or []) if str(x or "").strip()]
+    if not wanted:
+        return {"count": 0, "moved_sheet": 0, "moved_sqlite": 0, "errors": []}
+    wanted_set = set(wanted)
+    items = list_warehouse_queue(storage, stage=STAGE_PACKING, limit=500)
+    stages = _load_sheet_stages(storage)
+    moved_sheet: list[str] = []
+    moved_sqlite: list[str] = []
+    errors: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for order in items:
+        oid = str(order.get("id") or "").strip()
+        if oid not in wanted_set or oid in seen:
+            continue
+        seen.add(oid)
+        sheet_no = parse_sheet_order_id(oid)
+        if sheet_no:
+            stages[sheet_no] = STAGE_READY
+            moved_sheet.append(sheet_no)
+            continue
+        try:
+            mark_order_ready_to_ship(
+                storage, oid, actor_user_id=actor_user_id
+            )
+            moved_sqlite.append(oid)
+        except Exception as exc:
+            errors.append({"id": oid, "error": str(exc)})
+    missing = [oid for oid in wanted if oid not in seen]
+    for oid in missing:
+        errors.append({"id": oid, "error": "немає в черзі на пакування"})
+    if moved_sheet:
+        _save_sheet_stages(storage, stages)
+    return {
+        "count": len(moved_sheet) + len(moved_sqlite),
+        "moved_sheet": len(moved_sheet),
+        "moved_sqlite": len(moved_sqlite),
+        "errors": errors,
+    }
+
+
 def mark_order_ready_to_ship(
     storage: AppStorage,
     order_id: int | str,

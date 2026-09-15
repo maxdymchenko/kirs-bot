@@ -908,7 +908,15 @@
       </div>
 
       <div id="warehouseTabPacking" class="warehouse-panel hidden">
-        <p class="hint" style="margin-top:0">Чекбокс — перемістити замовлення у «На відправлення».</p>
+        <div class="orders-toolbar warehouse-shipping-toolbar" style="margin-bottom:10px">
+          <button type="button" class="btn secondary" id="warehousePackingSelectAllBtn">Вибрати всі</button>
+          <button type="button" class="btn secondary" id="warehousePackingDeselectAllBtn">Зняти всі</button>
+          <button type="button" class="btn primary" id="warehousePackingReadyBtn" disabled>На відправлення</button>
+          <span id="warehousePackingSelectedCount" class="warehouse-selected-count">Вибрано: 0</span>
+        </div>
+        <p class="hint" style="margin-top:0">
+          Відмітьте замовлення чекбоксом і натисніть «На відправлення».
+        </p>
         <div id="warehousePackingList" class="warehouse-order-list"></div>
       </div>
 
@@ -934,6 +942,6 @@
   </div>
 
   <button type="button" id="photoZoomBackdrop" class="photo-zoom-backdrop hidden" aria-label="Закрити фото"></button>
-  <script src="/static/app.js?v=20260915entered1"></script>
+  <script src="/static/app.js?v=20260915pack1"></script>
 </body>
 </html>

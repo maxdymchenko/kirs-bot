@@ -189,6 +189,13 @@ class WarehouseAttachPdfRequest(BaseModel):
     pdf_base64: str = Field(..., min_length=20, max_length=3_500_000)
 
 
+class WarehouseReadySelectedRequest(BaseModel):
+    chat_id: str = Field("", max_length=64)
+    user_id: str = Field("", max_length=64)
+    username: str = Field("", max_length=64)
+    order_ids: list[str] = Field(default_factory=list)
+
+
 class DropperSelfSettingsUpdateRequest(BaseModel):
     chat_id: str = Field(..., min_length=2, max_length=64)
     user_id: str = Field("", max_length=64)
@@ -3513,6 +3520,24 @@ def create_web_app(
         _require_warehouse(chat_id=chat_id, user_id=user_id, username=username)
         result = mark_packing_queue_ready_to_ship(
             storage, actor_user_id=user_id
+        )
+        return {"ok": True, **result}
+
+    @app.post("/api/warehouse/queue/ready-selected")
+    async def warehouse_mark_selected_ready(
+        payload: WarehouseReadySelectedRequest,
+    ) -> dict:
+        from bot.warehouse import mark_packing_orders_ready_to_ship
+
+        _require_warehouse(
+            chat_id=payload.chat_id,
+            user_id=payload.user_id,
+            username=payload.username,
+        )
+        result = mark_packing_orders_ready_to_ship(
+            storage,
+            payload.order_ids,
+            actor_user_id=payload.user_id,
         )
         return {"ok": True, **result}
 

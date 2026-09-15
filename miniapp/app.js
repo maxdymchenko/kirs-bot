@@ -152,6 +152,10 @@
     warehouseDismissBtn: document.getElementById("warehouseDismissBtn"),
     warehouseSelectAllBtn: document.getElementById("warehouseSelectAllBtn"),
     warehouseDeselectAllBtn: document.getElementById("warehouseDeselectAllBtn"),
+    warehousePackingSelectAllBtn: document.getElementById("warehousePackingSelectAllBtn"),
+    warehousePackingDeselectAllBtn: document.getElementById("warehousePackingDeselectAllBtn"),
+    warehousePackingReadyBtn: document.getElementById("warehousePackingReadyBtn"),
+    warehousePackingSelectedCount: document.getElementById("warehousePackingSelectedCount"),
     orderMain: document.getElementById("orderMain"),
     searchForm: document.getElementById("searchForm"),
     searchInput: document.getElementById("searchInput"),
@@ -6862,7 +6866,7 @@ ${
       stage === "packing"
         ? `<label class="warehouse-order-check">
             <input type="checkbox" data-wh-ready="${escapeHtml(String(order.id))}" />
-            Упаковано → на відправлення
+            Вибрати
           </label>`
         : `<div class="warehouse-order-actions">
             <label class="warehouse-order-check">
@@ -6899,11 +6903,37 @@ ${
       .filter(Boolean);
   }
 
+  function getSelectedWarehousePackingIds() {
+    if (!els.warehousePackingList) return [];
+    return Array.from(
+      els.warehousePackingList.querySelectorAll("[data-wh-ready]:checked")
+    )
+      .map((el) => el.getAttribute("data-wh-ready"))
+      .filter(Boolean);
+  }
+
   function syncWarehousePrintButton() {
     const selected = getSelectedWarehousePrintIds();
     const empty = selected.length === 0;
     if (els.warehousePrintBtn) els.warehousePrintBtn.disabled = empty;
     if (els.warehouseDismissBtn) els.warehouseDismissBtn.disabled = empty;
+  }
+
+  function syncWarehousePackingSelection() {
+    const selected = getSelectedWarehousePackingIds();
+    const n = selected.length;
+    if (els.warehousePackingReadyBtn) els.warehousePackingReadyBtn.disabled = n === 0;
+    if (els.warehousePackingSelectedCount) {
+      els.warehousePackingSelectedCount.textContent = `Вибрано: ${n}`;
+    }
+  }
+
+  function setAllWarehousePackingChecks(checked) {
+    if (!els.warehousePackingList) return;
+    els.warehousePackingList.querySelectorAll("[data-wh-ready]").forEach((el) => {
+      el.checked = Boolean(checked);
+    });
+    syncWarehousePackingSelection();
   }
 
   async function markWarehouseOrdersShipped(ids) {
@@ -6980,6 +7010,7 @@ ${
             : "Немає замовлень на пакування"
         }</div>`;
         if (stage === "ready_to_ship") syncWarehousePrintButton();
+        else syncWarehousePackingSelection();
         return;
       }
       listEl.innerHTML = items
@@ -6990,11 +7021,13 @@ ${
         )
         .join("");
       if (stage === "ready_to_ship") syncWarehousePrintButton();
+      else syncWarehousePackingSelection();
     } catch (error) {
       listEl.innerHTML = `<div class="empty">${escapeHtml(
         error.message || "Помилка"
       )}</div>`;
       if (stage === "ready_to_ship") syncWarehousePrintButton();
+      else syncWarehousePackingSelection();
     }
   }
 
@@ -7039,22 +7072,65 @@ ${
   }
 
   if (els.warehousePackingList) {
-    els.warehousePackingList.addEventListener("change", async (event) => {
-      const check = event.target.closest("[data-wh-ready]");
-      if (!check || !check.checked) return;
-      const id = check.getAttribute("data-wh-ready");
+    els.warehousePackingList.addEventListener("change", (event) => {
+      if (!event.target.closest("[data-wh-ready]")) return;
+      syncWarehousePackingSelection();
+    });
+  }
+
+  if (els.warehousePackingSelectAllBtn) {
+    els.warehousePackingSelectAllBtn.addEventListener("click", () => {
+      setAllWarehousePackingChecks(true);
+    });
+  }
+  if (els.warehousePackingDeselectAllBtn) {
+    els.warehousePackingDeselectAllBtn.addEventListener("click", () => {
+      setAllWarehousePackingChecks(false);
+    });
+  }
+
+  if (els.warehousePackingReadyBtn) {
+    els.warehousePackingReadyBtn.addEventListener("click", async () => {
+      const ids = getSelectedWarehousePackingIds();
+      if (!ids.length) {
+        showToast("Виберіть хоча б одне замовлення");
+        return;
+      }
+      const user = currentTelegramUser();
+      const chat = currentTelegramChatId() || sessionState.chat_id || "";
+      els.warehousePackingReadyBtn.disabled = true;
       try {
         const response = await fetch(
-          `/api/warehouse/orders/${encodeURIComponent(id)}/ready?${warehouseAuthParams()}`,
-          { method: "POST" }
+          `/api/warehouse/queue/ready-selected?${warehouseAuthParams()}`,
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              chat_id: chat,
+              user_id: user.user_id || "",
+              username: user.username || "",
+              order_ids: ids,
+            }),
+          }
         );
-        const data = await response.json();
+        const data = await response.json().catch(() => ({}));
         if (!response.ok) throw new Error(data.detail || "Помилка");
-        showToast("Переміщено на відправлення");
-        loadWarehouseQueue("packing");
+        const moved = Number(data.count || 0);
+        const errN = (data.errors || []).length;
+        if (moved) {
+          showToast(
+            moved === 1
+              ? "Переміщено 1 замовлення на відправлення"
+              : `Переміщено ${moved} замовлень на відправлення`
+          );
+        } else {
+          showToast((data.errors && data.errors[0] && data.errors[0].error) || "Нічого не переміщено");
+        }
+        if (errN && moved) showToast(`Частину не вдалося: ${errN}`);
+        await loadWarehouseQueue("packing");
       } catch (error) {
-        check.checked = false;
         showToast(error.message || "Помилка");
+        syncWarehousePackingSelection();
       }
     });
   }
