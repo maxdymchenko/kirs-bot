@@ -1863,7 +1863,10 @@
     const cartLines = (data.cart || [])
       .map((item) => {
         const qty = item.qty || 1;
-        const head = `${item.code || ""} — ${item.name || ""} × ${qty}`;
+        const color = String(item.color || "").trim();
+        const head = color
+          ? `${item.code || ""} — ${item.name || ""} · ${color} × ${qty}`
+          : `${item.code || ""} — ${item.name || ""} × ${qty}`;
         if (hasDiscountPrice(item)) {
           return `${head} · <span class="price-old-inline">${escapeHtml(
             String(item.drop_price_original)
@@ -2255,7 +2258,10 @@ ${ttnLine}</div>
     const cartLines = cart
       .map((item) => {
         const qty = item.qty || 1;
-        const head = `${item.code || ""} — ${item.name || ""} × ${qty}`;
+        const color = String(item.color || "").trim();
+        const head = color
+          ? `${item.code || ""} — ${item.name || ""} · ${color} × ${qty}`
+          : `${item.code || ""} — ${item.name || ""} × ${qty}`;
         if (hasDiscountPrice(item)) {
           return `${head} · <span class="price-old-inline">${escapeHtml(
             String(item.drop_price_original)
@@ -2664,7 +2670,12 @@ ${
       .join(" ");
     const itemsPreview = cart
       .slice(0, compact ? 3 : 8)
-      .map((i) => `${i.code || ""} × ${i.qty || 1}`)
+      .map((i) => {
+        const color = String(i.color || "").trim();
+        return color
+          ? `${i.code || ""} · ${color} × ${i.qty || 1}`
+          : `${i.code || ""} × ${i.qty || 1}`;
+      })
       .join(", ");
     const more = cart.length > (compact ? 3 : 8) ? ` +${cart.length - (compact ? 3 : 8)}` : "";
     const ttnLine = ttnStatusLabel(order);
@@ -2798,7 +2809,9 @@ ${
       .map(
         (item, index) => `
       <div class="order-edit-cart-row" data-edit-cart-index="${index}">
-        <div class="meta"><b>${escapeHtml(item.code || "")}</b> · ${escapeHtml(item.name || "")}</div>
+        <div class="meta"><b>${escapeHtml(item.code || "")}</b>${
+          item.color ? ` · ${escapeHtml(item.color)}` : ""
+        } · ${escapeHtml(item.name || "")}</div>
         <div class="order-edit-cart-fields">
           <label class="field compact-field">
             <span class="field-label">К-сть</span>
