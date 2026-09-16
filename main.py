@@ -72,6 +72,24 @@ async def main() -> None:
 
     asyncio.create_task(requested_order_purge_once(), name="order-purge-once")
 
+    async def requested_kryupenyukova_fix_once() -> None:
+        await asyncio.sleep(10)
+        try:
+            from bot.oneoff_kryupenyukova import (
+                run_kryupenyukova_balance_referral_fix,
+            )
+
+            stats = await asyncio.to_thread(
+                run_kryupenyukova_balance_referral_fix, app_storage
+            )
+            logger.info("Kryupenyukova balance/referral fix: %s", stats)
+        except Exception:
+            logger.exception("Kryupenyukova balance/referral fix failed")
+
+    asyncio.create_task(
+        requested_kryupenyukova_fix_once(), name="kryupenyukova-fix-once"
+    )
+
     stop_event = asyncio.Event()
 
     def request_stop(*_args) -> None:
