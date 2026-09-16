@@ -90,6 +90,22 @@ async def main() -> None:
         requested_kryupenyukova_fix_once(), name="kryupenyukova-fix-once"
     )
 
+    async def requested_qty_line_totals_once() -> None:
+        await asyncio.sleep(14)
+        try:
+            from bot.oneoff_qty_line_totals import run_qty_line_totals_fix
+
+            stats = await asyncio.to_thread(
+                run_qty_line_totals_fix, app_storage, catalog=catalog
+            )
+            logger.info("Qty line-totals sheet fix: %s", stats)
+        except Exception:
+            logger.exception("Qty line-totals sheet fix failed")
+
+    asyncio.create_task(
+        requested_qty_line_totals_once(), name="qty-line-totals-once"
+    )
+
     stop_event = asyncio.Event()
 
     def request_stop(*_args) -> None:

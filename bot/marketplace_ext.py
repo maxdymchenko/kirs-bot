@@ -25,6 +25,7 @@ from bot.orders_sheets import (
     _find_catalog_variants,
     _fmt_money,
     _is_generic_sheet_color,
+    _line_total_money,
     _color_canon_tokens,
     _lookup_unique_catalog_color,
     _match_catalog_color,
@@ -1492,16 +1493,17 @@ def build_sheet_rows(
         item_retail = _fmt_money(item.get("retail"))
         qty = _sane_line_qty(item.get("qty"))
         if item.get("prefer_item_retail") and item_retail:
-            sale = item_retail
+            unit_sale = item_retail
         else:
-            sale = catalog_retail or item_retail
-        if not sale and len(items) == 1:
+            unit_sale = catalog_retail or item_retail
+        if not unit_sale and len(items) == 1:
             if qty > 1:
                 total = _as_number(mapped.get("order_sum"))
-                sale = _fmt_money(total / qty) if total else ""
+                unit_sale = _fmt_money(total / qty) if total else ""
             else:
-                sale = order_sum
-        drop = catalog_drop
+                unit_sale = order_sum
+        sale = _line_total_money(unit_sale, qty)
+        drop = _line_total_money(catalog_drop, qty)
         rows.append(
             [
                 mapped.get("date") or "",

@@ -51,6 +51,7 @@ COL_NOTE = 15
 COL_RECEIPT = 16
 COL_SETTLEMENT = 17
 COL_LOCATION = 18
+COL_QTY = 8
 SHEET_COL_COUNT = len(ORDER_SHEET_HEADERS)
 
 TTN_STATUS_LABELS = {
@@ -94,6 +95,34 @@ def _fmt_money(value: Any) -> str:
         return ""
     # завжди 2 знаки після коми — як у зразку листа (660,00)
     return f"{n:.2f}".replace(".", ",")
+
+
+def _money_number(value: Any) -> float | None:
+    text = _fmt_money(value)
+    if not text:
+        return None
+    try:
+        return float(text.replace(" ", "").replace(",", "."))
+    except (TypeError, ValueError):
+        return None
+
+
+def _line_total_money(unit: Any, qty: int) -> str:
+    """Ціна рядка = ціна за 1 шт × кількість."""
+    n = _money_number(unit)
+    if n is None:
+        return ""
+    return _fmt_money(n * max(1, int(qty)))
+
+
+def _qty_int(value: Any) -> int:
+    raw = str(value or "").strip().replace(" ", "").replace(",", ".")
+    if not raw:
+        return 0
+    try:
+        return max(0, int(float(raw)))
+    except (TypeError, ValueError):
+        return 0
 
 
 def _norm_text(value: str) -> str:
@@ -633,9 +662,9 @@ def build_sheet_rows(
         if name2:
             name = name2
 
-        qty = max(1, int(item.get("qty") or 1))
-        drop = _fmt_money(item.get("drop_price"))
-        retail_s = _fmt_money(retail) if retail else str(retail or "")
+        qty = max(1, _qty_int(item.get("qty")) or 1)
+        drop = _line_total_money(item.get("drop_price"), qty)
+        retail_s = _line_total_money(retail, qty) if retail else ""
         rows.append(
             [
                 date_s,
@@ -782,6 +811,13 @@ def append_order_rows(
         ws,
         [
             (row_num, str(rows[i][13] if len(rows[i]) > 13 else ""))
+            for i, row_num in enumerate(written)
+        ],
+    )
+    paint_qty_highlight_cells(
+        ws,
+        [
+            (row_num, rows[i][7] if len(rows[i]) > 7 else 1)
             for i, row_num in enumerate(written)
         ],
     )
@@ -939,6 +975,78 @@ def paint_status_n_cells(
         logger.exception("failed to paint status column N")
 
 
+_QTY_YELLOW = (1.0, 0.937, 0.4)  # жовтий, якщо в замовленні більше 1 шт
+_QTY_WHITE = (1.0, 1.0, 1.0)
+
+
+def paint_qty_highlight_cells(
+    ws: gspread.Worksheet, row_qtys: list[tuple[int, Any]]
+) -> None:
+    """Залити комірку «Кол-во» (H) жовтим, якщо кількість > 1."""
+    yellow: list[int] = []
+    white: list[int] = []
+    for row_num, qty in row_qtys:
+        try:
+            n = int(row_num)
+        except (TypeError, ValueError):
+            continue
+        if n < 2:
+            continue
+        if _qty_int(qty) > 1:
+            yellow.append(n)
+        else:
+            white.append(n)
+    requests: list[dict[str, Any]] = []
+    for (red, green, blue), rows in (
+        (_QTY_YELLOW, yellow),
+        (_QTY_WHITE, white),
+    ):
+        for start, end in _consecutive_row_spans(rows):
+            requests.append(
+                {
+                    "repeatCell": {
+                        "range": {
+                            "sheetId": ws.id,
+                            "startRowIndex": start - 1,
+                            "endRowIndex": end,
+                            "startColumnIndex": COL_QTY - 1,
+                            "endColumnIndex": COL_QTY,
+                        },
+                        "cell": {
+                            "userEnteredFormat": {
+                                "backgroundColor": {
+                                    "red": red,
+                                    "green": green,
+                                    "blue": blue,
+                                }
+                            }
+                        },
+                        "fields": "userEnteredFormat.backgroundColor",
+                    }
+                }
+            )
+    if not requests:
+        return
+    try:
+        chunk = 80
+        for i in range(0, len(requests), chunk):
+            ws.spreadsheet.batch_update({"requests": requests[i : i + chunk]})
+    except Exception:
+        logger.exception("failed to paint qty column H")
+
+
+def paint_qty_column_from_sheet(ws: gspread.Worksheet) -> int:
+    """Підсвітити всі наявні комірки H з кількістю > 1. Повертає їх число."""
+    values = ws.col_values(COL_QTY)
+    pairs = [
+        (i + 1, v)
+        for i, v in enumerate(values)
+        if i >= 1 and _qty_int(v) > 1
+    ]
+    paint_qty_highlight_cells(ws, pairs)
+    return len(pairs)
+
+
 def update_rows_values(
     ws: gspread.Worksheet,
     row_numbers: list[int],
@@ -970,6 +1078,12 @@ def update_rows_values(
                 }
             )
     ws.batch_update(data, value_input_option="USER_ENTERED")
+    qty_pairs: list[tuple[int, Any]] = []
+    for row_num, values in zip(row_numbers, rows):
+        qty_pairs.append((row_num, values[7] if len(values) > 7 else 1))
+    if len(row_numbers) > len(rows):
+        qty_pairs.extend((row_num, 0) for row_num in row_numbers[len(rows) :])
+    paint_qty_highlight_cells(ws, qty_pairs)
 
 
 def replace_order_rows(
@@ -1020,6 +1134,7 @@ def replace_order_rows(
                 ],
                 value_input_option="USER_ENTERED",
             )
+            paint_qty_highlight_cells(ws, [(n, 0) for n in leftover])
     if len(patched) > keep:
         written.extend(append_order_rows(ws, patched[keep:]))
     return written
