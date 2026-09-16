@@ -1400,6 +1400,14 @@ def _lookup_item_catalog_meta(
     matches = _find_catalog_variants(catalog, code, color, product_id)
     if not matches:
         return "", "", "", "", "", ""
+
+    def _consensus(values: list[str]) -> str:
+        cleaned = [_trim(v) for v in values if _trim(v)]
+        if not cleaned:
+            return ""
+        keys = {_norm_text(v) for v in cleaned}
+        return cleaned[0] if len(keys) == 1 else ""
+
     colors = [
         _trim(getattr(v, "color", ""))
         for v in matches
@@ -1407,8 +1415,24 @@ def _lookup_item_catalog_meta(
         and not _is_generic_sheet_color(str(getattr(v, "color", "") or ""))
     ]
     uniq_colors = list(dict.fromkeys(_norm_text(c) for c in colors if c))
+    sheet_names = [
+        _trim(getattr(v, "warehouse_name", "")) or _trim(getattr(v, "name", ""))
+        for v in matches
+    ]
+    locations = [_real_location(getattr(v, "location", "")) for v in matches]
+    retails = [_fmt_money(getattr(v, "retail_price", "")) for v in matches]
+    drops = [_fmt_money(getattr(v, "drop_price", "")) for v in matches]
+    codes = [_trim(getattr(v, "code", "")) for v in matches]
     if not _trim(color) and len(uniq_colors) > 1:
-        return "", "", "", "", "", ""
+        # Не вгадуємо колір, але спільну складську назву / ціну / локацію — так.
+        return (
+            _consensus(locations),
+            _consensus(sheet_names),
+            _consensus(retails),
+            _consensus(drops),
+            "",
+            _consensus(codes),
+        )
     v = matches[0]
     sheet_name = _trim(getattr(v, "warehouse_name", "")) or _trim(getattr(v, "name", ""))
     variant_color = _trim(getattr(v, "color", ""))

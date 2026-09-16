@@ -106,6 +106,22 @@ async def main() -> None:
         requested_qty_line_totals_once(), name="qty-line-totals-once"
     )
 
+    async def requested_catalog_sheet_enrich_once() -> None:
+        await asyncio.sleep(18)
+        try:
+            from bot.oneoff_catalog_sheet_enrich import run_catalog_sheet_enrich
+
+            stats = await asyncio.to_thread(
+                run_catalog_sheet_enrich, app_storage, catalog=catalog
+            )
+            logger.info("Catalog sheet enrich: %s", stats)
+        except Exception:
+            logger.exception("Catalog sheet enrich failed")
+
+    asyncio.create_task(
+        requested_catalog_sheet_enrich_once(), name="catalog-sheet-enrich-once"
+    )
+
     stop_event = asyncio.Event()
 
     def request_stop(*_args) -> None:

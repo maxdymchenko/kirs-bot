@@ -418,6 +418,30 @@ def _is_generic_sheet_color(color: str) -> bool:
     )
 
 
+def _fold_article_code(code: str) -> str:
+    """Латиниця, схожа на кирилицю (1911EM → 1911ЕМ), плюс D→Д як у суфіксах складу."""
+    text = str(code or "").strip().lstrip("'").casefold()
+    return text.translate(
+        str.maketrans(
+            {
+                "a": "а",
+                "b": "в",
+                "c": "с",
+                "e": "е",
+                "h": "н",
+                "k": "к",
+                "m": "м",
+                "o": "о",
+                "p": "р",
+                "t": "т",
+                "x": "х",
+                "y": "у",
+                "d": "д",
+            }
+        )
+    )
+
+
 def _codes_match_lenient(v_code: str, query_code: str, catalog: Any = None) -> bool:
     """Сопоставление кодов: точное, без ведущих нулей или только цифры (игнорируя буквы)."""
     v_s = str(v_code or "").strip()
@@ -425,6 +449,8 @@ def _codes_match_lenient(v_code: str, query_code: str, catalog: Any = None) -> b
     if not v_s or not q_s:
         return False
     if _norm_text(v_s) == _norm_text(q_s):
+        return True
+    if _fold_article_code(v_s) == _fold_article_code(q_s):
         return True
     if v_s.lstrip("0") == q_s.lstrip("0"):
         return True
@@ -466,6 +492,15 @@ def _find_catalog_variants(
             for v in variants
             if _codes_match_lenient(getattr(v, "code", ""), query, catalog)
         ]
+        folded_q = _fold_article_code(query)
+        tight = [
+            v
+            for v in matches
+            if _fold_article_code(getattr(v, "code", "")) == folded_q
+            or _norm_text(getattr(v, "code", "")) == _norm_text(query)
+        ]
+        if tight:
+            matches = tight
     if not matches and query:
         matches = [
             v
