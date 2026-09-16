@@ -474,6 +474,40 @@
     setPhoneDigits(PHONE_PREFIX_DIGITS);
   }
 
+  function resetCheckoutForm() {
+    const form = els.checkoutForm;
+    if (form) form.reset();
+    checkoutDraft = null;
+    if (els.ttnPdf) els.ttnPdf.value = "";
+    if (els.ttnPdfName) {
+      els.ttnPdfName.textContent = els.ttnPdfName.dataset.empty || "Файл не обрано";
+      els.ttnPdfName.classList.remove("is-selected");
+    }
+    if (els.confirmSummary) els.confirmSummary.innerHTML = "";
+    if (els.confirmError) {
+      els.confirmError.classList.add("hidden");
+      els.confirmError.textContent = "";
+    }
+    hideDropdown(els.cityDropdown);
+    hideDropdown(els.warehouseDropdown);
+    hideDropdown(els.streetDropdown);
+    clearCitySelection({ keepText: false });
+    resetPhoneField();
+    setCheckoutError("");
+    const npRadio = form?.querySelector(
+      'input[name="ownTtnCarrier"][value="nova_poshta"]'
+    );
+    if (npRadio) npRadio.checked = true;
+    const deliveryRadio = form?.querySelector(
+      'input[name="deliveryMethod"][value="np_warehouse"]'
+    );
+    if (deliveryRadio) deliveryRadio.checked = true;
+    const rulesBox = form?.querySelector("#rulesAccepted");
+    if (rulesBox) rulesBox.checked = true;
+    syncDeliveryFields();
+    syncPaymentAndTtn();
+  }
+
   function isPhoneComplete() {
     return phoneDigits.length === PHONE_MAX_DIGITS;
   }
@@ -2017,7 +2051,7 @@ ${ttnLine}</div>
       }
       saveCart([]);
       updateCartIndicators();
-      checkoutDraft = null;
+      resetCheckoutForm();
       const orderNo = result.order?.order_number || "";
       showToast(orderNo ? `Замовлення ${orderNo} прийнято` : "Замовлення прийнято");
       safeTgAlert(
@@ -6538,6 +6572,7 @@ ${
     updateCartIndicators();
     previewState.cartForChatId = key;
     checkoutDraft = null;
+    resetCheckoutForm();
     if (els.results) els.results.innerHTML = "";
     if (els.status) els.status.textContent = "";
     if (els.confirmView) els.confirmView.classList.add("hidden");
