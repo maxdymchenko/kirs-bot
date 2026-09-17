@@ -3497,6 +3497,35 @@ def create_web_app(
                         dropper_names[did] = ""
                 dropper_name = dropper_names.get(did) or ""
             source_label = str(payload.get("market_source") or "").strip()
+            cart_summary = []
+            for x in cart:
+                if not isinstance(x, dict):
+                    continue
+                code = str(x.get("code") or "")
+                color = str(x.get("color") or "")
+                name = str(x.get("name") or "")
+                if catalog is not None and code:
+                    try:
+                        from bot.orders_sheets import _lookup_variant_meta
+
+                        _retail, _loc, name_cat, _drop = _lookup_variant_meta(
+                            catalog, code, color
+                        )
+                        if name_cat:
+                            name = str(name_cat).strip()
+                    except Exception:
+                        pass
+                cart_summary.append(
+                    {
+                        "code": code,
+                        "color": color,
+                        "qty": int(x.get("qty") or 1),
+                        "name": name,
+                        "location": str(x.get("location") or ""),
+                    }
+                )
+                if len(cart_summary) >= 20:
+                    break
             created_at = o.get("created_at")
             delivery_carrier = warehouse_delivery_carrier(o)
             enriched.append(
@@ -3512,17 +3541,7 @@ def create_web_app(
                     ),
                     "entered_label": format_warehouse_entered_label(created_at),
                     "created_sort": created_at_sort_value(created_at),
-                    "cart_summary": [
-                        {
-                            "code": str(x.get("code") or ""),
-                            "color": str(x.get("color") or ""),
-                            "qty": int(x.get("qty") or 1),
-                            "name": str(x.get("name") or ""),
-                            "location": str(x.get("location") or ""),
-                        }
-                        for x in cart
-                        if isinstance(x, dict)
-                    ][:20],
+                    "cart_summary": cart_summary,
                     "recipient_name": " ".join(
                         [
                             str((payload.get("recipient") or {}).get("last_name") or ""),

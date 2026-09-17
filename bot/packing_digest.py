@@ -97,13 +97,17 @@ def _extract_packing_items(
             color = str(item.get("color") or "").strip()
             qty = max(1, int(item.get("qty") or 1))
             loc = _clean_location(item.get("location"))
+            warehouse_name = ""
 
-            if not loc and catalog is not None and code:
+            if catalog is not None and code:
                 try:
                     from bot.orders_sheets import _lookup_variant_meta
 
-                    _, loc_cat, *_rest = _lookup_variant_meta(catalog, code, color)
-                    loc = _clean_location(loc_cat)
+                    _, loc_cat, name_cat, _drop = _lookup_variant_meta(
+                        catalog, code, color
+                    )
+                    loc = loc or _clean_location(loc_cat)
+                    warehouse_name = str(name_cat or "").strip()
                 except Exception:
                     pass
 
@@ -113,7 +117,7 @@ def _extract_packing_items(
             all_items.append(
                 {
                     "order_number": order_num,
-                    "name": name,
+                    "name": warehouse_name or name,
                     "code": code,
                     "color": color,
                     "qty": qty,
@@ -255,12 +259,12 @@ def format_packing_digest_messages(
             details = []
             if code:
                 details.append(f"Код: {code}")
+            if name:
+                details.append(name)
             if color:
                 details.append(color)
-            elif name and not code:
-                details.append(name[:40])
 
-            desc = " · ".join(details) if details else (name[:40] or "Товар")
+            desc = " · ".join(details) if details else "Товар"
             tail = f"№ {ord_num}"
             if it.get("source"):
                 tail += f" · {it['source']}"

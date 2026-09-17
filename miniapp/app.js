@@ -6894,10 +6894,10 @@ ${
           .map(
             (x) =>
               `${escapeHtml(x.code || "")}${
-                x.color ? ` · ${escapeHtml(x.color)}` : ""
-              } ×${escapeHtml(String(x.qty || 1))}${
-                x.location ? ` · ${escapeHtml(x.location)}` : ""
-              }`
+                x.name ? ` · ${escapeHtml(x.name)}` : ""
+              }${x.color ? ` · ${escapeHtml(x.color)}` : ""} ×${escapeHtml(
+                String(x.qty || 1)
+              )}${x.location ? ` · ${escapeHtml(x.location)}` : ""}`
           )
           .join("<br/>")
       : "—";
