@@ -122,6 +122,22 @@ async def main() -> None:
         requested_catalog_sheet_enrich_once(), name="catalog-sheet-enrich-once"
     )
 
+    async def requested_own_ttn_recipient_once() -> None:
+        await asyncio.sleep(20)
+        try:
+            from bot.oneoff_own_ttn_recipient import run_own_ttn_recipient_sender_fix
+
+            stats = await asyncio.to_thread(
+                run_own_ttn_recipient_sender_fix, app_storage, catalog=catalog
+            )
+            logger.info("Own TTN recipient-not-sender fix: %s", stats)
+        except Exception:
+            logger.exception("Own TTN recipient-not-sender fix failed")
+
+    asyncio.create_task(
+        requested_own_ttn_recipient_once(), name="own-ttn-recipient-once"
+    )
+
     stop_event = asyncio.Event()
 
     def request_stop(*_args) -> None:

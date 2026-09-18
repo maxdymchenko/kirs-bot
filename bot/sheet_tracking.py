@@ -262,9 +262,10 @@ def lookup_ttn_details(storage: AppStorage, ttn: str) -> dict[str, Any]:
 
     name = _pick(
         "RecipientFullName",
+        "RecipientContactPerson",
         "RecipientName",
         "RecipientFullNameEW",
-        "CounterpartyRecipientDescription",
+        "RecipientContactPersonEW",
     )
     phone = _pick("PhoneRecipient", "Phone")
     city = _pick("CityRecipient", "CityRecipientDescription", "RecipientCityName")

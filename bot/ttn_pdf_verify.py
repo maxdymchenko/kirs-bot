@@ -368,6 +368,88 @@ def split_person_name(full: str) -> dict[str, str]:
     }
 
 
+def _name_tokens(text: str) -> set[str]:
+    return {
+        w.casefold()
+        for w in re.split(r"[\s,.;]+", _clean_name_line(text))
+        if len(w) > 1
+    }
+
+
+def name_matches_dropper(full: str, dropper: Any = None) -> bool:
+    """True, якщо ПІБ з етикетки/НП збігається з дропером (відправником)."""
+    words = [w for w in re.split(r"\s+", _clean_name_line(full)) if w]
+    if len(words) < 2 or dropper is None:
+        return False
+    blob = " ".join(
+        str(x or "")
+        for x in (
+            getattr(dropper, "owner_title", ""),
+            getattr(dropper, "company_name", ""),
+            getattr(dropper, "contact_name", ""),
+        )
+    )
+    tokens = _name_tokens(blob)
+    if not tokens:
+        return False
+    last, first = words[0].casefold(), words[1].casefold()
+    return last in tokens and first in tokens
+
+
+def _norm_person_name(full: str) -> str:
+    return " ".join(_clean_name_line(full).casefold().split())
+
+
+def extract_recipient_name_from_lines(lines: list[str]) -> str:
+    """ПІБ одержувача з рядків етикетки; імена з блоку «Відправник» ігноруємо."""
+    rec_block: list[str] = []
+    sen_block: list[str] = []
+    mode = ""
+    for line in lines:
+        rec_m = _RECIPIENT_HEADER_RE.search(line)
+        sen_m = _SENDER_HEADER_RE.search(line)
+        if rec_m and sen_m:
+            if rec_m.start() < sen_m.start():
+                rec_rest = _clean_name_line(line[rec_m.end() : sen_m.start()])
+                sen_rest = _clean_name_line(line[sen_m.end() :])
+            else:
+                sen_rest = _clean_name_line(line[sen_m.end() : rec_m.start()])
+                rec_rest = _clean_name_line(line[rec_m.end() :])
+            if rec_rest:
+                rec_block.append(rec_rest)
+            if sen_rest:
+                sen_block.append(sen_rest)
+            mode = ""
+            continue
+        if rec_m:
+            mode = "recipient"
+            rest = _clean_name_line(line[rec_m.end() :])
+            if rest:
+                rec_block.append(rest)
+            continue
+        if sen_m:
+            mode = "sender"
+            rest = _clean_name_line(line[sen_m.end() :])
+            if rest:
+                sen_block.append(rest)
+            continue
+        if mode == "recipient":
+            rec_block.append(line)
+        elif mode == "sender":
+            sen_block.append(line)
+
+    rec_names = [ln for ln in rec_block if _looks_like_person_name(ln)]
+    sen_keys = {
+        _norm_person_name(ln) for ln in sen_block if _looks_like_person_name(ln)
+    }
+    for name in rec_names:
+        if _norm_person_name(name) not in sen_keys:
+            return name
+    if rec_names:
+        return rec_names[0]
+    return ""
+
+
 def extract_recipient_name_from_pdf(pdf_bytes: bytes) -> str:
     """ПІБ одержувача з текстового шару етикетки НП / Rozetka (не зі скану-фото)."""
     blob = extract_pdf_plaintext(pdf_bytes)
@@ -375,40 +457,7 @@ def extract_recipient_name_from_pdf(pdf_bytes: bytes) -> str:
         return ""
     lines = [_clean_name_line(ln) for ln in str(blob).splitlines()]
     lines = [ln for ln in lines if ln]
-
-    for line in lines:
-        match = _RECIPIENT_HEADER_RE.search(line)
-        if not match:
-            continue
-        rest = _clean_name_line(line[match.end() :])
-        if _looks_like_person_name(rest):
-            return rest
-
-    capture = False
-    block: list[str] = []
-    for line in lines:
-        if _RECIPIENT_HEADER_RE.search(line):
-            capture = True
-            continue
-        if capture and _SENDER_HEADER_RE.search(line):
-            break
-        if capture:
-            block.append(line)
-            if len(block) >= 8:
-                break
-    for line in block:
-        if _looks_like_person_name(line):
-            return line
-
-    before_sender: list[str] = []
-    for line in lines:
-        if _SENDER_HEADER_RE.search(line):
-            break
-        before_sender.append(line)
-    candidates = [ln for ln in before_sender if _looks_like_person_name(ln)]
-    if candidates:
-        return candidates[-1]
-    return ""
+    return extract_recipient_name_from_lines(lines)
 
 
 def fill_own_ttn_recipient(
@@ -417,7 +466,10 @@ def fill_own_ttn_recipient(
     *,
     pdf_bytes: bytes | None = None,
 ) -> dict[str, Any]:
-    """Дописати прізвище/імʼя одержувача з PDF, інакше з трекінгу НП."""
+    """Дописати прізвище/імʼя одержувача з трекінгу НП, інакше з PDF.
+
+    Імʼя відправника (дропера) з етикетки відкидаємо.
+    """
     if not order or not order.get("id"):
         return order
     payload = dict(order.get("payload") or {})
@@ -428,39 +480,57 @@ def fill_own_ttn_recipient(
         str(recipient.get(k) or "").strip()
         for k in ("last_name", "first_name", "patronymic")
     ).strip()
-    full = ""
-    if pdf_bytes:
+    dropper = None
+    try:
+        did = int(order.get("dropper_id") or 0)
+    except (TypeError, ValueError):
+        did = 0
+    if did:
         try:
-            full = extract_recipient_name_from_pdf(pdf_bytes)
+            dropper = storage.get_dropper_by_id(did)
         except Exception:
-            logger.debug("own ttn pdf name extract failed", exc_info=True)
-            full = ""
+            dropper = None
+    if already and not name_matches_dropper(already, dropper):
+        return order
+
+    def _usable(full: str) -> str:
+        text = _clean_name_line(full)
+        if not text or name_matches_dropper(text, dropper):
+            return ""
+        return text
+
+    full = ""
     carrier = str(payload.get("own_ttn_carrier") or "").strip().lower()
-    if not full and carrier != "rozetka":
+    if carrier != "rozetka":
         try:
             from bot.sheet_tracking import lookup_ttn_details
 
             ttn = str(order.get("ttn_number") or payload.get("ttn_number") or "")
             details = lookup_ttn_details(storage, ttn)
-            full = str(details.get("name") or "").strip()
+            full = _usable(str(details.get("name") or ""))
         except Exception:
             logger.debug("own ttn NP name lookup failed", exc_info=True)
             full = ""
+    if not full and pdf_bytes:
+        try:
+            full = _usable(extract_recipient_name_from_pdf(pdf_bytes))
+        except Exception:
+            logger.debug("own ttn pdf name extract failed", exc_info=True)
+            full = ""
     if not full:
+        if already and name_matches_dropper(already, dropper):
+            recipient["last_name"] = ""
+            recipient["first_name"] = ""
+            recipient["patronymic"] = ""
+            saved = storage.merge_order_payload(
+                int(order["id"]), {"recipient": recipient}
+            )
+            return saved or order
         return order
     parts = split_person_name(full)
-    if not already:
-        recipient["last_name"] = parts["last_name"]
-        recipient["first_name"] = parts["first_name"]
-        recipient["patronymic"] = parts["patronymic"]
-    elif not str(recipient.get("last_name") or "").strip():
-        recipient["last_name"] = parts["last_name"]
-        if not str(recipient.get("first_name") or "").strip():
-            recipient["first_name"] = parts["first_name"]
-        if not str(recipient.get("patronymic") or "").strip():
-            recipient["patronymic"] = parts["patronymic"]
-    else:
-        return order
+    recipient["last_name"] = parts["last_name"]
+    recipient["first_name"] = parts["first_name"]
+    recipient["patronymic"] = parts["patronymic"]
     saved = storage.merge_order_payload(int(order["id"]), {"recipient": recipient})
     return saved or order
 
