@@ -91,6 +91,7 @@
     ownerStaff: document.getElementById("ownerStaff"),
     ownerBalances: document.getElementById("ownerBalances"),
     ownerReferralHistory: document.getElementById("ownerReferralHistory"),
+    ownerReferralHistoryWrap: document.getElementById("ownerReferralHistoryWrap"),
     generalSettingsForm: document.getElementById("generalSettingsForm"),
     generalSettingsError: document.getElementById("generalSettingsError"),
     generalSettingsOk: document.getElementById("generalSettingsOk"),
@@ -5877,6 +5878,9 @@ ${
     if (els.ownerReferralHistory) {
       els.ownerReferralHistory.innerHTML = "";
     }
+    if (els.ownerReferralHistoryWrap) {
+      els.ownerReferralHistoryWrap.classList.add("hidden");
+    }
     try {
       const response = await fetch(`/api/owner/balances?${ownerAuthParams()}`);
       const data = await response.json();
@@ -5909,10 +5913,7 @@ ${
                   ? row.referral_conditional_total
                   : refBal + refPending
               );
-              const showRef =
-                Boolean(d.referral_program_enabled) ||
-                Math.abs(refBal) > 0.009 ||
-                Math.abs(refPending) > 0.009;
+              const showRef = Boolean(d.referral_program_enabled);
               return `
             <article class="owner-card is-collapsed" data-balance-chat="${escapeHtml(
               d.chat_id || ""
@@ -5951,7 +5952,11 @@ ${
                   <div class="meta">В дорозі: <b>${escapeHtml(
                     formatMoney(row.in_transit_drop_total || 0)
                   )}</b></div>
-                  <div class="meta-soft">код ${escapeHtml(d.referral_code || "—")}</div>
+                  ${
+                    showRef
+                      ? `<div class="meta-soft">код ${escapeHtml(d.referral_code || "—")}</div>`
+                      : ""
+                  }
                 </div>
                 <span class="owner-card-chevron" aria-hidden="true"></span>
               </button>
@@ -5984,6 +5989,9 @@ ${
         : `<div class="empty">Немає дропперів</div>`;
 
       const history = data.referral_history || [];
+      if (els.ownerReferralHistoryWrap) {
+        els.ownerReferralHistoryWrap.classList.toggle("hidden", !history.length);
+      }
       if (els.ownerReferralHistory) {
         els.ownerReferralHistory.innerHTML = history.length
           ? history
@@ -5999,7 +6007,7 @@ ${
             </article>`
               )
               .join("")
-          : `<div class="empty">Історія рефералів порожня — з’явиться після підтверджених замовлень.</div>`;
+          : "";
       }
     } catch (error) {
       els.ownerBalances.innerHTML = `<div class="form-error">${escapeHtml(
