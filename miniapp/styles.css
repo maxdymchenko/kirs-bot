@@ -587,14 +587,46 @@ select {
   }
 }
 
-.balance-hero {
+.balance-heroes {
+  display: grid;
+  gap: 10px;
   margin-top: 8px;
-  padding: 18px 16px;
+}
+
+.balance-hero,
+.balance-hero-card {
+  padding: 16px;
   border-radius: 16px;
   background: #fff;
   border: 1px solid var(--line);
+}
+
+.balance-hero {
   font-size: 28px;
   font-weight: 800;
+}
+
+.balance-hero-label {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.balance-hero-value {
+  margin-top: 4px;
+  font-size: 26px;
+  font-weight: 800;
+}
+
+.balance-hero-cond {
+  margin-top: 4px;
+  font-size: 0.9rem;
+  color: #94a3b8;
+}
+
+.balance-hero-total {
+  margin: 2px 4px 0;
+  font-size: 0.95rem;
 }
 
 .balance-conditional {

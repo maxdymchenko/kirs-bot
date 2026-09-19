@@ -36,6 +36,20 @@ TERMINAL_TTN_STATUSES = frozenset(
 )
 
 
+_NP_TTN_PREFIXES = (
+    "204",
+    "205",
+    "206",
+    "207",
+    "208",
+    "590",
+    "591",
+    "100",
+    "200",
+    "500",
+)
+
+
 def _digits_phone(raw: str) -> str:
     digits = re.sub(r"\D", "", str(raw or ""))
     if digits.startswith("0") and len(digits) == 10:
@@ -43,6 +57,37 @@ def _digits_phone(raw: str) -> str:
     if digits.startswith("380") and len(digits) >= 12:
         return digits[:12]
     return digits
+
+
+def is_np_trackable_number(raw: str) -> bool:
+    """Чи можна питати статус у API Нової Пошти (не Rozetka / не Укрпошта)."""
+    text = str(raw or "").strip().upper()
+    if not text or text.startswith(("RMP-", "PRM-")):
+        return False
+    digits = re.sub(r"\D+", "", text)
+    if not (11 <= len(digits) <= 14):
+        return False
+    return digits.startswith(_NP_TTN_PREFIXES) or len(digits) in (13, 14)
+
+
+def _is_own_ttn(order: dict[str, Any] | None) -> bool:
+    if not order:
+        return False
+    if order.get("own_ttn"):
+        return True
+    payload = order.get("payload") if isinstance(order.get("payload"), dict) else {}
+    return bool(payload.get("own_ttn"))
+
+
+def order_np_trackable(order: dict[str, Any] | None) -> bool:
+    """Власна ТТН НП трекаємо; Rozetka / Укрпошта — ні."""
+    if not order:
+        return False
+    payload = order.get("payload") if isinstance(order.get("payload"), dict) else {}
+    carrier = str(payload.get("own_ttn_carrier") or "").strip().lower().replace("-", "_")
+    if carrier in {"rozetka", "rz", "rmp"} or "ukr" in carrier:
+        return False
+    return is_np_trackable_number(str(order.get("ttn_number") or ""))
 
 
 def list_np_clients(
@@ -655,10 +700,20 @@ def debit_return_delivery_if_needed(
 ) -> dict[str, Any] | None:
     """
     Відмова/повернення: списати вартість доставки з балансу дроппера (збиток).
-    Прибуток не нараховуємо.
+    Прибуток не нараховуємо. Для власної ТТН не списуємо — доставку дроппер
+    уже сплатив у своєму кабінеті НП.
     """
     payload = order.get("payload") or {}
     if payload.get("return_delivery_debited"):
+        return None
+    if _is_own_ttn(order):
+        storage.merge_order_payload(
+            order["id"],
+            {
+                "return_delivery_debited": True,
+                "return_delivery_cost": 0,
+            },
+        )
         return None
     dropper_id = int(order.get("dropper_id") or 0)
     if not dropper_id:
@@ -825,9 +880,9 @@ async def apply_tracking_event(
     owner_notify: OwnerNotifyFn | None = None,
 ) -> dict[str, Any]:
     """
-    Застосувати статус ТТН до замовлення:
-    - received → прибуток з наложки
-    - returned → списання вартості доставки (без прибутку)
+    Застосувати статус ТТН до замовлення (у т.ч. власна ТТН НП):
+    - received → прибуток з наложки постачальника або −дроп ціна (баланс / власна ТТН)
+    - returned → списання вартості доставки (лише ТТН постачальника)
     """
     result = {
         "updated": False,
@@ -836,7 +891,7 @@ async def apply_tracking_event(
         "mapped": "",
         "order": order,
     }
-    if not order or order.get("own_ttn"):
+    if not order or not order_np_trackable(order):
         return result
 
     mapped = map_np_status_code(status_code, status_text)
@@ -846,6 +901,7 @@ async def apply_tracking_event(
         payload_prev.get("ever_received")
         or prev == "received"
         or payload_prev.get("profit_credited")
+        or payload_prev.get("goods_debited")
     )
     # Після отримання клієнтом подальший «return» показуємо як повернення дроппера
     if mapped in {"refused", "returned"} and ever_received:
@@ -983,8 +1039,7 @@ async def apply_tracking_event(
                 "orders sheet sync on settle %s failed",
                 order.get("order_number"),
             )
-        if entry or goods_entry or overage_entry:
-            await _maybe_eval_buyout(storage, order, notify)
+        await _maybe_eval_buyout(storage, order, notify)
 
     if mapped in {"returned", "refused"} and prev not in {"returned", "refused"}:
         # Якщо прибуток уже встигли нарахувати — сторнуємо
@@ -1009,8 +1064,14 @@ async def apply_tracking_event(
         cost = extract_delivery_cost(tracking_row, order)
         entry = debit_return_delivery_if_needed(storage, order, cost)
         result["returned"] = True
-        amount = round(abs(float((entry or {}).get("amount") or cost or 0)), 2)
+        amount = round(abs(float((entry or {}).get("amount") or 0)), 2)
         label = "Повернення" if mapped == "returned" and ever_received else "Відмова"
+        if _is_own_ttn(order):
+            extra = "Посилку не отримано."
+        elif amount > 0:
+            extra = f"Вартість доставки списано з балансу: −{amount} ₴"
+        else:
+            extra = "Прибуток не нараховано (посилку не отримано)."
         try:
             await _maybe_profit_notify(
                 storage,
@@ -1019,11 +1080,7 @@ async def apply_tracking_event(
                 (
                     f"↩️ {label} · {order.get('order_number')}\n"
                     f"ТТН: {order.get('ttn_number')}\n"
-                    + (
-                        f"Вартість доставки списано з балансу: −{amount} ₴"
-                        if amount > 0
-                        else "Прибуток не нараховано (посилку не отримано)."
-                    )
+                    f"{extra}"
                 ),
             )
         except Exception:
@@ -1063,7 +1120,7 @@ async def track_order_statuses_async(
     if not clients:
         return stats
 
-    orders = storage.list_orders_for_tracking(limit=80)
+    orders = storage.list_orders_for_tracking(limit=200)
     if not orders:
         return stats
 
@@ -1071,13 +1128,16 @@ async def track_order_statuses_async(
     by_number: dict[str, dict[str, Any]] = {}
     for order in orders:
         number = str(order.get("ttn_number") or "").strip()
-        if not number:
+        if not number or not order_np_trackable(order):
             continue
         payload = order.get("payload") or {}
         recipient = payload.get("recipient") or {}
         phone = _digits_phone(recipient.get("phone") or "")
         docs.append({"DocumentNumber": number, "Phone": phone})
         by_number[number] = order
+
+    if not docs:
+        return stats
 
     rows: list[dict[str, Any]] = []
     last_err: Exception | None = None
@@ -1238,7 +1298,7 @@ async def fulfill_new_order(
                 (
                     f"✅ ТТН створено для {order.get('order_number')}\n"
                     f"Номер: {order.get('ttn_number')}\n"
-                    f"Статус перевірятиметься автоматично (до ~30 хв)."
+                    f"Статус перевірятиметься автоматично (до ~6 год)."
                 ),
             )
     except Exception as exc:
@@ -1264,8 +1324,10 @@ async def run_np_maintenance_once(
     storage: AppStorage,
     notify: NotifyFn | None = None,
     owner_notify: OwnerNotifyFn | None = None,
+    *,
+    track_statuses: bool = True,
 ) -> dict[str, int]:
-    """Ретрай створення ТТН + опитування статусів (раз на ~30 хв з main)."""
+    """Ретрай створення ТТН (часто) + опційно опитування статусів (раз на ~6 год)."""
     stats = {"create_ok": 0, "create_fail": 0, "backup_used": 0}
     pending = storage.list_orders_pending_ttn_create(limit=30)
     for order in pending:
@@ -1287,6 +1349,9 @@ async def run_np_maintenance_once(
         except Exception:
             stats["create_fail"] += 1
             logger.exception("Retry TTN create failed for %s", order.get("order_number"))
+
+    if not track_statuses:
+        return stats
 
     track = await track_order_statuses_async(
         storage, notify=notify, owner_notify=owner_notify

@@ -235,12 +235,17 @@ def sync_ledger_for_edited_order(storage: AppStorage, order: dict[str, Any]) -> 
             related_order_id=order_number,
         )
 
-    # Реферал — на баланс запрошувача
+    # Реферал — на баланс запрошувача лише після отримання посилки
+    from bot.balance_settle import referral_should_post
+
     source = storage.get_dropper_by_id(dropper_id)
     if source and source.referred_by_dropper_id:
         referrer = storage.get_dropper_by_id(source.referred_by_dropper_id)
-        if (
+        if referrer and payload.get("return_referral_reversed"):
+            pass
+        elif (
             referrer
+            and referral_should_post(order)
             and referrer.referral_program_enabled
             and float(referrer.referral_percent or 0) > 0
             and total > 0
@@ -262,11 +267,18 @@ def sync_ledger_for_edited_order(storage: AppStorage, order: dict[str, Any]) -> 
                     f'"source_dropper_id":{source.id}}}'
                 ),
             )
+            storage.merge_order_payload(
+                int(order["id"]),
+                {"referral_credited": True, "referral_amount": amount},
+            )
         elif referrer:
             storage.delete_ledger_entry_for_order(
                 dropper_id=referrer.id,
                 entry_type="referral_credit",
                 related_order_id=order_number,
+            )
+            storage.merge_order_payload(
+                int(order["id"]), {"referral_credited": False}
             )
 
     # Прибуток з наложки — лише якщо вже був нарахований

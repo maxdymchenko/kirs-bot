@@ -1207,6 +1207,7 @@ class AppStorage:
         """
         Нарахування рефералу: % від дроп-суми замовлення
         на баланс дроппера, який запросив source.
+        Викликати лише після отримання посилки клієнтом.
         """
         source = self.get_dropper_by_id(source_dropper_id)
         if not source or not source.referred_by_dropper_id:
@@ -1246,19 +1247,62 @@ class AppStorage:
         )
 
     def list_dropper_balances(self) -> list[dict[str, Any]]:
-        from bot.balance_settle import compute_conditional_balance
+        from collections import defaultdict
+
+        from bot.balance_settle import (
+            compute_conditional_balance,
+            pending_referral_amount,
+            referral_earned_from_rows,
+            split_displayed_balances,
+        )
         from bot.buyout import compute_buyout, tier_label
         from bot.excel_export import order_history_bucket
 
         droppers = self.list_droppers()
+        by_id = {d.id: d for d in droppers}
+        orders_map = {
+            d.id: self.list_orders_for_dropper(d.id, limit=500) for d in droppers
+        }
+        credits_map = {
+            d.id: self.list_ledger(d.id, entry_type="referral_credit", limit=500)
+            for d in droppers
+        }
+        reversals_map = {
+            d.id: self.list_ledger(d.id, entry_type="referral_reversal", limit=500)
+            for d in droppers
+        }
+        posted_by_ref = {
+            d.id: {
+                str(x.get("related_order_id") or "")
+                for x in credits_map.get(d.id, [])
+                if float(x.get("amount") or 0) > 0
+            }
+            for d in droppers
+        }
+        pending_by_ref: dict[int, float] = defaultdict(float)
+        for d in droppers:
+            ref_id = int(d.referred_by_dropper_id or 0)
+            referrer = by_id.get(ref_id)
+            if not referrer:
+                continue
+            posted = posted_by_ref.get(referrer.id, set())
+            for order in orders_map.get(d.id, []):
+                pending_by_ref[referrer.id] += pending_referral_amount(
+                    self,
+                    order,
+                    source=d,
+                    referrer=referrer,
+                    posted_order_numbers=posted,
+                )
+
         items = []
         for d in droppers:
             bal = self.get_balance(d.id)
-            referral_earned = sum(
-                x["amount"]
-                for x in self.list_ledger(d.id, entry_type="referral_credit", limit=5000)
+            referral_earned = referral_earned_from_rows(
+                list(credits_map.get(d.id, [])) + list(reversals_map.get(d.id, []))
             )
-            orders = self.list_orders_for_dropper(d.id, limit=500)
+            referral_pending = round(float(pending_by_ref.get(d.id) or 0), 2)
+            orders = orders_map.get(d.id, [])
             buyout = compute_buyout(orders)
             in_transit_drop_total = round(
                 sum(
@@ -1270,6 +1314,12 @@ class AppStorage:
             )
             cond = compute_conditional_balance(
                 self, d.id, factual=bal, orders=orders
+            )
+            split = split_displayed_balances(
+                total_balance=bal,
+                referral_earned=referral_earned,
+                orders_pending=cond["conditional_delta"],
+                referral_pending=referral_pending,
             )
             # Кешуємо актуальний % у дроппера (без нотифікацій)
             if (
@@ -1291,8 +1341,13 @@ class AppStorage:
                     "balance": bal,
                     "conditional_balance": cond["conditional_balance"],
                     "conditional_delta": cond["conditional_delta"],
+                    "orders_balance": split["orders_balance"],
+                    "orders_conditional_balance": split["orders_conditional_balance"],
                     "in_transit_drop_total": in_transit_drop_total,
-                    "referral_earned_total": round(float(referral_earned), 2),
+                    "referral_earned_total": split["referral_balance"],
+                    "referral_balance": split["referral_balance"],
+                    "referral_pending_total": split["referral_pending_total"],
+                    "referral_conditional_total": split["referral_conditional_total"],
                     "buyout": {
                         **buyout,
                         "label": tier_label(buyout["tier"], buyout["percent"]),
@@ -1827,7 +1882,6 @@ class AppStorage:
                 WHERE ttn_status = 'at_warehouse'
                   AND ttn_number IS NOT NULL AND ttn_number != ''
                   AND status != 'cancelled'
-                  AND own_ttn = 0
                 ORDER BY id ASC
                 LIMIT ?
                 """,

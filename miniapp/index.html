@@ -203,7 +203,7 @@
         <form id="generalSettingsForm" novalidate>
           <div class="form-section">
             <h3 class="section-title">API-ключі Нової Пошти</h3>
-            <p class="hint">Галочка = основний кабінет для ТТН. Інші ключі без галочки — лише резерв, якщо основний впав з помилкою. Статуси ТТН бот перевіряє автоматично раз на ~30 хв.</p>
+            <p class="hint">Галочка = основний кабінет для ТТН. Інші ключі без галочки — лише резерв, якщо основний впав з помилкою. Статуси ТТН бот перевіряє автоматично раз на ~6 год.</p>
             <p class="hint" id="npWebhookHint"></p>
             <div id="npApiKeysList" class="np-keys-list"></div>
             <button type="button" class="btn primary" id="npApiKeyAdd">+ Додати API-ключ</button>
@@ -828,7 +828,7 @@
         <p class="hint" id="balanceHint">
           Усі нарахування та списання: оплата з балансу, передплата понад «Дроп ціна» тощо.
         </p>
-        <div class="balance-hero" id="balanceHero">—</div>
+        <div class="balance-heroes" id="balanceHero">—</div>
         <div class="balance-conditional meta-soft hidden" id="balanceConditional"></div>
         <div class="balance-stats" id="balanceStats"></div>
         <h2 class="section-title" style="margin-top:16px">Історія операцій</h2>

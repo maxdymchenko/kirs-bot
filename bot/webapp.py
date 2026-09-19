@@ -885,14 +885,39 @@ def create_web_app(
             raise HTTPException(status_code=404, detail="Дроппера не знайдено")
         ledger_all = storage.list_ledger(dropper.id, limit=5000)
         ledger = ledger_all[:200]
-        referral_rows = [x for x in ledger_all if x["entry_type"] == "referral_credit"]
+        referral_rows = [
+            x
+            for x in ledger_all
+            if x["entry_type"] in {"referral_credit", "referral_reversal"}
+        ]
         credited_total = round(sum(x["amount"] for x in ledger_all if x["amount"] > 0), 2)
         debited_total = round(
             abs(sum(x["amount"] for x in ledger_all if x["amount"] < 0)), 2
         )
         program_on = bool(dropper.referral_program_enabled)
+        from bot.balance_settle import (
+            compute_conditional_balance,
+            compute_referral_pending_for_referrer,
+            referral_earned_from_rows,
+            split_displayed_balances,
+        )
+
         referral_earned_total = (
-            round(sum(x["amount"] for x in referral_rows), 2) if program_on else 0.0
+            referral_earned_from_rows(referral_rows) if program_on else 0.0
+        )
+        posted_ref_orders = {
+            str(x.get("related_order_id") or "")
+            for x in referral_rows
+            if x.get("entry_type") == "referral_credit" and float(x.get("amount") or 0) > 0
+        }
+        referral_pending_total = (
+            compute_referral_pending_for_referrer(
+                storage,
+                dropper.id,
+                posted_order_numbers=posted_ref_orders,
+            )
+            if program_on
+            else 0.0
         )
 
         enriched = []
@@ -907,16 +932,21 @@ def create_web_app(
             else:
                 item["related_dropper_name"] = ""
             # Без увімкненої програми — без реферальних підписів у історії.
-            if not program_on and item.get("entry_type") == "referral_credit":
-                item["entry_type"] = "manual_credit"
-                item["title"] = "Нарахування"
+            if not program_on and item.get("entry_type") in {
+                "referral_credit",
+                "referral_reversal",
+            }:
+                item["entry_type"] = (
+                    "manual_debit" if item.get("entry_type") == "referral_reversal" else "manual_credit"
+                )
+                item["title"] = (
+                    "Списання" if item["entry_type"] == "manual_debit" else "Нарахування"
+                )
                 item["note"] = ""
                 item["related_dropper_id"] = None
             enriched.append(item)
 
         balance = storage.get_balance(dropper.id)
-        from bot.balance_settle import compute_conditional_balance
-
         cond = compute_conditional_balance(storage, dropper.id, factual=balance)
         floor = (
             -max(0.0, float(dropper.negative_balance_limit or 0))
@@ -927,10 +957,10 @@ def create_web_app(
             max(0.0, balance - floor) if dropper.allow_negative_balance else 0.0
         )
         note = (
-            "Фактичний баланс змінюється після отримання посилки клієнтом: "
-            "прибуток з наложки або списання «Дроп ціна». "
-            "«Умовно» — прогноз з урахуванням посилок ще в дорозі. "
-            "Самі замовлення — у вкладці «Історія»."
+            "Баланс замовлень — прибуток і списання по ваших посилках. "
+            "Реферальний баланс — окремо, після отримання замовлень запрошених дропперів. "
+            "«Умовно» — сума ще в дорозі, на баланс ще не зарахована. "
+            "Оплата з балансу бере загальну суму обох."
             if program_on
             else (
                 "Фактичний баланс змінюється після отримання посилки клієнтом: "
@@ -939,13 +969,24 @@ def create_web_app(
                 "Самі замовлення — у вкладці «Історія»."
             )
         )
+        split = split_displayed_balances(
+            total_balance=balance,
+            referral_earned=referral_earned_total,
+            orders_pending=cond["conditional_delta"],
+            referral_pending=referral_pending_total,
+        )
         return {
             "dropper": dropper.to_public_dict(),
             "balance": balance,
             "conditional_balance": cond["conditional_balance"],
             "conditional_delta": cond["conditional_delta"],
+            "orders_balance": split["orders_balance"],
+            "orders_conditional_balance": split["orders_conditional_balance"],
             "spend_room": round(spend_room, 2),
-            "referral_earned_total": referral_earned_total,
+            "referral_earned_total": split["referral_balance"],
+            "referral_balance": split["referral_balance"],
+            "referral_pending_total": split["referral_pending_total"],
+            "referral_conditional_total": split["referral_conditional_total"],
             "credited_total": credited_total,
             "debited_total": debited_total,
             "ledger": enriched,
@@ -1043,7 +1084,7 @@ def create_web_app(
             "count": len(items),
             "items": items,
             "referral_history": enriched,
-            "rule": "Реф.% рахується від дроп-ціни замовлення приведеного дроппера.",
+            "rule": "Реф.% рахується від дроп-ціни замовлення приведеного дроппера і падає на баланс лише після отримання посилки.",
         }
 
     @app.post("/api/owner/droppers/{chat_id}/balance/adjust")
@@ -1486,7 +1527,7 @@ def create_web_app(
         token: str = Query("", max_length=128),
     ) -> dict:
         """
-        Основний канал статусів — опитування раз на ~30 хв.
+        Основний канал статусів — опитування раз на ~6 год.
         Webhook (якщо НП підключений) — додатковий push на цей URL.
         Захист: якщо задано NP_WEBHOOK_TOKEN — обовʼязковий ?token=...
         """
@@ -1876,12 +1917,6 @@ def create_web_app(
                     "pending_balance_debit_method": payload.payment_method,
                 },
             )
-
-        storage.accrue_referral_from_drop_total(
-            source_dropper_id=dropper.id,
-            drop_total=total,
-            order_id=order["order_number"],
-        )
 
         try:
             await _notify(
@@ -3418,7 +3453,7 @@ def create_web_app(
             ],
             "note": (
                 "Галочка = основний кабінет НП. Ключі без галочки — резерв при помилці основного. "
-                "Статуси ТТН перевіряються автоматично раз на ~30 хв."
+                "Статуси ТТН перевіряються автоматично раз на ~6 год."
             ),
         }
 

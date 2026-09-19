@@ -4942,6 +4942,21 @@ ${
     }
   }
 
+  function renderBalanceHeroCard(label, amount, conditionalAmount, pendingDelta) {
+    const showCond = Math.abs(Number(pendingDelta || 0)) > 0.009;
+    return `<article class="balance-hero-card">
+      <div class="balance-hero-label">${escapeHtml(label)}</div>
+      <div class="balance-hero-value">${escapeHtml(formatMoney(amount))}</div>
+      ${
+        showCond
+          ? `<div class="balance-hero-cond">Умовно: ${escapeHtml(
+              formatMoney(conditionalAmount)
+            )}</div>`
+          : ""
+      }
+    </article>`;
+  }
+
   function formatLedgerAmount(amount) {
     const n = Number(amount) || 0;
     const sign = n > 0 ? "+" : "";
@@ -5003,35 +5018,66 @@ ${
       const data = await response.json();
       if (!response.ok) throw new Error(data.detail || "Помилка балансу");
       const balance = Number(data.balance || 0);
-      els.balanceHero.textContent = formatMoney(balance);
-      if (els.balanceConditional) {
-        const condBal = Number(
-          data.conditional_balance != null ? data.conditional_balance : balance
+      const dropper = data.dropper || {};
+      const programOn = Boolean(dropper.referral_program_enabled);
+      const refTotal = Number(
+        data.referral_balance != null
+          ? data.referral_balance
+          : data.referral_earned_total || 0
+      );
+      const ordersBal = Number(
+        data.orders_balance != null ? data.orders_balance : balance - refTotal
+      );
+      const ordersDelta = Number(data.conditional_delta || 0);
+      const ordersCond = Number(
+        data.orders_conditional_balance != null
+          ? data.orders_conditional_balance
+          : ordersBal + ordersDelta
+      );
+      const refPending = Number(data.referral_pending_total || 0);
+      const refCond = Number(
+        data.referral_conditional_total != null
+          ? data.referral_conditional_total
+          : refTotal + refPending
+      );
+      if (programOn) {
+        els.balanceHero.innerHTML =
+          renderBalanceHeroCard(
+            "Баланс замовлень",
+            ordersBal,
+            ordersCond,
+            ordersDelta
+          ) +
+          renderBalanceHeroCard(
+            "Реферальний баланс",
+            refTotal,
+            refCond,
+            refPending
+          ) +
+          `<div class="balance-hero-total meta-soft">Разом: ${escapeHtml(
+            formatMoney(balance)
+          )}</div>`;
+        if (els.balanceConditional) {
+          els.balanceConditional.classList.add("hidden");
+          els.balanceConditional.textContent = "";
+        }
+      } else {
+        els.balanceHero.innerHTML = renderBalanceHeroCard(
+          "Баланс",
+          ordersBal,
+          ordersCond,
+          ordersDelta
         );
-        const delta = Number(data.conditional_delta || 0);
-        if (Math.abs(delta) > 0.009) {
-          els.balanceConditional.classList.remove("hidden");
-          els.balanceConditional.textContent = `Умовно: ${formatMoney(condBal)}`;
-        } else {
+        if (els.balanceConditional) {
           els.balanceConditional.classList.add("hidden");
           els.balanceConditional.textContent = "";
         }
       }
-      const dropper = data.dropper || {};
-      const programOn = Boolean(dropper.referral_program_enabled);
       const spendRoom = Number(data.spend_room != null ? data.spend_room : 0);
-      const refTotal = Number(data.referral_earned_total || 0);
       const debited = Number(data.debited_total || 0);
       const credited = Number(data.credited_total || 0);
       if (els.balanceStats) {
         const bits = [];
-        if (programOn) {
-          bits.push(
-            `<div class="balance-stat"><span class="balance-stat-label">Реферально нараховано</span><span class="balance-stat-value">${escapeHtml(
-              formatMoney(refTotal)
-            )}</span></div>`
-          );
-        }
         bits.push(
           `<div class="balance-stat"><span class="balance-stat-label">Усього нараховано</span><span class="balance-stat-value ledger-amount-plus">+${escapeHtml(
             formatMoney(credited)
@@ -5840,6 +5886,33 @@ ${
         ? items
             .map((row) => {
               const d = row.dropper || {};
+              const ordersBal = Number(
+                row.orders_balance != null
+                  ? row.orders_balance
+                  : Number(row.balance || 0) -
+                    Number(row.referral_earned_total || 0)
+              );
+              const ordersDelta = Number(row.conditional_delta || 0);
+              const ordersCond = Number(
+                row.orders_conditional_balance != null
+                  ? row.orders_conditional_balance
+                  : ordersBal + ordersDelta
+              );
+              const refBal = Number(
+                row.referral_balance != null
+                  ? row.referral_balance
+                  : row.referral_earned_total || 0
+              );
+              const refPending = Number(row.referral_pending_total || 0);
+              const refCond = Number(
+                row.referral_conditional_total != null
+                  ? row.referral_conditional_total
+                  : refBal + refPending
+              );
+              const showRef =
+                Boolean(d.referral_program_enabled) ||
+                Math.abs(refBal) > 0.009 ||
+                Math.abs(refPending) > 0.009;
               return `
             <article class="owner-card is-collapsed" data-balance-chat="${escapeHtml(
               d.chat_id || ""
@@ -5850,21 +5923,35 @@ ${
                     <div class="owner-card-title">${escapeHtml(dropperDisplayName(d) || "")}</div>
                     ${buyoutBadgeHtml(row.buyout)}
                   </div>
-                  <div class="meta">Баланс: <b>${escapeHtml(formatMoney(row.balance || 0))}</b></div>
-                  <div class="meta balance-conditional-line">Умовно: <b>${escapeHtml(
-                    formatMoney(
-                      row.conditional_balance != null
-                        ? row.conditional_balance
-                        : row.balance || 0
-                    )
+                  <div class="meta">Баланс замовлень: <b>${escapeHtml(
+                    formatMoney(ordersBal)
                   )}</b></div>
+                  ${
+                    Math.abs(ordersDelta) > 0.009
+                      ? `<div class="meta balance-conditional-line">Умовно: <b>${escapeHtml(
+                          formatMoney(ordersCond)
+                        )}</b></div>`
+                      : ""
+                  }
+                  ${
+                    showRef
+                      ? `<div class="meta">Реферальний баланс: <b>${escapeHtml(
+                          formatMoney(refBal)
+                        )}</b></div>`
+                      : ""
+                  }
+                  ${
+                    showRef && Math.abs(refPending) > 0.009
+                      ? `<div class="meta balance-conditional-line">Реф. умовно: <b>${escapeHtml(
+                          formatMoney(refCond)
+                        )}</b></div>`
+                      : ""
+                  }
                   <div class="meta">Отримано: <b>—</b></div>
                   <div class="meta">В дорозі: <b>${escapeHtml(
                     formatMoney(row.in_transit_drop_total || 0)
                   )}</b></div>
-                  <div class="meta-soft">Реф. нараховано: ${escapeHtml(
-                    formatMoney(row.referral_earned_total || 0)
-                  )} · код ${escapeHtml(d.referral_code || "—")}</div>
+                  <div class="meta-soft">код ${escapeHtml(d.referral_code || "—")}</div>
                 </div>
                 <span class="owner-card-chevron" aria-hidden="true"></span>
               </button>

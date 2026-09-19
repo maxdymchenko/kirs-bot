@@ -141,9 +141,9 @@ def run_kryupenyukova_balance_referral_fix(storage: AppStorage) -> dict[str, Any
             continue
         if int(order.get("dropper_id") or 0) != int(source.id):
             continue
-        entry = _accrue_referral(
-            storage, source=source, referrer=referrer, order=order
-        )
+        from bot.balance_settle import accrue_referral_if_received
+
+        entry = accrue_referral_if_received(storage, order)
         if entry:
             referral_posted.append(number)
 

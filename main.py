@@ -3,6 +3,7 @@ import logging
 import os
 import signal
 import sys
+import time
 
 import uvicorn
 
@@ -88,6 +89,22 @@ async def main() -> None:
 
     asyncio.create_task(
         requested_kryupenyukova_fix_once(), name="kryupenyukova-fix-once"
+    )
+
+    async def requested_defer_referral_once() -> None:
+        await asyncio.sleep(12)
+        try:
+            from bot.balance_settle import unpost_premature_referral_credits
+
+            stats = await asyncio.to_thread(
+                unpost_premature_referral_credits, app_storage
+            )
+            logger.info("Defer referral until received: %s", stats)
+        except Exception:
+            logger.exception("Defer referral until received failed")
+
+    asyncio.create_task(
+        requested_defer_referral_once(), name="defer-referral-once"
     )
 
     async def requested_qty_line_totals_once() -> None:
@@ -180,15 +197,23 @@ async def main() -> None:
     async def np_maintenance_loop() -> None:
         from bot.np_fulfillment import run_np_maintenance_once
 
+        # Створення ТТН — кожні 30 хв; опитування статусів — раз на 6 год.
+        create_interval_sec = 30 * 60
+        track_interval_sec = 6 * 60 * 60
+        last_track_at = 0.0
         await asyncio.sleep(20)
         while not stop_event.is_set():
+            now = time.monotonic()
+            do_track = last_track_at == 0.0 or (now - last_track_at) >= track_interval_sec
+            if do_track:
+                last_track_at = now
             try:
                 stats = await run_np_maintenance_once(
                     app_storage,
                     notify=_np_notify,
                     owner_notify=_np_owner_notify,
+                    track_statuses=do_track,
                 )
-                # Ретрай створення ТТН + опитування статусів раз на 30 хв
                 if any(
                     stats.get(k)
                     for k in (
@@ -206,7 +231,7 @@ async def main() -> None:
             except Exception:
                 logger.exception("NP maintenance loop error")
             try:
-                await asyncio.wait_for(stop_event.wait(), timeout=1800)
+                await asyncio.wait_for(stop_event.wait(), timeout=create_interval_sec)
             except asyncio.TimeoutError:
                 pass
 
