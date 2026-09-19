@@ -38,6 +38,8 @@ _WEEKDAY_CUTOFF = {
 SHEET_ID_PREFIX = "sheet:"
 SHEET_STAGE_KEY = "sheet_warehouse_stages"
 SHEET_ENTERED_KEY = "sheet_packing_entered_at"
+# Пром/Rozetka/ручні з листа: старше цього не показуємо в чергах комірника.
+SHEET_WAREHOUSE_MAX_AGE_DAYS = 7
 
 # Власна ТТН дроппера теж пакується на складі, поки НП ще не забрала.
 PACKABLE_TTN_STATUSES = frozenset(AWAITING_SHIPMENT_STATUSES | {"provided"})
@@ -289,6 +291,23 @@ def _queue_sort_key(order: dict[str, Any]) -> tuple[float, float]:
     except (TypeError, ValueError):
         extra = float(order.get("sheet_row") or 0)
     return (created_at_sort_value(order.get("created_at")), extra)
+
+
+def is_sheet_order_stale_for_warehouse(order: dict[str, Any]) -> bool:
+    """Старі рядки листа (як 338739909 з квітня) не тримаємо в пакуванні / відправленні."""
+    if not is_sheet_queue_order(order):
+        return False
+    payload = order.get("payload") if isinstance(order.get("payload"), dict) else {}
+    raw = str(payload.get("sheet_created_at") or order.get("created_at") or "").strip()
+    dt = _parse_created_dt(raw)
+    if dt is None:
+        return False
+    now = now_kyiv()
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=KYIV)
+    else:
+        dt = dt.astimezone(KYIV)
+    return (now - dt).days >= SHEET_WAREHOUSE_MAX_AGE_DAYS
 
 
 def _looks_like_np_ttn(ttn: str) -> bool:
@@ -618,6 +637,9 @@ def _sheet_order_from_lines(
     created_at = str(entered_at or "").strip() or _sheet_created_at(
         latest.get("created_raw"), latest.get("row_idx") or 0
     )
+    sheet_created_at = _sheet_created_at(
+        latest.get("created_raw"), latest.get("row_idx") or 0
+    )
     source_label = " · ".join(sources)
     total = round(sum(float(x.get("retail") or 0) * int(x.get("qty") or 1) for x in lines), 2)
     if for_history:
@@ -643,6 +665,7 @@ def _sheet_order_from_lines(
         "prepay": 0,
         "payload": {
             "sheet_order": True,
+            "sheet_created_at": sheet_created_at,
             "market_source": source_label,
             "warehouse_stage": stage,
             "ttn_number": ttn,
@@ -845,6 +868,7 @@ def list_sheet_warehouse_orders(storage: AppStorage) -> list[dict[str, Any]]:
         )
         for order_no, lines in groups.items()
     ]
+    orders = [o for o in orders if not is_sheet_order_stale_for_warehouse(o)]
     return _drop_sheet_orders_left_via_np(storage, orders)
 
 
@@ -915,6 +939,8 @@ def list_warehouse_queue(
     for order in items:
         if not is_packable_order(order):
             continue
+        if is_sheet_order_stale_for_warehouse(order):
+            continue
         if order_warehouse_stage(order) != stage_key:
             continue
         out.append(order)
@@ -924,6 +950,8 @@ def list_warehouse_queue(
     for order in list_sheet_warehouse_orders(storage):
         no = str(order.get("order_number") or "").strip()
         if no and no in seen_nos:
+            continue
+        if is_sheet_order_stale_for_warehouse(order):
             continue
         if order_warehouse_stage(order) != stage_key:
             continue
