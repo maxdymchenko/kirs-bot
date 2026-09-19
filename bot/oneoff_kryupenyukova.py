@@ -1,4 +1,4 @@
-"""Одноразово: Крюпенюкова K-260916-0001..0003 → оплата з балансу + реферал Качан."""
+"""Одноразово: Крюпенюкова → оплата з балансу + реферал Качан."""
 
 from __future__ import annotations
 
@@ -16,15 +16,23 @@ from bot.order_purge import (
 logger = logging.getLogger(__name__)
 
 FLAG = "oneoff_kryupenyukova_balance_ref_20260916"
+FLAG_0008 = "oneoff_kryupenyukova_0008_balance_20260919"
 PAYMENT_ORDERS = (
     "K-260916-0001",
     "K-260916-0002",
     "K-260916-0003",
 )
+ORDER_0008 = "K-260916-0008"
+# Отримані замовлення, які мають бути оплатою з балансу: 257+680+780 = 1717
+RECEIVED_BALANCE_ORDERS = (
+    "K-260916-0001",
+    "K-260916-0003",
+    ORDER_0008,
+)
 REFERRAL_ORDERS = (
     *PAYMENT_ORDERS,
     "K-260916-0004",
-    "K-260916-0008",
+    ORDER_0008,
 )
 
 
@@ -158,4 +166,82 @@ def run_kryupenyukova_balance_referral_fix(storage: AppStorage) -> dict[str, Any
         "sheet_errors": sheet_errors,
     }
     _save_flag(storage, FLAG, result)
+    return result
+
+
+def run_kryupenyukova_0008_balance_fix(storage: AppStorage) -> dict[str, Any]:
+    """0001/0003/0008: оплата з балансу + списання дроп-ціни по вже отриманих."""
+    prev = _load_flag(storage, FLAG_0008)
+    if prev and prev.get("done"):
+        return {"ok": True, "already_done": True, **prev}
+
+    source = find_dropper_by_name(storage, "крюпенюкова")
+    if not source:
+        return {"ok": False, "error": "Дроппера «Крюпенюкова» не знайдено"}
+
+    from bot.balance_settle import (
+        accrue_referral_if_received,
+        debit_goods_if_needed,
+        goods_already_debited,
+    )
+    from bot.excel_export import order_history_bucket
+
+    orders_out: list[dict[str, Any]] = []
+    skipped: list[dict[str, str]] = []
+    sheet_errors: list[str] = []
+
+    for number in RECEIVED_BALANCE_ORDERS:
+        order = storage.get_order_by_number(number)
+        if not order:
+            skipped.append({"order": number, "reason": "немає в базі"})
+            continue
+        if int(order.get("dropper_id") or 0) != int(source.id):
+            skipped.append({"order": number, "reason": "інший дроппер"})
+            continue
+
+        order = _set_payment_balance(storage, order)
+        goods_entry = None
+        referral_entry = None
+        if order_history_bucket(order) == "received":
+            goods_entry = debit_goods_if_needed(storage, order)
+            order = storage.get_order(int(order["id"])) or order
+            referral_entry = accrue_referral_if_received(storage, order)
+            order = storage.get_order(int(order["id"])) or order
+
+        try:
+            from bot.orders_sheets import sync_order_to_sheet
+
+            sync_order_to_sheet(storage, order, full=True)
+        except Exception as exc:
+            logger.exception("kryupenyukova received-balance: sheet sync failed %s", number)
+            sheet_errors.append(f"{number}: {exc}")
+
+        payload = order.get("payload") or {}
+        orders_out.append(
+            {
+                "order": number,
+                "total": round(float(order.get("total") or 0), 2),
+                "payment_method": order.get("payment_method"),
+                "bucket": order_history_bucket(order),
+                "goods_debited": goods_already_debited(storage, order)
+                or bool(payload.get("goods_debited")),
+                "goods_entry_amount": (
+                    round(float(goods_entry.get("amount") or 0), 2)
+                    if goods_entry
+                    else None
+                ),
+                "referral_posted": bool(referral_entry),
+            }
+        )
+
+    result = {
+        "ok": not sheet_errors and not skipped,
+        "done": not sheet_errors and not skipped,
+        "source": _dropper_label(source),
+        "orders_balance": storage.get_balance(source.id),
+        "orders": orders_out,
+        "skipped": skipped,
+        "sheet_errors": sheet_errors,
+    }
+    _save_flag(storage, FLAG_0008, result)
     return result

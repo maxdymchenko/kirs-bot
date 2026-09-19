@@ -1593,20 +1593,6 @@ def create_web_app(
                 ),
             )
 
-        # Низький викуп ≤50% — лише повна оплата (без наложки)
-        from bot.buyout import compute_buyout
-
-        buyout = compute_buyout(storage.list_orders_for_dropper(dropper.id, limit=500))
-        if not for_owner_edit and buyout.get("force_full_payment"):
-            if payload.payment_method == "cod":
-                raise HTTPException(
-                    status_code=403,
-                    detail=(
-                        "При рейтингу викупу ≤50% відправка лише після повної оплати "
-                        "(без наложки). Зверніться до постачальника за деталями."
-                    ),
-                )
-
         if payload.own_ttn:
             if payload.payment_method not in ("requisites", "balance"):
                 raise HTTPException(

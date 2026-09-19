@@ -75,7 +75,6 @@ def compute_buyout(orders: list[dict[str, Any]]) -> dict[str, Any]:
         "percent": percent,
         "tier": tier,
         "label": tier_label(tier, percent),
-        "force_full_payment": percent is not None and percent <= 50.0,
     }
 
 
@@ -114,48 +113,15 @@ async def evaluate_dropper_buyout(
     dropper: Dropper,
     notify: NotifyFn | None = None,
 ) -> dict[str, Any]:
+    """Оновити % викупу в картці дроппера. У Telegram нічого не пишемо."""
+    del notify  # раніше були алерти в чат — вимкнено, доки правило не переробимо
     orders = storage.list_orders_for_dropper(dropper.id, limit=500)
     stats = compute_buyout(orders)
-    percent = stats["percent"]
-    tier = stats["tier"]
-
-    prev_notified = str(getattr(dropper, "buyout_tier_notified", "") or "")
-    half_warned = bool(getattr(dropper, "buyout_half_warned", False))
-
     storage.update_buyout_state(
         dropper.id,
-        buyout_percent=percent,
-        buyout_tier=tier,
+        buyout_percent=stats["percent"],
+        buyout_tier=stats["tier"],
     )
-
-    # Повідомлення при зміні статусу рейтингу (один раз на новий tier)
-    if notify and tier and percent is not None and tier != prev_notified:
-        try:
-            await notify(
-                dropper.chat_id,
-                format_tier_change_notice(dropper.company_name, percent, tier),
-            )
-            storage.update_buyout_state(dropper.id, buyout_tier_notified=tier)
-        except Exception:
-            logger.exception(
-                "buyout tier notify failed dropper_id=%s", dropper.id
-            )
-
-    # Окреме попередження при ≤50%
-    if notify and percent is not None and percent <= 50.0 and not half_warned:
-        try:
-            await notify(
-                dropper.chat_id,
-                format_half_rating_warning(dropper.company_name, percent),
-            )
-            storage.update_buyout_state(dropper.id, buyout_half_warned=True)
-        except Exception:
-            logger.exception(
-                "buyout half warn failed dropper_id=%s", dropper.id
-            )
-    elif percent is not None and percent > 50.0 and half_warned:
-        storage.update_buyout_state(dropper.id, buyout_half_warned=False)
-
     stats["dropper_id"] = dropper.id
     return stats
 

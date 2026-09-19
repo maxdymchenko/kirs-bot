@@ -91,6 +91,22 @@ async def main() -> None:
         requested_kryupenyukova_fix_once(), name="kryupenyukova-fix-once"
     )
 
+    async def requested_kryupenyukova_0008_once() -> None:
+        await asyncio.sleep(11)
+        try:
+            from bot.oneoff_kryupenyukova import run_kryupenyukova_0008_balance_fix
+
+            stats = await asyncio.to_thread(
+                run_kryupenyukova_0008_balance_fix, app_storage
+            )
+            logger.info("Kryupenyukova 0008 balance fix: %s", stats)
+        except Exception:
+            logger.exception("Kryupenyukova 0008 balance fix failed")
+
+    asyncio.create_task(
+        requested_kryupenyukova_0008_once(), name="kryupenyukova-0008-once"
+    )
+
     async def requested_defer_referral_once() -> None:
         await asyncio.sleep(12)
         try:
