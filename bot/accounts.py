@@ -1491,7 +1491,7 @@ class AppStorage:
             fields["ttn_number"] = ttn_number
         if warehouse_stage is not None:
             stage = str(warehouse_stage or "packing").strip() or "packing"
-            if stage not in {"packing", "ready_to_ship", "shipped"}:
+            if stage not in {"packing", "ready_to_ship", "shipped", "next_ship"}:
                 stage = "packing"
             fields["warehouse_stage"] = stage
         if len(fields) == 1:

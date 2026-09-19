@@ -7,7 +7,7 @@ import json
 import logging
 import re
 import time
-from datetime import datetime
+from datetime import datetime, time, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -20,7 +20,21 @@ KYIV = ZoneInfo("Europe/Kyiv")
 STAGE_PACKING = "packing"
 STAGE_READY = "ready_to_ship"
 STAGE_SHIPPED = "shipped"
-WAREHOUSE_STAGES = frozenset({STAGE_PACKING, STAGE_READY, STAGE_SHIPPED})
+STAGE_NEXT = "next_ship"
+WAREHOUSE_STAGES = frozenset(
+    {STAGE_PACKING, STAGE_READY, STAGE_SHIPPED, STAGE_NEXT}
+)
+NEXT_SHIP_PROMOTE_HOUR = 21
+NEXT_SHIP_PROMOTE_KEY = "next_ship_promote_state"
+# 14:00 ще сьогодні, 14:01 вже черга; субота — 13:00 / 13:01; неділя без порогу.
+_WEEKDAY_CUTOFF = {
+    0: time(14, 1),  # пн
+    1: time(14, 1),
+    2: time(14, 1),
+    3: time(14, 1),
+    4: time(14, 1),
+    5: time(13, 1),  # сб
+}
 SHEET_ID_PREFIX = "sheet:"
 SHEET_STAGE_KEY = "sheet_warehouse_stages"
 SHEET_ENTERED_KEY = "sheet_packing_entered_at"
@@ -77,6 +91,27 @@ _ROZETKA_LIVE_CACHE_TTL_SEC = 300.0
 _rozetka_live_cache_at = 0.0
 _rozetka_live_cache_key: frozenset[str] = frozenset()
 _rozetka_live_cache_data: dict[str, str] = {}
+
+
+def now_kyiv(now: datetime | None = None) -> datetime:
+    dt = now or datetime.now(KYIV)
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=KYIV)
+    return dt.astimezone(KYIV)
+
+
+def initial_warehouse_stage(now: datetime | None = None) -> str:
+    """Куди класти щойно прийняте замовлення: пакування чи «Наступна відправка»."""
+    dt = now_kyiv(now)
+    if dt.weekday() == 6:
+        return STAGE_PACKING
+    clock = dt.timetz().replace(tzinfo=None)
+    if clock >= time(NEXT_SHIP_PROMOTE_HOUR, 0):
+        return STAGE_PACKING
+    cutoff = _WEEKDAY_CUTOFF.get(dt.weekday())
+    if cutoff and clock >= cutoff:
+        return STAGE_NEXT
+    return STAGE_PACKING
 
 
 def normalize_warehouse_stage(stage: str | None) -> str:
@@ -423,13 +458,25 @@ def remember_sheet_entered_at(
     stamps = _load_sheet_entered_at(storage)
     now = datetime.now(KYIV).isoformat(timespec="seconds")
     changed = False
+    new_nos: list[str] = []
     for no in nos:
         if no in stamps:
             continue
         stamps[no] = now
+        new_nos.append(no)
         changed = True
     if changed:
         _save_sheet_entered_at(storage, stamps)
+    if new_nos:
+        stages = _load_sheet_stages(storage)
+        stage_now = initial_warehouse_stage()
+        dirty = False
+        for no in new_nos:
+            if no not in stages:
+                stages[no] = stage_now
+                dirty = True
+        if dirty:
+            _save_sheet_stages(storage, stages)
 
 
 def _sheet_money(raw: Any) -> float:
@@ -859,7 +906,9 @@ def list_warehouse_queue(
     stage: str,
     limit: int = 300,
 ) -> list[dict[str, Any]]:
-    stage_key = STAGE_READY if stage == STAGE_READY else STAGE_PACKING
+    stage_key = normalize_warehouse_stage(stage)
+    if stage_key not in {STAGE_PACKING, STAGE_READY, STAGE_NEXT}:
+        stage_key = STAGE_PACKING
     items = storage.list_orders_for_warehouse(limit=limit)
     out: list[dict[str, Any]] = []
     seen_nos: set[str] = set()
@@ -1082,6 +1131,204 @@ def mark_order_back_to_packing(
         ],
     )
     return storage.get_order(sqlite_id) or order
+
+
+def mark_next_ship_orders_to_packing(
+    storage: AppStorage,
+    order_ids: list[Any],
+    *,
+    actor_user_id: str = "",
+    actor_label: str = "Комірник",
+) -> dict[str, Any]:
+    """Вибрані з «Наступна відправка» → «На пакування» (терміново сьогодні)."""
+    wanted = [str(x or "").strip() for x in (order_ids or []) if str(x or "").strip()]
+    if not wanted:
+        return {"count": 0, "moved_sheet": 0, "moved_sqlite": 0, "errors": []}
+    wanted_set = set(wanted)
+    items = list_warehouse_queue(storage, stage=STAGE_NEXT, limit=500)
+    stages = _load_sheet_stages(storage)
+    moved_sheet: list[str] = []
+    moved_sqlite: list[str] = []
+    errors: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for order in items:
+        oid = str(order.get("id") or "").strip()
+        if oid not in wanted_set or oid in seen:
+            continue
+        seen.add(oid)
+        sheet_no = parse_sheet_order_id(oid)
+        if sheet_no:
+            stages[sheet_no] = STAGE_PACKING
+            moved_sheet.append(sheet_no)
+            continue
+        try:
+            sqlite_id = int(oid)
+        except (TypeError, ValueError):
+            errors.append({"id": oid, "error": "немає в черзі на наступну відправку"})
+            continue
+        current = storage.get_order(sqlite_id)
+        if not current:
+            errors.append({"id": oid, "error": "замовлення не знайдено"})
+            continue
+        storage.set_order_warehouse_stage(sqlite_id, STAGE_PACKING)
+        storage.merge_order_payload(sqlite_id, {"warehouse_stage": STAGE_PACKING})
+        storage.add_order_change(
+            order_id=sqlite_id,
+            order_number=str(current.get("order_number") or ""),
+            actor_role="warehouse",
+            actor_user_id=str(actor_user_id or ""),
+            actor_label=str(actor_label or "Комірник"),
+            change_type="status",
+            summary="Переміщено на пакування з «Наступна відправка»",
+            diff=[
+                {
+                    "field": "warehouse_stage",
+                    "old": STAGE_NEXT,
+                    "new": STAGE_PACKING,
+                }
+            ],
+        )
+        moved_sqlite.append(oid)
+    missing = [oid for oid in wanted if oid not in seen]
+    for oid in missing:
+        errors.append({"id": oid, "error": "немає в черзі на наступну відправку"})
+    if moved_sheet:
+        _save_sheet_stages(storage, stages)
+    return {
+        "count": len(moved_sheet) + len(moved_sqlite),
+        "moved_sheet": len(moved_sheet),
+        "moved_sqlite": len(moved_sqlite),
+        "errors": errors,
+    }
+
+
+def promote_all_next_ship_to_packing(
+    storage: AppStorage,
+    *,
+    actor_user_id: str = "system",
+) -> dict[str, Any]:
+    """О 21:00: усі next_ship (включно з PDF-hold) → пакування."""
+    moved_sqlite: list[str] = []
+    for order in storage.list_orders_for_warehouse(limit=800):
+        if str(order.get("status") or "") == "cancelled":
+            continue
+        if order_warehouse_stage(order) != STAGE_NEXT:
+            continue
+        sqlite_id = int(order["id"])
+        storage.set_order_warehouse_stage(sqlite_id, STAGE_PACKING)
+        storage.merge_order_payload(sqlite_id, {"warehouse_stage": STAGE_PACKING})
+        storage.add_order_change(
+            order_id=sqlite_id,
+            order_number=str(order.get("order_number") or ""),
+            actor_role="warehouse",
+            actor_user_id=str(actor_user_id or "system"),
+            actor_label="Авто 21:00",
+            change_type="status",
+            summary="Автоматично переміщено на пакування (21:00)",
+            diff=[
+                {
+                    "field": "warehouse_stage",
+                    "old": STAGE_NEXT,
+                    "new": STAGE_PACKING,
+                }
+            ],
+        )
+        moved_sqlite.append(str(order.get("order_number") or sqlite_id))
+    stages = _load_sheet_stages(storage)
+    moved_sheet: list[str] = []
+    dirty = False
+    for no, stage in list(stages.items()):
+        if stage != STAGE_NEXT:
+            continue
+        stages[no] = STAGE_PACKING
+        moved_sheet.append(no)
+        dirty = True
+    if dirty:
+        _save_sheet_stages(storage, stages)
+    return {
+        "count": len(moved_sqlite) + len(moved_sheet),
+        "moved_sheet": len(moved_sheet),
+        "moved_sqlite": len(moved_sqlite),
+        "orders": moved_sqlite[:40],
+        "sheet_orders": moved_sheet[:40],
+    }
+
+
+def _load_next_ship_promote_state(storage: AppStorage) -> dict[str, Any]:
+    with storage._connect() as conn:
+        row = conn.execute(
+            "SELECT value_json FROM app_settings WHERE key = ?",
+            (NEXT_SHIP_PROMOTE_KEY,),
+        ).fetchone()
+    if not row:
+        return {}
+    try:
+        data = json.loads(row["value_json"] or "{}")
+    except json.JSONDecodeError:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _save_next_ship_promote_state(storage: AppStorage, state: dict[str, Any]) -> None:
+    from bot.accounts import _now
+
+    payload = json.dumps(state, ensure_ascii=False)
+    with storage._connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO app_settings (key, value_json, updated_at)
+            VALUES (?, ?, ?)
+            ON CONFLICT(key) DO UPDATE SET
+                value_json = excluded.value_json,
+                updated_at = excluded.updated_at
+            """,
+            (NEXT_SHIP_PROMOTE_KEY, payload, _now()),
+        )
+        conn.commit()
+
+
+def seconds_until_next_ship_promote(
+    *,
+    now: datetime | None = None,
+    allow_current_hour: bool = False,
+) -> float:
+    now = now_kyiv(now)
+    if allow_current_hour and now.hour == NEXT_SHIP_PROMOTE_HOUR:
+        return 0.0
+    candidates: list[datetime] = []
+    for day_offset in (0, 1, 2):
+        day = now.date() + timedelta(days=day_offset)
+        target = datetime.combine(
+            day, time(NEXT_SHIP_PROMOTE_HOUR, 0), tzinfo=KYIV
+        )
+        if target > now:
+            candidates.append(target)
+    target = candidates[0]
+    return max(30.0, (target - now).total_seconds())
+
+
+def run_next_ship_promote_pass(
+    storage: AppStorage,
+    *,
+    now: datetime | None = None,
+    force: bool = False,
+) -> dict[str, Any]:
+    dt = now_kyiv(now)
+    day = dt.date().isoformat()
+    state = _load_next_ship_promote_state(storage)
+    if not force:
+        if dt.hour != NEXT_SHIP_PROMOTE_HOUR:
+            return {"ok": True, "skipped": "not_21", "day": day}
+        if str(state.get("last_day") or "") == day:
+            return {"ok": True, "skipped": True, "day": day}
+    result = promote_all_next_ship_to_packing(storage)
+    state = {
+        "last_day": day,
+        "last_at": dt.isoformat(timespec="seconds"),
+        "count": int(result.get("count") or 0),
+    }
+    _save_next_ship_promote_state(storage, state)
+    return {"ok": True, "day": day, **result}
 
 
 def mark_order_shipped(

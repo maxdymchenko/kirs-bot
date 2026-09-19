@@ -141,6 +141,7 @@
     warehouseTabs: document.getElementById("warehouseTabs"),
     warehouseTabCatalog: document.getElementById("warehouseTabCatalog"),
     warehouseTabPacking: document.getElementById("warehouseTabPacking"),
+    warehouseTabNextShip: document.getElementById("warehouseTabNextShip"),
     warehouseTabShipping: document.getElementById("warehouseTabShipping"),
     warehouseTabSalary: document.getElementById("warehouseTabSalary"),
     warehouseSearchForm: document.getElementById("warehouseSearchForm"),
@@ -161,6 +162,11 @@
     warehousePackingReadyBtn: document.getElementById("warehousePackingReadyBtn"),
     warehousePackingSelectedCount: document.getElementById("warehousePackingSelectedCount"),
     warehousePackingSendDigestBtn: document.getElementById("warehousePackingSendDigestBtn"),
+    warehouseNextList: document.getElementById("warehouseNextList"),
+    warehouseNextSelectAllBtn: document.getElementById("warehouseNextSelectAllBtn"),
+    warehouseNextDeselectAllBtn: document.getElementById("warehouseNextDeselectAllBtn"),
+    warehouseNextToPackingBtn: document.getElementById("warehouseNextToPackingBtn"),
+    warehouseNextSelectedCount: document.getElementById("warehouseNextSelectedCount"),
     warehouseShippingCarrierFilters: document.getElementById(
       "warehouseShippingCarrierFilters"
     ),
@@ -2128,7 +2134,7 @@ ${ttnLine}</div>
     return Math.max(0, Math.floor((Date.now() - start) / 86400000));
   }
 
-  /** Вкладка історії: awaiting | transit | received | returns */
+  /** Вкладка історії: awaiting | next_ship | transit | received | returns */
   function orderHistoryBucket(order) {
     const payload = order.payload || {};
     const ret = payload.dropper_return;
@@ -2145,11 +2151,12 @@ ${ttnLine}</div>
       return "returns";
     }
     if (ttn === "received") return "received";
-    if (payload.ttn_pdf_hold) return "awaiting";
     if (ttn === "in_transit" || ttn === "at_warehouse") {
       return "transit";
     }
-    // pending_create / created / create_error / none / ще без руху НП
+    const stage = String(order.warehouse_stage || payload.warehouse_stage || "");
+    if (stage === "next_ship") return "next_ship";
+    if (payload.ttn_pdf_hold) return "awaiting";
     return "awaiting";
   }
 
@@ -2226,6 +2233,10 @@ ${ttnLine}</div>
     }
     if (ttn === "in_transit") {
       return { kind: "transit", label: "В дорозі", sub: "" };
+    }
+    const stage = String(order.warehouse_stage || payload.warehouse_stage || "");
+    if (stage === "next_ship") {
+      return { kind: "accepted", label: "Наступна відправка", sub: "" };
     }
     // Прийнято: заказ принят ботом (с ТТН / своей накладной / ещё создаётся)
     if (
@@ -3925,11 +3936,12 @@ ${
     if (!els.historyBuckets) return;
     const labels = {
       awaiting: "Очікує відправлення",
+      next_ship: "Наступна відправка",
       transit: "В дорозі",
       received: "Отримано",
       returns: "Повернення",
     };
-    const counts = { awaiting: 0, transit: 0, received: 0, returns: 0 };
+    const counts = { awaiting: 0, next_ship: 0, transit: 0, received: 0, returns: 0 };
     for (const order of dropperOrdersCache || []) {
       const bucket = orderHistoryBucket(order);
       if (counts[bucket] != null) counts[bucket] += 1;
@@ -3963,6 +3975,7 @@ ${
         : "";
     const emptyByBucket = {
       awaiting: "Немає замовлень, що очікують відправлення",
+      next_ship: "Немає замовлень на наступну відправку",
       transit: "Немає замовлень у дорозі",
       received: "Немає отриманих замовлень",
       returns: "Немає повернень",
@@ -3996,7 +4009,8 @@ ${
               renderOrderCard(o, {
                 dropperActions: !(o.payload || {}).sheet_order,
                 allowDropperEdit:
-                  historyBucket === "awaiting" && !(o.payload || {}).sheet_order,
+                  (historyBucket === "awaiting" || historyBucket === "next_ship") &&
+                  !(o.payload || {}).sheet_order,
                 editWindow: dropperOrdersEditWindow,
                 editMode: "dropper",
               })
@@ -4191,11 +4205,12 @@ ${
     const bucket = box._ordersBucket || "transit";
     const labels = {
       awaiting: "Очікує відправлення",
+      next_ship: "Наступна відправка",
       transit: "В дорозі",
       received: "Отримано",
       returns: "Повернення",
     };
-    const counts = { awaiting: 0, transit: 0, received: 0, returns: 0 };
+    const counts = { awaiting: 0, next_ship: 0, transit: 0, received: 0, returns: 0 };
     for (const order of box._ordersCache || []) {
       const key = orderHistoryBucket(order);
       if (counts[key] != null) counts[key] += 1;
@@ -4229,6 +4244,7 @@ ${
         <p class="owner-orders-title">Історія замовлень</p>
         <nav class="tabs history-buckets owner-orders-buckets" data-owner-orders-buckets aria-label="Статус замовлень">
           <button type="button" class="tab" data-owner-orders-bucket="awaiting">Очікує відправлення</button>
+          <button type="button" class="tab" data-owner-orders-bucket="next_ship">Наступна відправка</button>
           <button type="button" class="tab active" data-owner-orders-bucket="transit">В дорозі</button>
           <button type="button" class="tab" data-owner-orders-bucket="received">Отримано</button>
           <button type="button" class="tab" data-owner-orders-bucket="returns">Повернення</button>
@@ -4363,6 +4379,7 @@ ${
     const nextBtn = box.querySelector("[data-owner-page-next]");
     const emptyByBucket = {
       awaiting: "Немає замовлень, що очікують відправлення",
+      next_ship: "Немає замовлень на наступну відправку",
       transit: "Немає замовлень у дорозі",
       received: "Немає отриманих замовлень",
       returns: "Немає повернень",
@@ -6984,6 +7001,7 @@ ${
     const map = {
       catalog: els.warehouseTabCatalog,
       packing: els.warehouseTabPacking,
+      next_ship: els.warehouseTabNextShip,
       shipping: els.warehouseTabShipping,
       salary: els.warehouseTabSalary,
     };
@@ -6992,6 +7010,7 @@ ${
       el.classList.toggle("hidden", key !== warehouseTabState);
     });
     if (warehouseTabState === "packing") loadWarehouseQueue("packing");
+    if (warehouseTabState === "next_ship") loadWarehouseQueue("next_ship");
     if (warehouseTabState === "shipping") loadWarehouseQueue("ready_to_ship");
   }
 
@@ -7037,6 +7056,11 @@ ${
             <input type="checkbox" data-wh-ready="${escapeHtml(String(order.id))}" />
             Вибрати
           </label>`
+        : stage === "next_ship"
+        ? `<label class="warehouse-order-check">
+            <input type="checkbox" data-wh-next="${escapeHtml(String(order.id))}" />
+            Вибрати
+          </label>`
         : `<div class="warehouse-order-actions">
             <label class="warehouse-order-check">
               <input type="checkbox" data-wh-print="${escapeHtml(String(order.id))}" />
@@ -7070,6 +7094,32 @@ ${
     )
       .map((el) => el.getAttribute("data-wh-print"))
       .filter(Boolean);
+  }
+
+  function getSelectedWarehouseNextIds() {
+    if (!els.warehouseNextList) return [];
+    return Array.from(
+      els.warehouseNextList.querySelectorAll("[data-wh-next]:checked")
+    )
+      .map((el) => el.getAttribute("data-wh-next"))
+      .filter(Boolean);
+  }
+
+  function syncWarehouseNextSelection() {
+    const selected = getSelectedWarehouseNextIds();
+    const n = selected.length;
+    if (els.warehouseNextToPackingBtn) els.warehouseNextToPackingBtn.disabled = n === 0;
+    if (els.warehouseNextSelectedCount) {
+      els.warehouseNextSelectedCount.textContent = `Вибрано: ${n}`;
+    }
+  }
+
+  function setAllWarehouseNextChecks(checked) {
+    if (!els.warehouseNextList) return;
+    els.warehouseNextList.querySelectorAll("[data-wh-next]").forEach((el) => {
+      el.checked = Boolean(checked);
+    });
+    syncWarehouseNextSelection();
   }
 
   function getSelectedWarehousePackingIds() {
@@ -7200,13 +7250,24 @@ ${
 
   async function loadWarehouseQueue(stage) {
     const listEl =
-      stage === "ready_to_ship" ? els.warehouseShippingList : els.warehousePackingList;
+      stage === "ready_to_ship"
+        ? els.warehouseShippingList
+        : stage === "next_ship"
+        ? els.warehouseNextList
+        : els.warehousePackingList;
     if (!listEl) return;
     listEl.innerHTML = `<div class="empty">Завантаження…</div>`;
     if (stage === "ready_to_ship") syncWarehousePrintButton();
+    if (stage === "next_ship") syncWarehouseNextSelection();
     try {
       const params = new URLSearchParams(warehouseAuthParams());
-      params.set("stage", stage === "ready_to_ship" ? "ready_to_ship" : "packing");
+      const stageKey =
+        stage === "ready_to_ship"
+          ? "ready_to_ship"
+          : stage === "next_ship"
+          ? "next_ship"
+          : "packing";
+      params.set("stage", stageKey);
       const response = await fetch(`/api/warehouse/queue?${params}`);
       const data = await response.json();
       if (!response.ok) throw new Error(data.detail || "Помилка черги");
@@ -7221,6 +7282,18 @@ ${
       if (stage === "ready_to_ship") {
         warehouseShippingItems = items;
         renderWarehouseShippingList();
+        return;
+      }
+      if (stage === "next_ship") {
+        if (!items.length) {
+          listEl.innerHTML = `<div class="empty">Немає замовлень на наступну відправку</div>`;
+          syncWarehouseNextSelection();
+          return;
+        }
+        listEl.innerHTML = items
+          .map((o) => renderWarehouseOrderCard(o, { stage: "next_ship" }))
+          .join("");
+        syncWarehouseNextSelection();
         return;
       }
       if (!items.length) {
@@ -7239,6 +7312,8 @@ ${
       if (stage === "ready_to_ship") {
         warehouseShippingItems = [];
         syncWarehousePrintButton();
+      } else if (stage === "next_ship") {
+        syncWarehouseNextSelection();
       } else {
         syncWarehousePackingSelection();
       }
@@ -7289,6 +7364,13 @@ ${
     els.warehousePackingList.addEventListener("change", (event) => {
       if (!event.target.closest("[data-wh-ready]")) return;
       syncWarehousePackingSelection();
+    });
+  }
+
+  if (els.warehouseNextList) {
+    els.warehouseNextList.addEventListener("change", (event) => {
+      if (!event.target.closest("[data-wh-next]")) return;
+      syncWarehouseNextSelection();
     });
   }
 
@@ -7384,6 +7466,65 @@ ${
       } catch (error) {
         showToast(error.message || "Помилка");
         syncWarehousePackingSelection();
+      }
+    });
+  }
+
+  if (els.warehouseNextSelectAllBtn) {
+    els.warehouseNextSelectAllBtn.addEventListener("click", () => {
+      setAllWarehouseNextChecks(true);
+    });
+  }
+  if (els.warehouseNextDeselectAllBtn) {
+    els.warehouseNextDeselectAllBtn.addEventListener("click", () => {
+      setAllWarehouseNextChecks(false);
+    });
+  }
+  if (els.warehouseNextToPackingBtn) {
+    els.warehouseNextToPackingBtn.addEventListener("click", async () => {
+      const ids = getSelectedWarehouseNextIds();
+      if (!ids.length) {
+        showToast("Виберіть хоча б одне замовлення");
+        return;
+      }
+      const user = currentTelegramUser();
+      const chat = currentTelegramChatId() || sessionState.chat_id || "";
+      els.warehouseNextToPackingBtn.disabled = true;
+      try {
+        const response = await fetch(
+          `/api/warehouse/queue/to-packing-selected?${warehouseAuthParams()}`,
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              chat_id: chat,
+              user_id: user.user_id || "",
+              username: user.username || "",
+              order_ids: ids,
+            }),
+          }
+        );
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(data.detail || "Помилка");
+        const moved = Number(data.count || 0);
+        const errN = (data.errors || []).length;
+        if (moved) {
+          showToast(
+            moved === 1
+              ? "Переміщено 1 замовлення на пакування"
+              : `Переміщено ${moved} замовлень на пакування`
+          );
+        } else {
+          showToast(
+            (data.errors && data.errors[0] && data.errors[0].error) ||
+              "Нічого не переміщено"
+          );
+        }
+        if (errN && moved) showToast(`Частину не вдалося: ${errN}`);
+        await loadWarehouseQueue("next_ship");
+      } catch (error) {
+        showToast(error.message || "Помилка");
+        syncWarehouseNextSelection();
       }
     });
   }

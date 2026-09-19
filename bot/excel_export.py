@@ -12,7 +12,7 @@ from openpyxl.styles import Alignment, Font
 
 
 def order_history_bucket(order: dict[str, Any]) -> str:
-    """Як у miniapp: awaiting | transit | received | returns."""
+    """Як у miniapp: awaiting | next_ship | transit | received | returns."""
     payload = order.get("payload") or {}
     ret = payload.get("dropper_return")
     ttn = str(order.get("ttn_status") or "")
@@ -27,16 +27,20 @@ def order_history_bucket(order: dict[str, Any]) -> str:
         return "returns"
     if ttn == "received":
         return "received"
-    if payload.get("ttn_pdf_hold"):
-        return "awaiting"
     if ttn in {"in_transit", "at_warehouse"}:
         return "transit"
+    stage = str(order.get("warehouse_stage") or payload.get("warehouse_stage") or "")
+    if stage == "next_ship":
+        return "next_ship"
+    if payload.get("ttn_pdf_hold"):
+        return "awaiting"
     return "awaiting"
 
 
 def bucket_label_uk(bucket: str) -> str:
     return {
         "awaiting": "Очікує відправлення",
+        "next_ship": "Наступна відправка",
         "transit": "В дорозі",
         "received": "Отримано",
         "returns": "Повернення",

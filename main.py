@@ -338,6 +338,43 @@ async def main() -> None:
                 except asyncio.TimeoutError:
                     pass
 
+    async def next_ship_promote_loop() -> None:
+        """О 21:00 Київ — «Наступна відправка» → «На пакування»."""
+        from bot.warehouse import (
+            run_next_ship_promote_pass,
+            seconds_until_next_ship_promote,
+        )
+
+        await asyncio.sleep(58)
+        while not stop_event.is_set():
+            try:
+                delay = seconds_until_next_ship_promote(allow_current_hour=True)
+                if delay > 0:
+                    logger.info(
+                        "Next-ship promote: next 21:00 in %.0f min", delay / 60.0
+                    )
+                    try:
+                        await asyncio.wait_for(stop_event.wait(), timeout=delay)
+                        break
+                    except asyncio.TimeoutError:
+                        pass
+                stats = await asyncio.to_thread(
+                    run_next_ship_promote_pass, app_storage
+                )
+                logger.info("Next-ship promote: %s", stats)
+                delay = seconds_until_next_ship_promote(allow_current_hour=False)
+                try:
+                    await asyncio.wait_for(stop_event.wait(), timeout=delay)
+                    break
+                except asyncio.TimeoutError:
+                    pass
+            except Exception:
+                logger.exception("Next-ship promote loop error")
+                try:
+                    await asyncio.wait_for(stop_event.wait(), timeout=300)
+                except asyncio.TimeoutError:
+                    pass
+
     async def to_order_digest_loop() -> None:
         """О 9:00 Київ — список кодів «Замовити» власнику."""
         from bot.to_order import (
@@ -382,6 +419,9 @@ async def main() -> None:
     )
     packing_task = asyncio.create_task(
         packing_digest_loop(), name="packing-digest"
+    )
+    next_ship_task = asyncio.create_task(
+        next_ship_promote_loop(), name="next-ship-promote"
     )
     to_order_task = asyncio.create_task(
         to_order_digest_loop(), name="to-order-digest"
@@ -568,6 +608,7 @@ async def main() -> None:
             np_task,
             warehouse_task,
             packing_task,
+            next_ship_task,
             to_order_task,
             stock_task,
             cleanup_task,
@@ -585,6 +626,7 @@ async def main() -> None:
         np_task,
         warehouse_task,
         packing_task,
+        next_ship_task,
         to_order_task,
         stock_task,
         cleanup_task,

@@ -1893,6 +1893,12 @@ def create_web_app(
             ttn_status=ttn_status,
             payload=order_payload,
         )
+        from bot.warehouse import initial_warehouse_stage
+
+        wh_stage = initial_warehouse_stage()
+        storage.set_order_warehouse_stage(int(order["id"]), wh_stage)
+        storage.merge_order_payload(int(order["id"]), {"warehouse_stage": wh_stage})
+        order = storage.get_order(int(order["id"])) or order
 
         if debit > 0:
             # Суму запам'ятовуємо; проводка на баланс — лише після забрання.
@@ -3495,7 +3501,12 @@ def create_web_app(
         )
 
         _require_warehouse(chat_id=chat_id, user_id=user_id, username=username)
-        stage_key = "ready_to_ship" if stage == "ready_to_ship" else "packing"
+        if stage == "ready_to_ship":
+            stage_key = "ready_to_ship"
+        elif stage == "next_ship":
+            stage_key = "next_ship"
+        else:
+            stage_key = "packing"
         items = list_warehouse_queue(storage, stage=stage_key, limit=limit)
         dropper_names: dict[int, str] = {}
         enriched = []
@@ -3599,6 +3610,24 @@ def create_web_app(
             username=payload.username,
         )
         result = mark_packing_orders_ready_to_ship(
+            storage,
+            payload.order_ids,
+            actor_user_id=payload.user_id,
+        )
+        return {"ok": True, **result}
+
+    @app.post("/api/warehouse/queue/to-packing-selected")
+    async def warehouse_mark_selected_to_packing(
+        payload: WarehouseReadySelectedRequest,
+    ) -> dict:
+        from bot.warehouse import mark_next_ship_orders_to_packing
+
+        _require_warehouse(
+            chat_id=payload.chat_id,
+            user_id=payload.user_id,
+            username=payload.username,
+        )
+        result = mark_next_ship_orders_to_packing(
             storage,
             payload.order_ids,
             actor_user_id=payload.user_id,

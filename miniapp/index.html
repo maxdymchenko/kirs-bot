@@ -775,6 +775,7 @@
         <p class="hint" id="historyViewHint">Усі передані вами замовлення з номерами.</p>
         <nav class="tabs history-buckets" id="historyBuckets" aria-label="Фільтр історії">
           <button type="button" class="tab active" data-history-bucket="awaiting">Очікує відправлення</button>
+          <button type="button" class="tab" data-history-bucket="next_ship">Наступна відправка</button>
           <button type="button" class="tab" data-history-bucket="transit">В дорозі</button>
           <button type="button" class="tab" data-history-bucket="received">Отримано</button>
           <button type="button" class="tab" data-history-bucket="returns">Повернення</button>
@@ -844,6 +845,7 @@
             <select id="balanceFilterStatus">
               <option value="all">Усі</option>
               <option value="awaiting">Очікує відправлення</option>
+              <option value="next_ship">Наступна відправка</option>
               <option value="transit">В дорозі</option>
               <option value="received">Отримано</option>
               <option value="returns">Повернення</option>
@@ -896,6 +898,7 @@
       <nav class="tabs warehouse-tabs" id="warehouseTabs">
         <button type="button" class="tab active" data-wh-tab="catalog">Каталог</button>
         <button type="button" class="tab" data-wh-tab="packing">На пакування</button>
+        <button type="button" class="tab" data-wh-tab="next_ship">Наступна відправка</button>
         <button type="button" class="tab" data-wh-tab="shipping">На відправлення</button>
         <button type="button" class="tab" data-wh-tab="salary">Баланс ЗП</button>
       </nav>
@@ -924,9 +927,24 @@
         <p class="hint" style="margin-top:0">
           Відмітьте замовлення чекбоксом і натисніть «На відправлення».
           Список у групу УПАКОВКА більше не йде сам о 12:00 — надішліть кнопкою, коли будете готові.
-          О 14:00 в групу підуть лише нові замовлення після цього списку.
+          О 14:00 в групу підуть лише нові замовлення з вкладки «На пакування» після цього списку.
+          Замовлення з «Наступна відправка» в групу не потрапляють.
         </p>
         <div id="warehousePackingList" class="warehouse-order-list"></div>
+      </div>
+
+      <div id="warehouseTabNextShip" class="warehouse-panel hidden">
+        <div class="orders-toolbar warehouse-shipping-toolbar" style="margin-bottom:10px">
+          <button type="button" class="btn secondary" id="warehouseNextSelectAllBtn">Вибрати всі</button>
+          <button type="button" class="btn secondary" id="warehouseNextDeselectAllBtn">Зняти всі</button>
+          <button type="button" class="btn primary" id="warehouseNextToPackingBtn" disabled>На пакування</button>
+          <span id="warehouseNextSelectedCount" class="warehouse-selected-count">Вибрано: 0</span>
+        </div>
+        <p class="hint" style="margin-top:0">
+          Сюди потрапляють замовлення після 14:00 (у суботу після 13:00). У неділю порогу немає — одразу на пакування.
+          О 21:00 черга сама переходить у «На пакування». Можна перенести вручну, якщо треба відправити сьогодні.
+        </p>
+        <div id="warehouseNextList" class="warehouse-order-list"></div>
       </div>
 
       <div id="warehouseTabShipping" class="warehouse-panel hidden">
@@ -958,6 +976,6 @@
   </div>
 
   <button type="button" id="photoZoomBackdrop" class="photo-zoom-backdrop hidden" aria-label="Закрити фото"></button>
-  <script src="/static/app.js?v=20260919owcnt1"></script>
+  <script src="/static/app.js?v=20260919next1"></script>
 </body>
 </html>
