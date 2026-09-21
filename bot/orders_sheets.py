@@ -2,6 +2,9 @@
 
 SQLite лишається джерелом правди; лист — для людей (склад / облік).
 1 позиція кошика = 1 рядок. Баланс у Sheet не читаємо.
+
+Залізне правило: ніколи не писати поверх чужого №, не зсувати і не
+переміщати рядки (ніяких insert_rows / delete_rows / INSERT_ROWS).
 """
 
 from __future__ import annotations
@@ -755,41 +758,93 @@ def _parse_updated_range_start_row(updated_range: str) -> int | None:
     return None
 
 
+def _order_no_by_sheet_row(ws: gspread.Worksheet) -> dict[int, str]:
+    col = ws.col_values(COL_ORDER_NO)
+    return {idx + 1: str(value or "").strip() for idx, value in enumerate(col) if idx >= 1}
+
+
 def find_sheet_rows_by_order_number(
     ws: gspread.Worksheet, order_number: str
 ) -> list[int]:
     order_number = str(order_number or "").strip()
     if not order_number:
         return []
-    col = ws.col_values(COL_ORDER_NO)
-    out: list[int] = []
-    for idx, value in enumerate(col):
-        if idx == 0:
-            continue  # header
-        if str(value or "").strip() == order_number:
-            out.append(idx + 1)
-    return out
+    return [
+        row
+        for row, no in _order_no_by_sheet_row(ws).items()
+        if no == order_number
+    ]
+
+
+def owned_sheet_rows(
+    ws: gspread.Worksheet,
+    order_number: str,
+    candidates: list[int] | None = None,
+) -> list[int]:
+    """Лише рядки, де колонка B = цей №. Чужі кандидати відкидаємо."""
+    wanted = str(order_number or "").strip()
+    if not wanted:
+        return []
+    by_row = _order_no_by_sheet_row(ws)
+    if candidates is None:
+        return [row for row, no in by_row.items() if no == wanted]
+    owned: list[int] = []
+    for raw in candidates:
+        try:
+            row = int(raw)
+        except (TypeError, ValueError):
+            continue
+        have = by_row.get(row, "")
+        if have == wanted:
+            owned.append(row)
+            continue
+        if have:
+            logger.error(
+                "orders sheet skip overwrite row=%s has %s want %s",
+                row,
+                have,
+                wanted,
+            )
+    return owned
+
+
+def _next_empty_block_start(ws: gspread.Worksheet, count: int) -> int:
+    """Перший вільний блок у кінці листа (колонка B порожня). Без зсуву."""
+    need = max(1, int(count or 1))
+    start = max(2, _sheet_last_data_row(ws) + 1)
+    by_row = _order_no_by_sheet_row(ws)
+    while True:
+        clash = False
+        for offset in range(need):
+            row = start + offset
+            if by_row.get(row):
+                clash = True
+                start = row + 1
+                break
+        if not clash:
+            return start
 
 
 def delete_sheet_rows_for_order_numbers(
     storage: AppStorage, order_numbers: list[str]
 ) -> dict[str, Any]:
-    """Прибрати рядки листа «Заказы» з указаними № замовлення (знизу вгору)."""
+    """Очистити комірки своїх рядків (без delete_rows — інакше зсуне інші замовлення)."""
     wanted = {str(n or "").strip() for n in order_numbers if str(n or "").strip()}
     if not wanted:
         return {"deleted_rows": 0, "row_numbers": []}
     ws = _open_orders_worksheet(storage)
-    col = ws.col_values(COL_ORDER_NO)
-    rows: list[int] = []
-    for idx, value in enumerate(col):
-        if idx == 0:
-            continue
-        if str(value or "").strip() in wanted:
-            rows.append(idx + 1)
-    for row in sorted(rows, reverse=True):
-        ws.delete_rows(row)
+    by_row = _order_no_by_sheet_row(ws)
+    rows = [row for row, no in by_row.items() if no in wanted]
+    if rows:
+        ws.batch_update(
+            [
+                {"range": f"A{row}:R{row}", "values": [[""] * SHEET_COL_COUNT]}
+                for row in rows
+            ],
+            value_input_option="USER_ENTERED",
+        )
     logger.info(
-        "orders sheet deleted rows=%s for orders=%s",
+        "orders sheet cleared rows=%s for orders=%s (no row shift)",
         rows,
         sorted(wanted),
     )
@@ -827,9 +882,8 @@ def append_order_rows(
 ) -> list[int]:
     if not rows:
         return []
-    # Пишемо в кінець листа. INSERT_ROWS + фільтр / рядок «ОСТАТКИ» вставляли
-    # нові замовлення всередину і зсували номери рядків у інших замовлень.
-    start = _sheet_last_data_row(ws) + 1
+    # Лише вільний кінець листа. Ніякого insert / зсуву чужих рядків.
+    start = _next_empty_block_start(ws, len(rows))
     payload = []
     for i, row in enumerate(rows):
         padded = list(row) + [""] * SHEET_COL_COUNT
@@ -1086,38 +1140,49 @@ def update_rows_values(
     ws: gspread.Worksheet,
     row_numbers: list[int],
     rows: list[list[Any]],
+    *,
+    order_number: str = "",
 ) -> None:
     if not row_numbers or not rows:
         return
+    wanted = str(order_number or "").strip()
+    if not wanted and rows and len(rows[0]) > 1:
+        wanted = str(rows[0][1] or "").strip()
+    safe_rows = owned_sheet_rows(ws, wanted, row_numbers) if wanted else []
+    if not safe_rows:
+        logger.error(
+            "orders sheet refuse update: no owned rows for %s candidates=%s",
+            wanted,
+            row_numbers,
+        )
+        return
     data = []
-    for row_num, values in zip(row_numbers, rows):
+    for row_num, values in zip(safe_rows, rows):
         data.append(
             {
                 "range": f"A{row_num}:R{row_num}",
                 "values": [values],
             }
         )
-    # leftover old rows (cart shrunk): clear product fields / mark
-    if len(row_numbers) > len(rows):
-        for row_num in row_numbers[len(rows) :]:
-            data.append(
-                {
-                    "range": f"E{row_num}:J{row_num}",
-                    "values": [["", "", "", "", "", ""]],
-                }
-            )
-            data.append(
-                {
-                    "range": f"O{row_num}",
-                    "values": [["видалено з замовлення"]],
-                }
-            )
+    leftover = safe_rows[len(rows) :]
+    for row_num in leftover:
+        data.append(
+            {
+                "range": f"E{row_num}:J{row_num}",
+                "values": [["", "", "", "", "", ""]],
+            }
+        )
+        data.append(
+            {
+                "range": f"O{row_num}",
+                "values": [["видалено з замовлення"]],
+            }
+        )
     ws.batch_update(data, value_input_option="USER_ENTERED")
     qty_pairs: list[tuple[int, Any]] = []
-    for row_num, values in zip(row_numbers, rows):
+    for row_num, values in zip(safe_rows, rows):
         qty_pairs.append((row_num, values[7] if len(values) > 7 else 1))
-    if len(row_numbers) > len(rows):
-        qty_pairs.extend((row_num, 0) for row_num in row_numbers[len(rows) :])
+    qty_pairs.extend((row_num, 0) for row_num in leftover)
     paint_qty_highlight_cells(ws, qty_pairs)
 
 
@@ -1134,7 +1199,10 @@ def replace_order_rows(
     """
     if not rows:
         return []
-    existing = [int(n) for n in existing if n]
+    order_no = str(rows[0][1] if rows and len(rows[0]) > 1 else "").strip()
+    existing = owned_sheet_rows(ws, order_no, [int(n) for n in existing if n])
+    if not existing:
+        return append_order_rows(ws, rows)
     patched = [list(r) for r in rows]
     for r in patched:
         while len(r) < 18:
@@ -1154,13 +1222,15 @@ def replace_order_rows(
 
     written: list[int] = []
     if existing:
-        update_rows_values(ws, existing[:keep], patched[:keep])
+        update_rows_values(
+            ws, existing[:keep], patched[:keep], order_number=order_no
+        )
         written.extend(existing[:keep])
         paint_status_n_cells(
             ws,
             [(existing[i], str(patched[i][13] or "")) for i in range(keep)],
         )
-        leftover = existing[keep:]
+        leftover = owned_sheet_rows(ws, order_no, existing[keep:])
         if leftover:
             ws.batch_update(
                 [
@@ -1183,8 +1253,18 @@ def update_lifecycle_columns(
     status: str,
     note: str,
     settlement: str,
+    order_number: str = "",
 ) -> None:
     if not row_numbers:
+        return
+    wanted = str(order_number or "").strip()
+    if wanted:
+        row_numbers = owned_sheet_rows(ws, wanted, row_numbers)
+    if not row_numbers:
+        logger.error(
+            "orders sheet refuse lifecycle update for %s",
+            wanted or "(empty)",
+        )
         return
     data = []
     for row_num in row_numbers:
@@ -1236,13 +1316,12 @@ def sync_order_to_sheet(
             storage.update_order_flags(int(order["id"]), sheets_sync_status="synced")
             return order
 
-        # Завжди шукаємо живі рядки за № заказа. Закешовані sheets_rows після
-        # вставки рядків посередині вказують уже на чужі замовлення (Розетка тощо).
+        # Тільки рядки з цим № у колонці B. sheets_rows — ніколи як адреса запису.
         order_no = str(order.get("order_number") or "")
-        row_numbers = find_sheet_rows_by_order_number(ws, order_no)
-        if stored_rows and stored_rows != row_numbers:
+        row_numbers = owned_sheet_rows(ws, order_no)
+        if stored_rows and set(stored_rows) != set(row_numbers):
             logger.warning(
-                "orders sheet stale rows order=%s stored=%s live=%s",
+                "orders sheet ignore stale cache order=%s stored=%s live=%s",
                 order_no,
                 stored_rows,
                 row_numbers,
@@ -1276,7 +1355,7 @@ def sync_order_to_sheet(
             if len(built) > len(row_numbers):
                 extra = append_order_rows(ws, built[len(row_numbers) :], storage=storage)
                 row_numbers = [*row_numbers, *extra]
-            update_rows_values(ws, row_numbers, built)
+            update_rows_values(ws, row_numbers, built, order_number=order_no)
         else:
             update_lifecycle_columns(
                 ws,
@@ -1285,6 +1364,7 @@ def sync_order_to_sheet(
                 status=str(built[0][13] if built else ""),
                 note=str(built[0][14] if built else ""),
                 settlement=str(built[0][16] if built else ""),
+                order_number=order_no,
             )
 
         cart = (order.get("payload") or {}).get("cart") or []
