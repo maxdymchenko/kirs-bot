@@ -171,6 +171,25 @@ async def main() -> None:
         requested_own_ttn_recipient_once(), name="own-ttn-recipient-once"
     )
 
+    async def requested_redirect_false_returns_once() -> None:
+        await asyncio.sleep(13)
+        try:
+            from bot.oneoff_redirect_false_returns import (
+                run_redirect_false_returns_fix,
+            )
+
+            stats = await asyncio.to_thread(
+                run_redirect_false_returns_fix, app_storage
+            )
+            logger.info("Redirect false-return fix: %s", stats)
+        except Exception:
+            logger.exception("Redirect false-return fix failed")
+
+    asyncio.create_task(
+        requested_redirect_false_returns_once(),
+        name="redirect-false-returns-once",
+    )
+
     stop_event = asyncio.Event()
 
     def request_stop(*_args) -> None:

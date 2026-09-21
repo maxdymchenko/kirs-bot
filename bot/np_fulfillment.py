@@ -15,6 +15,8 @@ from bot.novaposhta import (
     extract_delivery_cost,
     extract_warehouse_arrival_iso,
     map_np_status_code,
+    np_payload_looks_like_redirect,
+    np_tracking_is_redirect,
 )
 
 logger = logging.getLogger(__name__)
@@ -904,8 +906,14 @@ async def apply_tracking_event(
         or payload_prev.get("goods_debited")
     )
     ret_prev = payload_prev.get("dropper_return")
-    if mapped == "received" and not ever_received and not payload_prev.get(
-        "return_after_received"
+    is_redirect = np_tracking_is_redirect(tracking_row) or np_payload_looks_like_redirect(
+        payload_prev
+    )
+    if (
+        mapped == "received"
+        and not ever_received
+        and not payload_prev.get("return_after_received")
+        and not is_redirect
     ):
         from bot.returns import (
             STATUS_AWAITING_RECEIPT,
@@ -931,11 +939,24 @@ async def apply_tracking_event(
         mapped = "returned"
     result["mapped"] = mapped
 
+    if is_redirect:
+        from bot.returns import revert_false_auto_return
+
+        order = revert_false_auto_return(storage, order, reason="np_redirect") or order
+        payload_prev = order.get("payload") or {}
+        result["order"] = order
+
     patch = {
         "np_status_code": str(status_code or ""),
         "np_status_text": str(status_text or "").strip(),
         "np_tracked_at": datetime.now().isoformat(timespec="seconds"),
     }
+    if isinstance(tracking_row, dict):
+        basis = str(
+            tracking_row.get("LastCreatedOnTheBasisDocumentType") or ""
+        ).strip()
+        if basis:
+            patch["np_basis_document_type"] = basis
     delivery_cost = extract_delivery_cost(tracking_row, order)
     if delivery_cost > 0:
         patch["np_delivery_cost"] = delivery_cost
@@ -1123,17 +1144,18 @@ async def apply_tracking_event(
         await _maybe_eval_buyout(storage, order, notify)
         await _maybe_auto_blacklist_phone(storage, order, owner_notify)
 
-        try:
-            from bot.returns import ensure_auto_return
+        if not is_redirect:
+            try:
+                from bot.returns import ensure_auto_return
 
-            order = ensure_auto_return(storage, order) or order
-            result["order"] = order
-        except Exception:
-            logger.exception(
-                "auto-return create failed for %s", order.get("order_number")
-            )
+                order = ensure_auto_return(storage, order) or order
+                result["order"] = order
+            except Exception:
+                logger.exception(
+                    "auto-return create failed for %s", order.get("order_number")
+                )
 
-    if mapped == "return_at_warehouse":
+    if mapped == "return_at_warehouse" and not is_redirect:
         try:
             from bot.returns import (
                 STATUS_AWAITING_RECEIPT,
@@ -1167,6 +1189,87 @@ async def apply_tracking_event(
             )
 
     return result
+
+
+def repair_redirect_treated_as_return(
+    storage: AppStorage,
+    order: dict[str, Any],
+    tracking_row: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Зняти помилкову автозаявку після переадресації і закрити як отримання, якщо клієнт забрав."""
+    from bot.balance_settle import settle_order_on_received
+    from bot.returns import (
+        STATUS_ACCEPTED,
+        is_auto_return,
+        normalize_return_status,
+        revert_false_auto_return,
+    )
+
+    if not order or not order.get("id"):
+        return {"ok": False, "reason": "no_order"}
+    if not np_tracking_is_redirect(tracking_row):
+        return {"ok": False, "reason": "not_redirect"}
+    payload = order.get("payload") if isinstance(order.get("payload"), dict) else {}
+    ret = payload.get("dropper_return")
+    if not is_auto_return(ret):
+        return {"ok": False, "reason": "no_auto"}
+    if normalize_return_status((ret or {}).get("status")) == STATUS_ACCEPTED:
+        return {"ok": False, "reason": "already_accepted"}
+
+    order = revert_false_auto_return(storage, order, reason="np_redirect") or order
+    mapped = map_np_status_code(
+        (tracking_row or {}).get("StatusCode"),
+        str((tracking_row or {}).get("Status") or ""),
+    )
+    basis = str(
+        (tracking_row or {}).get("LastCreatedOnTheBasisDocumentType") or ""
+    ).strip()
+    patch: dict[str, Any] = {
+        "np_status_code": str((tracking_row or {}).get("StatusCode") or ""),
+        "np_status_text": str((tracking_row or {}).get("Status") or "").strip(),
+        "np_tracked_at": datetime.now().isoformat(timespec="seconds"),
+    }
+    if basis:
+        patch["np_basis_document_type"] = basis
+
+    action = "in_transit"
+    if mapped == "received":
+        storage.update_order_flags(int(order["id"]), ttn_status="received")
+        patch["ever_received"] = True
+        action = "received"
+    else:
+        storage.update_order_flags(
+            int(order["id"]), ttn_status=mapped or "in_transit"
+        )
+
+    order = storage.merge_order_payload(int(order["id"]), patch) or order
+    goods = False
+    if mapped == "received":
+        settled = settle_order_on_received(storage, order)
+        goods = bool(settled.get("goods_entry"))
+        order = storage.get_order(int(order["id"])) or order
+        try:
+            from bot.orders_sheets import sync_order_to_sheet
+
+            order = sync_order_to_sheet(storage, order, full=False) or order
+        except Exception:
+            logger.exception(
+                "orders sheet sync on redirect repair %s failed",
+                order.get("order_number"),
+            )
+    logger.info(
+        "Redirect misclassified return repaired %s action=%s goods=%s",
+        order.get("order_number"),
+        action,
+        goods,
+    )
+    return {
+        "ok": True,
+        "action": action,
+        "goods": goods,
+        "order_number": str(order.get("order_number") or ""),
+        "order": order,
+    }
 
 
 async def track_order_statuses_async(

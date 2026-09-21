@@ -8,7 +8,11 @@ from datetime import datetime
 from typing import Any, Callable
 
 from bot.accounts import AppStorage
-from bot.novaposhta import map_np_status_code
+from bot.novaposhta import (
+    map_np_status_code,
+    np_payload_looks_like_redirect,
+    np_tracking_is_redirect,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -177,8 +181,79 @@ def _should_auto_return(order: dict[str, Any]) -> bool:
     payload = order.get("payload") if isinstance(order.get("payload"), dict) else {}
     if payload.get("return_after_received"):
         return False
+    code = str(payload.get("np_status_code") or "").strip()
+    if code in {"104", "106", "107", "111", "112"}:
+        return False
+    if np_payload_looks_like_redirect(payload) and code not in {
+        "102",
+        "103",
+        "105",
+        "108",
+    }:
+        return False
     ttn = str(order.get("ttn_status") or "").strip()
     return ttn in {"refused", "returned", "return_at_warehouse"}
+
+
+def revert_false_auto_return(
+    storage: AppStorage,
+    order: dict[str, Any] | None,
+    *,
+    reason: str = "np_redirect",
+) -> dict[str, Any] | None:
+    """Зняти помилкову автозаявку (переадресація тощо), якщо її ще не прийнято."""
+    if not order or not order.get("id"):
+        return order
+    payload = dict(order.get("payload") or {})
+    ret = payload.get("dropper_return")
+    if not is_auto_return(ret):
+        return order
+    if normalize_return_status(ret.get("status")) == STATUS_ACCEPTED:
+        return order
+
+    payload["dropper_return"] = None
+    payload["false_auto_return_cleared_at"] = _now_iso()
+    payload["false_auto_return_reason"] = str(reason or "").strip()
+    cost = 0.0
+    try:
+        cost = round(float(payload.get("return_delivery_cost") or 0), 2)
+    except (TypeError, ValueError):
+        cost = 0.0
+    if payload.get("return_delivery_debited"):
+        dropper_id = int(order.get("dropper_id") or 0)
+        order_number = str(order.get("order_number") or "")
+        if cost > 0 and dropper_id:
+            storage.add_ledger_entry(
+                dropper_id=dropper_id,
+                amount=cost,
+                entry_type="return_delivery_reversal",
+                title=f"Сторно доставки (переадресація) · {order_number}",
+                note="Помилкова відмова: це була переадресація, не повернення",
+                related_order_id=order_number,
+            )
+        payload["return_delivery_debited"] = False
+        payload["return_delivery_cost"] = 0
+
+    saved = storage.merge_order_payload(int(order["id"]), payload)
+    try:
+        storage.add_order_change(
+            order_id=int(order["id"]),
+            order_number=str(order.get("order_number") or ""),
+            actor_role="system",
+            actor_label="Нова Пошта",
+            change_type="tracking",
+            summary="Знято помилкову заявку на повернення (переадресація)",
+            diff=[
+                {
+                    "field": "dropper_return",
+                    "old": "auto",
+                    "new": "",
+                }
+            ],
+        )
+    except Exception:
+        logger.exception("false auto-return change log failed")
+    return saved or storage.get_order(int(order["id"])) or order
 
 
 def ensure_auto_return(
@@ -501,7 +576,7 @@ async def track_return_ttns_async(
     """Опитування статусів зворотних ТТН заявок на повернення."""
     from bot.np_fulfillment import list_np_clients
 
-    stats = {"checked": 0, "moved": 0, "errors": 0, "auto_created": 0}
+    stats = {"checked": 0, "moved": 0, "errors": 0, "auto_created": 0, "redirect_repaired": 0}
     try:
         stats["auto_created"] = backfill_auto_returns(storage, limit=400)
     except Exception:
@@ -515,7 +590,11 @@ async def track_return_ttns_async(
     by_number: dict[str, dict[str, Any]] = {}
     for order in items:
         ret = order.get("dropper_return") or {}
-        if normalize_return_status(ret.get("status")) != STATUS_AWAITING_RECEIPT:
+        st = normalize_return_status(ret.get("status"))
+        if st == STATUS_ACCEPTED:
+            continue
+        auto = is_auto_return(ret)
+        if not auto and st != STATUS_AWAITING_RECEIPT:
             continue
         ttn = str(ret.get("ttn_number") or "").strip()
         if not is_trackable_return_ttn(ttn):
@@ -550,9 +629,15 @@ async def track_return_ttns_async(
         mapped = map_np_status_code(
             row.get("StatusCode"), str(row.get("Status") or "")
         )
-        # Оновити проміжний статус у заявці
         ret = dict(order.get("dropper_return") or {})
         auto = is_auto_return(ret)
+        if auto and np_tracking_is_redirect(row):
+            from bot.np_fulfillment import repair_redirect_treated_as_return
+
+            repaired = repair_redirect_treated_as_return(storage, order, row)
+            if repaired.get("ok"):
+                stats["redirect_repaired"] += 1
+            continue
         should_close = (
             mapped_closes_auto_return(mapped)
             if auto

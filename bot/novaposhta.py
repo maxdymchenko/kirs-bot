@@ -568,22 +568,63 @@ class NovaPoshtaClient:
         return [row for row in (data or []) if isinstance(row, dict)]
 
 
+def np_tracking_is_redirect(row: dict[str, Any] | None) -> bool:
+    """Переадресація / зміна адреси — це не відмова."""
+    if not isinstance(row, dict):
+        return False
+    dtype = str(row.get("LastCreatedOnTheBasisDocumentType") or "").strip().casefold()
+    if "redirect" in dtype:
+        return True
+    code = str(row.get("StatusCode") or "").strip()
+    if code == "104":
+        return True
+    status = str(row.get("Status") or "").casefold()
+    return any(
+        w in status
+        for w in ("переадрес", "змінено адрес", "изменен адрес", "redirect")
+    )
+
+
+def np_payload_looks_like_redirect(payload: dict[str, Any] | None) -> bool:
+    if not isinstance(payload, dict):
+        return False
+    if "redirect" in str(payload.get("np_basis_document_type") or "").casefold():
+        return True
+    if str(payload.get("np_status_code") or "").strip() == "104":
+        return True
+    events = payload.get("tracking_events") or []
+    if not isinstance(events, list):
+        return False
+    codes = [
+        str((ev or {}).get("status_code") or "").strip()
+        for ev in events
+        if isinstance(ev, dict)
+    ]
+    if "104" not in codes:
+        return False
+    return not any(c in {"102", "103", "105", "108"} for c in codes)
+
+
 def map_np_status_code(status_code: str | int | None, status_text: str = "") -> str:
     """Уніфікований внутрішній статус за StatusCode НП."""
     code = str(status_code or "").strip()
     text = str(status_text or "").casefold()
     # Отримано / гроші по налогу в дорозі / видані відправнику
-    if code in {"9", "10", "11"}:
+    # 106 — одержано і створено ЕН зворотної доставки (клієнт забрав)
+    if code in {"9", "10", "11", "106"}:
         return "received"
-    # Відмова від отримання (клієнт не забрав)
-    if code in {"102", "103", "104", "105", "106", "108"}:
+    # Справжня відмова / припинено зберігання (посилка їде назад)
+    if code in {"102", "103", "105", "108"}:
         return "refused"
-    # Повернення відправнику / утилізація тощо
-    if code in {"111"}:
-        return "returned"
+    # 104 — змінено адресу (переадресація); 112 — перенесено дату
+    if code in {"104", "112"}:
+        return "in_transit"
+    # Неуспішна спроба адресної доставки — ще не повернення
+    if code == "111":
+        return "in_transit"
     if code in {"2", "3"}:
         return "failed"
-    if code in {"7", "8"}:
+    if code in {"7", "8", "107"}:
         return "at_warehouse"
     # Код 6 у деяких джерелах — повернення; перевіряємо текст
     if code == "6" and any(w in text for w in ("поверн", "відмов", "отказ", "возврат")):
@@ -594,6 +635,8 @@ def map_np_status_code(status_code: str | int | None, status_text: str = "") -> 
         return "in_transit"
     if code in {"1"}:
         return "created"
+    if any(w in text for w in ("переадрес", "змінено адрес", "изменен адрес", "redirect")):
+        return "in_transit"
     if any(w in text for w in ("отримано", "получен")):
         return "received"
     if any(w in text for w in ("відмов", "отказ", "refuse")):
