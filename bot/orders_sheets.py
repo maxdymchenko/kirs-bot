@@ -920,6 +920,74 @@ def append_order_rows(
     return written
 
 
+DAY_SEPARATOR_BLUE = {
+    "red": 0.25882354,
+    "green": 0.52156866,
+    "blue": 0.95686275,
+}
+
+
+def day_separator_exists(ws: gspread.Worksheet, date_s: str) -> bool:
+    """Чи вже є синій роздільник з цією датою (не чіпати чужі рядки)."""
+    wanted = str(date_s or "").strip()
+    if not wanted:
+        return False
+    for row in ws.get_all_values()[1:]:
+        if sum(1 for cell in row if str(cell).strip() == wanted) >= 10:
+            return True
+    return False
+
+
+def append_day_separator_row(ws: gspread.Worksheet, date_s: str) -> int:
+    """Дописати в кінець синій рядок-роздільник (без зсуву інших замовлень)."""
+    wanted = str(date_s or "").strip()
+    if not wanted:
+        return 0
+    if day_separator_exists(ws, wanted):
+        return 0
+    start = _next_empty_block_start(ws, 1)
+    values = [wanted] * SHEET_COL_COUNT
+    values[3] = ""
+    ws.batch_update(
+        [{"range": f"A{start}:R{start}", "values": [values]}],
+        value_input_option="USER_ENTERED",
+    )
+    try:
+        ws.spreadsheet.batch_update(
+            {
+                "requests": [
+                    {
+                        "repeatCell": {
+                            "range": {
+                                "sheetId": ws.id,
+                                "startRowIndex": start - 1,
+                                "endRowIndex": start,
+                                "startColumnIndex": 0,
+                                "endColumnIndex": SHEET_COL_COUNT,
+                            },
+                            "cell": {
+                                "userEnteredFormat": {
+                                    "backgroundColor": DAY_SEPARATOR_BLUE,
+                                    "horizontalAlignment": "CENTER",
+                                    "textFormat": {"bold": True},
+                                }
+                            },
+                            "fields": (
+                                "userEnteredFormat.backgroundColor,"
+                                "userEnteredFormat.horizontalAlignment,"
+                                "userEnteredFormat.textFormat.bold"
+                            ),
+                        }
+                    }
+                ]
+            }
+        )
+    except Exception:
+        logger.exception("failed to paint day separator row %s", start)
+    logger.info("orders sheet day separator row=%s date=%s", start, wanted)
+    return start
+
+
 def _consecutive_row_spans(row_numbers: list[int]) -> list[tuple[int, int]]:
     """Inclusive 1-based (start, end) spans of consecutive rows."""
     nums = sorted({int(n) for n in row_numbers if int(n) >= 2})

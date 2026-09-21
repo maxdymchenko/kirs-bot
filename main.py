@@ -617,6 +617,48 @@ async def main() -> None:
     prom_sync_task = asyncio.create_task(
         prom_sync_loop(), name="prom-sync"
     )
+
+    async def orders_day_separator_loop() -> None:
+        """Пн–пт 14:01 Київ — синій рядок з датою наступного дня в «Заказы»."""
+        from bot.orders_day_separator import (
+            run_day_separator_pass,
+            seconds_until_next_separator_slot,
+        )
+
+        await asyncio.sleep(65)
+        while not stop_event.is_set():
+            try:
+                delay = seconds_until_next_separator_slot(allow_current_slot=True)
+                if delay > 0:
+                    logger.info(
+                        "Orders day separator: next slot in %.0f min",
+                        delay / 60.0,
+                    )
+                    try:
+                        await asyncio.wait_for(stop_event.wait(), timeout=delay)
+                        break
+                    except asyncio.TimeoutError:
+                        pass
+                stats = await asyncio.to_thread(
+                    run_day_separator_pass, app_storage
+                )
+                logger.info("Orders day separator: %s", stats)
+                delay = seconds_until_next_separator_slot(allow_current_slot=False)
+                try:
+                    await asyncio.wait_for(stop_event.wait(), timeout=delay)
+                    break
+                except asyncio.TimeoutError:
+                    pass
+            except Exception:
+                logger.exception("Orders day separator loop error")
+                try:
+                    await asyncio.wait_for(stop_event.wait(), timeout=300)
+                except asyncio.TimeoutError:
+                    pass
+
+    day_sep_task = asyncio.create_task(
+        orders_day_separator_loop(), name="orders-day-separator"
+    )
     stop_task = asyncio.create_task(stop_event.wait(), name="stop")
 
     done, _ = await asyncio.wait(
@@ -634,6 +676,7 @@ async def main() -> None:
             sheet_tracking_task,
             sheet_sync_task,
             prom_sync_task,
+            day_sep_task,
         },
         return_when=asyncio.FIRST_COMPLETED,
     )
@@ -652,6 +695,7 @@ async def main() -> None:
         sheet_tracking_task,
         sheet_sync_task,
         prom_sync_task,
+        day_sep_task,
     ):
         if not task.done():
             task.cancel()
