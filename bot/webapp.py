@@ -2035,6 +2035,12 @@ def create_web_app(
         dropper = storage.get_dropper_by_chat(chat_id)
         if not dropper:
             raise HTTPException(status_code=404, detail="Дроппера не знайдено")
+        try:
+            from bot.returns import backfill_auto_returns
+
+            backfill_auto_returns(storage, dropper_id=dropper.id, limit=200)
+        except Exception:
+            logger.exception("dropper orders auto-return backfill failed")
         items = storage.list_orders_for_dropper(dropper.id, limit=limit)
         items = enrich_orders_with_changes(storage, items)
         window = dropper_edit_window_info()
@@ -3139,12 +3145,17 @@ def create_web_app(
                 detail="Вкажіть коректний номер зворотної ТТН",
             )
         return_ttn = ttn_raw if ttn_raw.startswith("RMP-") else ttn_digits
-        type_label = "Легке повернення" if return_type == "easy" else "Звичайне повернення"
-        from bot.returns import new_dropper_return, STATUS_AWAITING_RECEIPT
+        from bot.returns import (
+            ORIGIN_MANUAL,
+            STATUS_AWAITING_RECEIPT,
+            new_dropper_return,
+            return_type_label,
+        )
 
         dropper_return = new_dropper_return(
-            return_type=return_type, ttn_number=return_ttn
+            return_type=return_type, ttn_number=return_ttn, origin=ORIGIN_MANUAL
         )
+        type_label = return_type_label(dropper_return)
         saved = storage.merge_order_payload(order_id, {"dropper_return": dropper_return})
         storage.add_order_change(
             order_id=order_id,
@@ -3196,18 +3207,27 @@ def create_web_app(
         owner_user_id: str = Query("", max_length=64),
         dropper_chat_id: str = Query("", max_length=64),
         bucket: str = Query("", max_length=32),
+        q: str = Query("", max_length=32),
         limit: int = Query(200, ge=1, le=500),
     ) -> dict:
         from bot.returns import (
             BUCKET_AWAITING_CONFIRM,
             BUCKET_AWAITING_RECEIPT,
             BUCKET_CLOSED,
+            backfill_auto_returns,
             normalize_return_status,
             return_bucket,
+            return_matches_ttn_query,
+            return_tab_sort_ts,
+            return_type_label,
             status_label_uk,
         )
 
         _require_owner(owner_chat_id, owner_user_id)
+        try:
+            backfill_auto_returns(storage, limit=400)
+        except Exception:
+            logger.exception("owner returns auto-backfill failed")
         dropper_id = None
         if dropper_chat_id.strip():
             dropper = storage.get_dropper_by_chat(dropper_chat_id.strip())
@@ -3215,15 +3235,26 @@ def create_web_app(
                 raise HTTPException(status_code=404, detail="Дроппера не знайдено")
             dropper_id = dropper.id
         items = storage.list_dropper_return_requests(
-            dropper_id=dropper_id, limit=limit
+            dropper_id=dropper_id, limit=500
         )
         bucket_key = str(bucket or "").strip().lower()
+        query = str(q or "").strip()
         if bucket_key in {
             BUCKET_AWAITING_RECEIPT,
             BUCKET_AWAITING_CONFIRM,
             BUCKET_CLOSED,
         }:
             items = [x for x in items if return_bucket(x.get("dropper_return")) == bucket_key]
+        if query:
+            items = [x for x in items if return_matches_ttn_query(x, query)]
+        items.sort(
+            key=lambda row: return_tab_sort_ts(
+                row.get("dropper_return"),
+                bucket_key or return_bucket(row.get("dropper_return")),
+            ),
+            reverse=True,
+        )
+        items = items[:limit]
 
         enriched: list[dict] = []
         counts = {
@@ -3246,6 +3277,7 @@ def create_web_app(
             ret["status"] = st
             ret["status_label"] = status_label_uk(st)
             ret["bucket"] = return_bucket(ret)
+            ret["type_label"] = return_type_label(ret)
             item["dropper_return"] = ret
             item["return_bucket"] = ret["bucket"]
             enriched.append(item)
@@ -3338,12 +3370,37 @@ def create_web_app(
         saved = result.get("order") or order
         dropper = storage.get_dropper_by_id(int(saved.get("dropper_id") or 0))
         ret = (saved.get("payload") or {}).get("dropper_return") or {}
+        stock_note = ""
+        if not result.get("already"):
+            payload_now = dict(saved.get("payload") or {})
+            if not payload_now.get("stock_restored_on_return"):
+                cart = payload_now.get("cart") if isinstance(payload_now.get("cart"), list) else []
+                try:
+                    if cart and catalog is not None:
+                        restored = catalog.restore_cart_stock(cart)
+                        payload_now["stock_restored_on_return"] = True
+                        payload_now["stock_restored_at"] = (
+                            ret.get("accepted_at") or ""
+                        )
+                        payload_now["dropper_return"] = ret
+                        saved = (
+                            storage.merge_order_payload(int(saved["id"]), payload_now)
+                            or saved
+                        )
+                        rows = int((restored or {}).get("updated_rows") or 0)
+                        if rows:
+                            stock_note = f"наявність +{rows} ряд."
+                            notes = list(result.get("ledger_notes") or [])
+                            notes.append(stock_note)
+                            result["ledger_notes"] = notes
+                except Exception:
+                    logger.exception(
+                        "stock restore on return accept %s failed", order_id
+                    )
         if dropper and not result.get("already"):
-            type_label = (
-                "Легке повернення"
-                if str(ret.get("type") or "") == "easy"
-                else "Звичайне повернення"
-            )
+            from bot.returns import return_type_label
+
+            type_label = return_type_label(ret)
             refund = round(float(result.get("refund_amount") or 0), 2)
             notes = result.get("ledger_notes") or []
             try:

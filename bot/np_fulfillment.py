@@ -903,6 +903,29 @@ async def apply_tracking_event(
         or payload_prev.get("profit_credited")
         or payload_prev.get("goods_debited")
     )
+    ret_prev = payload_prev.get("dropper_return")
+    if mapped == "received" and not ever_received and not payload_prev.get(
+        "return_after_received"
+    ):
+        from bot.returns import (
+            STATUS_AWAITING_RECEIPT,
+            is_auto_return,
+            normalize_return_status,
+        )
+
+        auto_pending = False
+        if isinstance(ret_prev, dict) and ret_prev.get("status"):
+            auto_pending = is_auto_return(ret_prev) and (
+                normalize_return_status(ret_prev.get("status"))
+                == STATUS_AWAITING_RECEIPT
+            )
+        # Після відмови «received» = ми забрали повернення, не клієнт.
+        if auto_pending or prev in {
+            "refused",
+            "returned",
+            "return_at_warehouse",
+        }:
+            mapped = "return_at_warehouse"
     # Після отримання клієнтом подальший «return» показуємо як повернення дроппера
     if mapped in {"refused", "returned"} and ever_received:
         mapped = "returned"
@@ -1099,6 +1122,49 @@ async def apply_tracking_event(
             )
         await _maybe_eval_buyout(storage, order, notify)
         await _maybe_auto_blacklist_phone(storage, order, owner_notify)
+
+        try:
+            from bot.returns import ensure_auto_return
+
+            order = ensure_auto_return(storage, order) or order
+            result["order"] = order
+        except Exception:
+            logger.exception(
+                "auto-return create failed for %s", order.get("order_number")
+            )
+
+    if mapped == "return_at_warehouse":
+        try:
+            from bot.returns import (
+                STATUS_AWAITING_RECEIPT,
+                ensure_auto_return,
+                mark_return_received_async,
+                normalize_return_status,
+            )
+
+            order = ensure_auto_return(storage, order) or order
+            result["order"] = order
+            ret_now = (order.get("payload") or {}).get("dropper_return") or {}
+            if (
+                isinstance(ret_now, dict)
+                and normalize_return_status(ret_now.get("status"))
+                == STATUS_AWAITING_RECEIPT
+            ):
+                order = (
+                    await mark_return_received_async(
+                        storage,
+                        order,
+                        ttn_status=mapped,
+                        owner_notify=owner_notify,
+                    )
+                    or order
+                )
+                result["order"] = order
+        except Exception:
+            logger.exception(
+                "auto-return mark received failed for %s",
+                order.get("order_number"),
+            )
 
     return result
 

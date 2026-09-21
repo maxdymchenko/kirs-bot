@@ -50,6 +50,7 @@
     ownerTabReturns: document.getElementById("ownerTabReturns"),
     ownerReturnsList: document.getElementById("ownerReturnsList"),
     ownerReturnsTabs: document.getElementById("ownerReturnsTabs"),
+    ownerReturnsSearch: document.getElementById("ownerReturnsSearch"),
     ownerReturnsDropperFilter: document.getElementById("ownerReturnsDropperFilter"),
     ownerTabSettings: document.getElementById("ownerTabSettings"),
     ownerTabOrder: document.getElementById("ownerTabOrder"),
@@ -316,6 +317,7 @@
   const ownerReturnsState = {
     bucket: "awaiting_receipt",
     counts: {},
+    search: "",
   };
 
   const npState = {
@@ -2160,8 +2162,20 @@ ${ttnLine}</div>
     return "awaiting";
   }
 
-  function dropperReturnTypeLabel(type) {
-    return String(type || "") === "easy" ? "Легке повернення" : "Звичайне повернення";
+  function dropperReturnTypeLabel(typeOrRet, ret) {
+    const row =
+      typeOrRet && typeof typeOrRet === "object" && !Array.isArray(typeOrRet)
+        ? typeOrRet
+        : ret && typeof ret === "object"
+          ? ret
+          : { type: typeOrRet };
+    if (row.type_label) return String(row.type_label);
+    const origin = String(row.origin || "");
+    const type = String(row.type || typeOrRet || "");
+    if (origin === "auto" || type === "auto_carrier") {
+      return "Відмова / повернення перевізником";
+    }
+    return "Ручне повернення від клієнта";
   }
 
   function dropperReturnStatusLabel(status) {
@@ -2191,20 +2205,20 @@ ${ttnLine}</div>
         return {
           kind: "return_accepted",
           label: "Повернення підтверджено",
-          sub: dropperReturnTypeLabel(ret.type),
+          sub: dropperReturnTypeLabel(ret),
         };
       }
       if (st === "awaiting_confirm") {
         return {
           kind: "return_pending",
           label: "Очікує підтвердження",
-          sub: dropperReturnTypeLabel(ret.type),
+          sub: dropperReturnTypeLabel(ret),
         };
       }
       return {
         kind: "return_pending",
         label: "Очікує отримання",
-        sub: dropperReturnTypeLabel(ret.type),
+        sub: dropperReturnTypeLabel(ret),
       };
     }
     if (payload.return_at_warehouse || ttn === "return_at_warehouse") {
@@ -2400,7 +2414,7 @@ ${
       infoHtml = `
         <div class="confirm-block">
           <div class="confirm-label">Заявка на повернення</div>
-          <div class="confirm-value">${escapeHtml(dropperReturnTypeLabel(ret.type))}
+          <div class="confirm-value">${escapeHtml(dropperReturnTypeLabel(ret))}
 Статус: ${escapeHtml(dropperReturnStatusLabel(st))}
 ТТН повернення: ${escapeHtml(ret.ttn_number || "—")}
 ${ret.created_at ? `Створено: ${escapeHtml(formatOrderDate(ret.created_at) || ret.created_at)}` : ""}
@@ -2424,7 +2438,9 @@ ${
           String(order.id || "")
         )}">
           <p class="hint" style="margin:0">
-            Вкажіть номер зворотної ТТН: Нова Пошта (14+ цифр) або Rozetka (RMP-…).
+            Ручне повернення від клієнта після отримання. Вкажіть номер зворотної ТТН:
+            Нова Пошта (14+ цифр) або Rozetka (RMP-…). Відмова перевізника з’являється
+            у власника автоматично — цю форму для неї не використовуйте.
           </p>
           <label class="field">
             <span class="field-label">ТТН повернення <span class="req">*</span></span>
@@ -5716,6 +5732,8 @@ ${
       const params = new URLSearchParams(ownerAuthParams());
       params.set("bucket", ownerReturnsState.bucket || "awaiting_receipt");
       params.set("limit", "200");
+      const q = String(ownerReturnsState.search || "").trim();
+      if (q) params.set("q", q);
       const response = await fetch(`/api/owner/returns?${params.toString()}`);
       const data = await response.json();
       if (!response.ok) {
@@ -5730,9 +5748,10 @@ ${
         closed: "Архів порожній",
       };
       if (!items.length) {
-        els.ownerReturnsList.innerHTML = `<div class="empty">${escapeHtml(
-          emptyByBucket[ownerReturnsState.bucket] || "Немає заявок на повернення"
-        )}</div>`;
+        const emptyMsg = String(ownerReturnsState.search || "").trim()
+          ? "Нічого не знайдено за ТТН"
+          : emptyByBucket[ownerReturnsState.bucket] || "Немає заявок на повернення";
+        els.ownerReturnsList.innerHTML = `<div class="empty">${escapeHtml(emptyMsg)}</div>`;
         return;
       }
       els.ownerReturnsList.className = "results owner-returns";
@@ -5754,7 +5773,7 @@ ${
           } else if (st === "awaiting_confirm") {
             actionHtml = `<button type="button" class="btn primary" data-owner-return-accept="${escapeHtml(
               String(row.id || "")
-            )}">Підтвержено</button>`;
+            )}">Прийнято</button>`;
           } else if (ret.accepted_at) {
             actionHtml = `<div class="meta-soft">Підтверджено: ${escapeHtml(
               formatOrderDate(ret.accepted_at) || ret.accepted_at
@@ -5785,7 +5804,7 @@ ${
                 dropperReturnStatusLabel(st)
               )}</div>
             </div>
-            <div class="meta">Тип: <b>${escapeHtml(dropperReturnTypeLabel(ret.type))}</b></div>
+            <div class="meta">Тип: <b>${escapeHtml(dropperReturnTypeLabel(ret))}</b></div>
             <div class="meta">ТТН повернення: <b>${escapeHtml(ret.ttn_number || "—")}</b></div>
             <div class="meta">Оригінальна ТТН: ${escapeHtml(row.ttn_number || "—")}</div>
             <div class="meta">Дроп-ціна: <b>${escapeHtml(formatMoney(row.total || 0))}</b></div>
@@ -5892,8 +5911,8 @@ ${
       const refund = Number(data.refund_amount || 0);
       showToast(
         refund > 0
-          ? `Підтверджено · на баланс +${formatMoney(refund)}`
-          : "Повернення підтверджено"
+          ? `Прийнято · на баланс +${formatMoney(refund)}`
+          : "Повернення прийнято"
       );
       ownerReturnsState.bucket = "closed";
       await renderOwnerReturns();
@@ -7735,6 +7754,17 @@ ${
       if (bucket === ownerReturnsState.bucket) return;
       ownerReturnsState.bucket = bucket;
       renderOwnerReturns();
+    });
+  }
+
+  if (els.ownerReturnsSearch) {
+    let ownerReturnsSearchTimer = 0;
+    els.ownerReturnsSearch.addEventListener("input", () => {
+      ownerReturnsState.search = (els.ownerReturnsSearch.value || "").trim();
+      window.clearTimeout(ownerReturnsSearchTimer);
+      ownerReturnsSearchTimer = window.setTimeout(() => {
+        renderOwnerReturns();
+      }, 250);
     });
   }
 

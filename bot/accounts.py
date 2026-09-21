@@ -1987,6 +1987,29 @@ class AppStorage:
                 break
         return out
 
+    def list_orders_for_auto_return_backfill(
+        self,
+        *,
+        dropper_id: int | None = None,
+        limit: int = 400,
+    ) -> list[dict[str, Any]]:
+        """Відмови/повернення перевізника без скасування — для автозаявок."""
+        limit = max(1, min(int(limit or 400), 800))
+        sql = """
+            SELECT * FROM orders
+            WHERE status != 'cancelled'
+              AND ttn_status IN ('refused', 'returned', 'return_at_warehouse')
+        """
+        params: list[Any] = []
+        if dropper_id is not None:
+            sql += " AND dropper_id = ?"
+            params.append(int(dropper_id))
+        sql += " ORDER BY id DESC LIMIT ?"
+        params.append(limit)
+        with self._connect() as conn:
+            rows = conn.execute(sql, tuple(params)).fetchall()
+        return [self._row_order(r) for r in rows]
+
     def list_dropper_return_requests(
         self,
         *,

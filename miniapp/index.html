@@ -180,8 +180,9 @@
       <div id="ownerTabReturns" class="owner-panel hidden">
         <h2 class="section-title">Заявки на повернення</h2>
         <p class="hint">
-          Дроппер додає ТТН повернення після отримання клієнтом. Спочатку посилка їде до вас,
-          потім ви підтверджуєте товар — і система робить разноску по балансах.
+          Сюди потрапляють відмови/повернення перевізника і ручні повернення від клієнта
+          (нова ТТН). Посилка спочатку в «Очікують отримання», після прибуття на ваше
+          відділення — в «Очікують підтвердження». Пошук — за останніми 5 цифрами ТТН.
         </p>
         <div class="owner-returns-tabs" id="ownerReturnsTabs" role="tablist">
           <button type="button" class="tab active" data-returns-bucket="awaiting_receipt">
@@ -196,6 +197,10 @@
             Закрито / Архів
           </button>
         </div>
+        <label class="field" style="margin-top:12px">
+          <span class="field-label">Пошук за ТТН</span>
+          <input id="ownerReturnsSearch" type="search" inputmode="numeric" placeholder="Останні 5 цифр ТТН" autocomplete="off" />
+        </label>
         <div id="ownerReturnsList" class="results" style="margin-top:12px"></div>
       </div>
 
@@ -976,6 +981,6 @@
   </div>
 
   <button type="button" id="photoZoomBackdrop" class="photo-zoom-backdrop hidden" aria-label="Закрити фото"></button>
-  <script src="/static/app.js?v=20260919next1"></script>
+  <script src="/static/app.js?v=20260921ret1"></script>
 </body>
 </html>
