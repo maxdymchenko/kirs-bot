@@ -1312,6 +1312,14 @@ class AppStorage:
                 ),
                 2,
             )
+            received_drop_total = round(
+                sum(
+                    float(o.get("total") or 0)
+                    for o in orders
+                    if order_history_bucket(o) == "received"
+                ),
+                2,
+            )
             cond = compute_conditional_balance(
                 self, d.id, factual=bal, orders=orders
             )
@@ -1344,6 +1352,7 @@ class AppStorage:
                     "orders_balance": split["orders_balance"],
                     "orders_conditional_balance": split["orders_conditional_balance"],
                     "in_transit_drop_total": in_transit_drop_total,
+                    "received_drop_total": received_drop_total,
                     "referral_earned_total": split["referral_balance"],
                     "referral_balance": split["referral_balance"],
                     "referral_pending_total": split["referral_pending_total"],

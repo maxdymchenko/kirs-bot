@@ -202,7 +202,7 @@ def run_kryupenyukova_0008_balance_fix(storage: AppStorage) -> dict[str, Any]:
         order = _set_payment_balance(storage, order)
         goods_entry = None
         referral_entry = None
-        if order_history_bucket(order) == "received":
+        if order_history_bucket(order) in {"received", "archive"}:
             goods_entry = debit_goods_if_needed(storage, order)
             order = storage.get_order(int(order["id"])) or order
             referral_entry = accrue_referral_if_received(storage, order)

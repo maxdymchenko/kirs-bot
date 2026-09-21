@@ -11,8 +11,13 @@ from openpyxl import Workbook
 from openpyxl.styles import Alignment, Font
 
 
+def order_is_owner_archived(order: dict[str, Any]) -> bool:
+    payload = order.get("payload") if isinstance(order.get("payload"), dict) else {}
+    return bool(payload.get("owner_archived"))
+
+
 def order_history_bucket(order: dict[str, Any]) -> str:
-    """Як у miniapp: awaiting | next_ship | transit | received | returns."""
+    """Як у miniapp: awaiting | next_ship | transit | received | archive | returns."""
     payload = order.get("payload") or {}
     ret = payload.get("dropper_return")
     ttn = str(order.get("ttn_status") or "")
@@ -26,6 +31,8 @@ def order_history_bucket(order: dict[str, Any]) -> str:
     } or payload.get("return_at_warehouse") or str(order.get("status") or "") == "cancelled":
         return "returns"
     if ttn == "received":
+        if order_is_owner_archived(order):
+            return "archive"
         return "received"
     if ttn in {"in_transit", "at_warehouse"}:
         return "transit"
@@ -43,6 +50,7 @@ def bucket_label_uk(bucket: str) -> str:
         "next_ship": "Наступна відправка",
         "transit": "В дорозі",
         "received": "Отримано",
+        "archive": "Архів",
         "returns": "Повернення",
     }.get(bucket, bucket or "—")
 

@@ -180,6 +180,13 @@ class OwnerBalanceAdjustRequest(BaseModel):
     note: str = Field("", max_length=500)
 
 
+class OwnerOrdersArchiveRequest(BaseModel):
+    owner_chat_id: str = Field("", max_length=64)
+    owner_user_id: str = Field("", max_length=64)
+    order_ids: list[str | int] = Field(default_factory=list)
+    archived: bool = True
+
+
 class WarehouseAttachPdfRequest(BaseModel):
     chat_id: str = Field("", max_length=64)
     user_id: str = Field("", max_length=64)
@@ -2170,6 +2177,37 @@ def create_web_app(
         return {
             "dropper": dropper.to_dict(),
             "count": len(items),
+            "items": items,
+        }
+
+    @app.post("/api/owner/droppers/{chat_id}/orders/archive")
+    async def owner_dropper_orders_archive(
+        chat_id: str,
+        payload: OwnerOrdersArchiveRequest,
+    ) -> dict:
+        from bot.order_archive import set_orders_archived
+        from bot.order_edit import enrich_orders_with_changes
+
+        _require_owner(payload.owner_chat_id, payload.owner_user_id)
+        dropper = storage.get_dropper_by_chat(chat_id.strip())
+        if not dropper:
+            raise HTTPException(status_code=404, detail="Дроппера не знайдено")
+        if not payload.order_ids:
+            raise HTTPException(status_code=400, detail="Оберіть замовлення")
+        result = set_orders_archived(
+            storage,
+            dropper_id=dropper.id,
+            order_ids=payload.order_ids,
+            archived=bool(payload.archived),
+            actor_user_id=payload.owner_user_id,
+            actor_label="Власник",
+        )
+        items = enrich_orders_with_changes(storage, result.get("updated") or [])
+        return {
+            "ok": True,
+            "archived": bool(payload.archived),
+            "count": len(items),
+            "skipped": int(result.get("skipped") or 0),
             "items": items,
         }
 
