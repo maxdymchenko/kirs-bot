@@ -693,11 +693,31 @@ def _sheet_order_from_lines(
     }
 
 
+def _mark_sheet_orders_shipped(storage: AppStorage, order_numbers: list[str]) -> None:
+    nos = [str(n or "").strip() for n in order_numbers if str(n or "").strip()]
+    if not nos:
+        return
+    stages = _load_sheet_stages(storage)
+    dirty = False
+    for no in nos:
+        if stages.get(no) == STAGE_SHIPPED:
+            continue
+        stages[no] = STAGE_SHIPPED
+        dirty = True
+    if dirty:
+        _save_sheet_stages(storage, stages)
+
+
 def _persist_sqlite_left_warehouse(
     storage: AppStorage, order: dict[str, Any], mapped: str
 ) -> None:
     """Запам'ятати, що посилка вже поїхала — щоб картка не верталась у «На відправлення»."""
     if is_sheet_queue_order(order):
+        no = str(order.get("order_number") or "").strip()
+        if not no:
+            no = parse_sheet_order_id(order.get("id")) or ""
+        if no:
+            _mark_sheet_orders_shipped(storage, [no])
         return
     try:
         oid = int(order.get("id") or 0)
@@ -772,6 +792,7 @@ def _drop_sheet_orders_left_via_np(
         logger.exception("warehouse: NP live status check failed")
         return orders
     kept: list[dict[str, Any]] = []
+    left_sheet: list[str] = []
     for order in orders:
         raw = str(order.get("ttn_number") or "")
         if str(raw).upper().startswith("RMP-"):
@@ -788,9 +809,16 @@ def _drop_sheet_orders_left_via_np(
             bool(np_text) and not _is_sheet_row_still_packing(np_text)
         )
         if left:
-            _persist_sqlite_left_warehouse(storage, order, mapped or "in_transit")
+            if is_sheet_queue_order(order):
+                no = str(order.get("order_number") or "").strip()
+                if no:
+                    left_sheet.append(no)
+            else:
+                _persist_sqlite_left_warehouse(storage, order, mapped or "in_transit")
             continue
         kept.append(order)
+    if left_sheet:
+        _mark_sheet_orders_shipped(storage, left_sheet)
     return kept
 
 
@@ -844,12 +872,19 @@ def _drop_orders_left_via_rozetka(
     if not labels:
         return orders
     kept: list[dict[str, Any]] = []
+    left_sheet: list[str] = []
     for order in orders:
         no = str(order.get("order_number") or "").strip()
         label = str(labels.get(no) or "").strip()
         if label and not _is_sheet_row_still_packing(label):
+            if is_sheet_queue_order(order) and no:
+                left_sheet.append(no)
+            elif not is_sheet_queue_order(order):
+                _persist_sqlite_left_warehouse(storage, order, "in_transit")
             continue
         kept.append(order)
+    if left_sheet:
+        _mark_sheet_orders_shipped(storage, left_sheet)
     return kept
 
 
@@ -868,7 +903,12 @@ def list_sheet_warehouse_orders(storage: AppStorage) -> list[dict[str, Any]]:
         )
         for order_no, lines in groups.items()
     ]
-    orders = [o for o in orders if not is_sheet_order_stale_for_warehouse(o)]
+    orders = [
+        o
+        for o in orders
+        if not is_sheet_order_stale_for_warehouse(o)
+        and order_warehouse_stage(o) != STAGE_SHIPPED
+    ]
     return _drop_sheet_orders_left_via_np(storage, orders)
 
 
