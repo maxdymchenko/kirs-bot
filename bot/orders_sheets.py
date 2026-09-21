@@ -814,6 +814,12 @@ def _save_sheet_meta(
     return storage.get_order(int(order["id"])) or saved
 
 
+def _sheet_last_data_row(ws: gspread.Worksheet) -> int:
+    """Останній рядок з будь-яким вмістом (фільтри / «ОСТАТКИ» не збивають позицію)."""
+    values = ws.get_all_values()
+    return max(1, len(values))
+
+
 def append_order_rows(
     ws: gspread.Worksheet,
     rows: list[list[Any]],
@@ -821,25 +827,19 @@ def append_order_rows(
 ) -> list[int]:
     if not rows:
         return []
-    result = ws.append_rows(
-        rows,
-        value_input_option="USER_ENTERED",
-        insert_data_option="INSERT_ROWS",
-        table_range="A1",
-    )
-    # gspread returns dict-like with updatedRange
-    updated = ""
-    if isinstance(result, dict):
-        updated = str(
-            (result.get("updates") or {}).get("updatedRange")
-            or result.get("updatedRange")
-            or ""
+    # Пишемо в кінець листа. INSERT_ROWS + фільтр / рядок «ОСТАТКИ» вставляли
+    # нові замовлення всередину і зсували номери рядків у інших замовлень.
+    start = _sheet_last_data_row(ws) + 1
+    payload = []
+    for i, row in enumerate(rows):
+        padded = list(row) + [""] * SHEET_COL_COUNT
+        payload.append(
+            {
+                "range": f"A{start + i}:R{start + i}",
+                "values": [padded[:SHEET_COL_COUNT]],
+            }
         )
-    start = _parse_updated_range_start_row(updated)
-    if start is None:
-        # fallback: last rows
-        all_vals = ws.col_values(COL_ORDER_NO)
-        start = max(2, len(all_vals) - len(rows) + 1)
+    ws.batch_update(payload, value_input_option="USER_ENTERED")
     written = list(range(start, start + len(rows)))
     _paint_rows_white(ws, written)
     paint_status_n_cells(
@@ -1223,7 +1223,7 @@ def sync_order_to_sheet(
 
     payload = order.get("payload") or {}
     existing_meta = payload.get("sheets_rows") if isinstance(payload.get("sheets_rows"), list) else []
-    row_numbers = [
+    stored_rows = [
         int(x.get("row"))
         for x in existing_meta
         if isinstance(x, dict) and str(x.get("row") or "").isdigit()
@@ -1236,10 +1236,16 @@ def sync_order_to_sheet(
             storage.update_order_flags(int(order["id"]), sheets_sync_status="synced")
             return order
 
-        if not row_numbers:
-            # спроба знайти за № заказа (ретрай після збою meta)
-            row_numbers = find_sheet_rows_by_order_number(
-                ws, str(order.get("order_number") or "")
+        # Завжди шукаємо живі рядки за № заказа. Закешовані sheets_rows після
+        # вставки рядків посередині вказують уже на чужі замовлення (Розетка тощо).
+        order_no = str(order.get("order_number") or "")
+        row_numbers = find_sheet_rows_by_order_number(ws, order_no)
+        if stored_rows and stored_rows != row_numbers:
+            logger.warning(
+                "orders sheet stale rows order=%s stored=%s live=%s",
+                order_no,
+                stored_rows,
+                row_numbers,
             )
 
         if not row_numbers:
