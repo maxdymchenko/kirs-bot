@@ -1,7 +1,7 @@
 """Синій рядок-роздільник днів відправки в листі «Заказы».
 
-Пн–пт о 14:01 Київ — дописати в кінець ряд з датою наступного дня.
-Без зсуву і без запису поверх інших замовлень.
+Пн–пт о 14:01, сб о 13:01 Київ — дописати в кінець ряд з датою
+наступного дня. Нд не ставити. Без зсуву і без запису поверх замовлень.
 """
 
 from __future__ import annotations
@@ -17,8 +17,8 @@ from bot.accounts import AppStorage
 logger = logging.getLogger(__name__)
 
 KYIV = ZoneInfo("Europe/Kyiv")
-SLOT_HOUR = 14
-SLOT_MINUTE = 1
+WEEKDAY_SLOT = time(14, 1)
+SATURDAY_SLOT = time(13, 1)
 SETTINGS_KEY = "orders_day_separator_state"
 
 
@@ -27,6 +27,15 @@ def now_kyiv(now: datetime | None = None) -> datetime:
     if dt.tzinfo is None:
         return dt.replace(tzinfo=KYIV)
     return dt.astimezone(KYIV)
+
+
+def separator_slot_for(weekday: int) -> time | None:
+    """Пн–пт 14:01, сб 13:01, нд — немає."""
+    if 0 <= weekday <= 4:
+        return WEEKDAY_SLOT
+    if weekday == 5:
+        return SATURDAY_SLOT
+    return None
 
 
 def next_ship_date_label(now: datetime | None = None) -> str:
@@ -41,18 +50,20 @@ def seconds_until_next_separator_slot(
     allow_current_slot: bool = False,
 ) -> float:
     dt = now_kyiv(now)
+    slot = separator_slot_for(dt.weekday())
     if (
         allow_current_slot
-        and dt.weekday() < 5
-        and (dt.hour, dt.minute) >= (SLOT_HOUR, SLOT_MINUTE)
+        and slot is not None
+        and (dt.hour, dt.minute) >= (slot.hour, slot.minute)
     ):
         return 0.0
     candidates: list[datetime] = []
     for day_offset in range(0, 8):
         day = dt.date() + timedelta(days=day_offset)
-        if day.weekday() >= 5:
+        day_slot = separator_slot_for(day.weekday())
+        if day_slot is None:
             continue
-        target = datetime.combine(day, time(SLOT_HOUR, SLOT_MINUTE), tzinfo=KYIV)
+        target = datetime.combine(day, day_slot, tzinfo=KYIV)
         if target > dt:
             candidates.append(target)
     return max(30.0, (candidates[0] - dt).total_seconds())
@@ -102,9 +113,10 @@ def run_day_separator_pass(
     date_s = next_ship_date_label(dt)
     state = _load_state(storage)
     if not force:
-        if dt.weekday() >= 5:
-            return {"ok": True, "skipped": "weekend", "day": day}
-        if (dt.hour, dt.minute) < (SLOT_HOUR, SLOT_MINUTE):
+        slot = separator_slot_for(dt.weekday())
+        if slot is None:
+            return {"ok": True, "skipped": "sunday", "day": day}
+        if (dt.hour, dt.minute) < (slot.hour, slot.minute):
             return {"ok": True, "skipped": "before_slot", "day": day}
         if str(state.get("last_run_date") or "") == day:
             return {"ok": True, "skipped": True, "day": day, "date": date_s}

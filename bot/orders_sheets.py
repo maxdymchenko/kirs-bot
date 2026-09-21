@@ -925,6 +925,8 @@ DAY_SEPARATOR_BLUE = {
     "green": 0.52156866,
     "blue": 0.95686275,
 }
+# Порожні: C D F H I J K L M N (0-based). Дата лишається в A B E G O P Q R.
+DAY_SEPARATOR_EMPTY_COLS = (2, 3, 5, 7, 8, 9, 10, 11, 12, 13)
 
 
 def day_separator_exists(ws: gspread.Worksheet, date_s: str) -> bool:
@@ -933,7 +935,9 @@ def day_separator_exists(ws: gspread.Worksheet, date_s: str) -> bool:
     if not wanted:
         return False
     for row in ws.get_all_values()[1:]:
-        if sum(1 for cell in row if str(cell).strip() == wanted) >= 10:
+        a = str(row[0]).strip() if row else ""
+        b = str(row[1]).strip() if len(row) > 1 else ""
+        if a == wanted and b == wanted:
             return True
     return False
 
@@ -947,7 +951,8 @@ def append_day_separator_row(ws: gspread.Worksheet, date_s: str) -> int:
         return 0
     start = _next_empty_block_start(ws, 1)
     values = [wanted] * SHEET_COL_COUNT
-    values[3] = ""
+    for i in DAY_SEPARATOR_EMPTY_COLS:
+        values[i] = ""
     ws.batch_update(
         [{"range": f"A{start}:R{start}", "values": [values]}],
         value_input_option="USER_ENTERED",

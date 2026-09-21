@@ -619,7 +619,7 @@ async def main() -> None:
     )
 
     async def orders_day_separator_loop() -> None:
-        """Пн–пт 14:01 Київ — синій рядок з датою наступного дня в «Заказы»."""
+        """Пн–пт 14:01 / сб 13:01 Київ — синій рядок наступного дня в «Заказы»."""
         from bot.orders_day_separator import (
             run_day_separator_pass,
             seconds_until_next_separator_slot,
