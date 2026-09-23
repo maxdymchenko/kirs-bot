@@ -1368,9 +1368,11 @@ def sync_order_to_sheet(
     if not order or not order.get("id"):
         return order
     sync_flag = str(order.get("sheets_sync_status") or "pending").strip()
-    if sync_flag == "hold_pdf":
+    if sync_flag in {"hold_pdf", "skip_sheet"}:
         logger.info(
-            "orders sheet skip hold_pdf order=%s", order.get("order_number")
+            "orders sheet skip %s order=%s",
+            sync_flag,
+            order.get("order_number"),
         )
         return order
 
@@ -1401,6 +1403,12 @@ def sync_order_to_sheet(
             )
 
         if not row_numbers:
+            if not full:
+                logger.warning(
+                    "orders sheet skip resurrect order=%s (no B row, lifecycle only)",
+                    order_no,
+                )
+                return order
             row_numbers = append_order_rows(ws, built, storage=storage)
             meta = []
             cart = (order.get("payload") or {}).get("cart") or []

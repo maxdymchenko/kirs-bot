@@ -190,6 +190,21 @@ async def main() -> None:
         name="redirect-false-returns-once",
     )
 
+    async def requested_skip_sheet_k260912_once() -> None:
+        await asyncio.sleep(14)
+        try:
+            from bot.oneoff_skip_sheet_k260912 import run_skip_sheet_k260912
+
+            stats = await asyncio.to_thread(run_skip_sheet_k260912, app_storage)
+            logger.info("Skip sheet K-260912-0001: %s", stats)
+        except Exception:
+            logger.exception("Skip sheet K-260912-0001 failed")
+
+    asyncio.create_task(
+        requested_skip_sheet_k260912_once(),
+        name="skip-sheet-k260912-once",
+    )
+
     stop_event = asyncio.Event()
 
     def request_stop(*_args) -> None:
