@@ -71,6 +71,7 @@ _LEFT_WAREHOUSE_STATUS = (
     "передано перевізнику",
     "передано кур",
     "видано кур",
+    "прямує",
     "прямує до",
     "у місті",
     "у м.",
@@ -96,6 +97,7 @@ _ROZETKA_LIVE_CACHE_TTL_SEC = 300.0
 _rozetka_live_cache_at = 0.0
 _rozetka_live_cache_key: frozenset[str] = frozenset()
 _rozetka_live_cache_data: dict[str, str] = {}
+_sheet_n_by_order: dict[str, str] = {}
 
 
 def now_kyiv(now: datetime | None = None) -> datetime:
@@ -316,6 +318,19 @@ def is_sheet_order_stale_for_warehouse(order: dict[str, Any]) -> bool:
 def _looks_like_np_ttn(ttn: str) -> bool:
     digits = "".join(ch for ch in str(ttn or "") if ch.isdigit())
     return len(digits) >= 11
+
+
+def _np_ttn_digits(raw: str) -> str:
+    """Канонічний номер НП для трекінгу: 14 цифр, зайві з PDF відкидаємо."""
+    text = str(raw or "").strip()
+    if text.upper().startswith("RMP-"):
+        return ""
+    digits = re.sub(r"\D+", "", text)
+    if not _looks_like_np_ttn(text):
+        return ""
+    if len(digits) > 14:
+        return digits[:14]
+    return digits
 
 
 def warehouse_delivery_carrier(order: dict[str, Any]) -> str:
@@ -567,15 +582,19 @@ def _load_sheet_market_groups(
         logger.exception("warehouse: failed to read marketplace rows from sheet")
         return {}
 
+    global _sheet_n_by_order
     groups: dict[str, list[dict[str, Any]]] = {}
+    n_map: dict[str, str] = {}
     for idx, row in enumerate(rows[1:], start=2):
         while len(row) < 18:
             row.append("")
         order_no = str(row[1] or "").strip()
         source = str(row[10] or "").strip()
+        status = str(row[13] or "").strip()
+        if order_no:
+            n_map[order_no] = status
         if not order_no or not _is_market_or_manual_source(source, order_no):
             continue
-        status = str(row[13] or "").strip()
         groups.setdefault(order_no, []).append(
             {
                 "row_idx": idx,
@@ -594,6 +613,8 @@ def _load_sheet_market_groups(
                 "location": _clean_location(row[17] if len(row) > 17 else ""),
             }
         )
+    if n_map:
+        _sheet_n_by_order = n_map
     if not packing_only:
         return groups
     kept: dict[str, list[dict[str, Any]]] = {}
@@ -782,10 +803,8 @@ def _drop_sheet_orders_left_via_np(
     ttns: list[str] = []
     for order in orders:
         raw = str(order.get("ttn_number") or "")
-        if str(raw).upper().startswith("RMP-"):
-            continue
-        digits = re.sub(r"\D+", "", raw)
-        if _looks_like_np_ttn(raw) and digits:
+        digits = _np_ttn_digits(raw)
+        if digits:
             ttns.append(digits)
     if not ttns:
         return orders
@@ -798,11 +817,11 @@ def _drop_sheet_orders_left_via_np(
     left_sheet: list[str] = []
     for order in orders:
         raw = str(order.get("ttn_number") or "")
-        if str(raw).upper().startswith("RMP-"):
+        digits = _np_ttn_digits(raw)
+        if not digits:
             kept.append(order)
             continue
-        digits = re.sub(r"\D+", "", raw)
-        row = info.get(digits) or {}
+        row = info.get(digits) or info.get(re.sub(r"\D+", "", raw)) or {}
         if not row:
             kept.append(order)
             continue
@@ -818,6 +837,29 @@ def _drop_sheet_orders_left_via_np(
                     left_sheet.append(no)
             else:
                 _persist_sqlite_left_warehouse(storage, order, mapped or "in_transit")
+            continue
+        kept.append(order)
+    if left_sheet:
+        _mark_sheet_orders_shipped(storage, left_sheet)
+    return kept
+
+
+def _drop_orders_left_via_sheet_n(
+    storage: AppStorage, orders: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """Mini App K- замовлення теж знімати, якщо стовпець N уже «в дорозі»."""
+    if not _sheet_n_by_order:
+        return orders
+    kept: list[dict[str, Any]] = []
+    left_sheet: list[str] = []
+    for order in orders:
+        no = str(order.get("order_number") or "").strip()
+        label = str(_sheet_n_by_order.get(no) or "").strip()
+        if label and not _is_sheet_row_still_packing(label):
+            if is_sheet_queue_order(order) and no:
+                left_sheet.append(no)
+            elif not is_sheet_queue_order(order):
+                _persist_sqlite_left_warehouse(storage, order, "in_transit")
             continue
         kept.append(order)
     if left_sheet:
@@ -1001,6 +1043,7 @@ def list_warehouse_queue(
         out.append(order)
         if no:
             seen_nos.add(no)
+    out = _drop_orders_left_via_sheet_n(storage, out)
     out = _drop_sheet_orders_left_via_np(storage, out)
     out = _drop_orders_left_via_rozetka(storage, out)
     out.sort(key=_queue_sort_key, reverse=True)
