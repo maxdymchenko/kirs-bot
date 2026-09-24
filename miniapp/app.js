@@ -8171,22 +8171,19 @@ ${
     });
   }
 
-  if (els.warehouseShippingCarrierFilters) {
-    els.warehouseShippingCarrierFilters.addEventListener("click", (event) => {
-      const btn = event.target.closest("[data-wh-carrier]");
-      if (!btn) return;
-      warehouseShippingCarrierFilter = btn.getAttribute("data-wh-carrier") || "all";
+  document.addEventListener("click", (event) => {
+    const carrierBtn = event.target.closest("[data-wh-carrier]");
+    if (carrierBtn && carrierBtn.closest("#warehouseShippingCarrierFilters")) {
+      warehouseShippingCarrierFilter = carrierBtn.getAttribute("data-wh-carrier") || "all";
       renderWarehouseShippingList();
-    });
-  }
-  if (els.warehouseShippingOwnerFilters) {
-    els.warehouseShippingOwnerFilters.addEventListener("click", (event) => {
-      const btn = event.target.closest("[data-wh-owner]");
-      if (!btn) return;
-      warehouseShippingOwnerFilter = btn.getAttribute("data-wh-owner") || "all";
+      return;
+    }
+    const ownerBtn = event.target.closest("[data-wh-owner]");
+    if (ownerBtn && ownerBtn.closest("#warehouseShippingOwnerFilters")) {
+      warehouseShippingOwnerFilter = ownerBtn.getAttribute("data-wh-owner") || "all";
       renderWarehouseShippingList();
-    });
-  }
+    }
+  });
 
   if (els.warehouseDismissBtn) {
     els.warehouseDismissBtn.addEventListener("click", async () => {
