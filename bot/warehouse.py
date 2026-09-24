@@ -381,6 +381,28 @@ def warehouse_delivery_carrier_label(code: str) -> str:
     }.get(str(code or "").strip(), "Нова Пошта")
 
 
+_OUR_TTN_SOURCE_MARKERS = (
+    "rozetka",
+    "розетк",
+    "kasta",
+    "каста",
+    "olx",
+    "пром (кірс)",
+    "пром (кирс)",
+    "пром (браво)",
+    "пром (сумка",
+)
+
+
+def warehouse_ttn_owner(order: dict[str, Any]) -> str:
+    """Наші кабінети (Rozetka / Kasta / Prom / OLX) vs ТТН дропшиперів."""
+    payload = order.get("payload") or {}
+    text = str(payload.get("market_source") or "").casefold()
+    if any(marker in text for marker in _OUR_TTN_SOURCE_MARKERS):
+        return "ours"
+    return "dropper"
+
+
 def _load_sheet_stages(storage: AppStorage) -> dict[str, str]:
     with storage._connect() as conn:
         row = conn.execute(

@@ -171,6 +171,9 @@
     warehouseShippingCarrierFilters: document.getElementById(
       "warehouseShippingCarrierFilters"
     ),
+    warehouseShippingOwnerFilters: document.getElementById(
+      "warehouseShippingOwnerFilters"
+    ),
     orderMain: document.getElementById("orderMain"),
     searchForm: document.getElementById("searchForm"),
     searchInput: document.getElementById("searchInput"),
@@ -298,6 +301,7 @@
   let warehouseTabState = "catalog";
   let warehouseShippingItems = [];
   let warehouseShippingCarrierFilter = "all";
+  let warehouseShippingOwnerFilter = "all";
 
   const previewState = {
     mode: "owner",
@@ -7765,6 +7769,26 @@ ${
     return String(order.delivery_carrier || "np").trim() || "np";
   }
 
+  function warehouseShippingOwnerOf(order) {
+    const flagged = String(order.ttn_owner || "").trim();
+    if (flagged === "ours" || flagged === "dropper") return flagged;
+    const text = [order.source_label, (order.payload || {}).market_source]
+      .join(" ")
+      .toLowerCase();
+    const ours = [
+      "rozetka",
+      "розетк",
+      "kasta",
+      "каста",
+      "olx",
+      "пром (кірс)",
+      "пром (кирс)",
+      "пром (браво)",
+      "пром (сумка",
+    ];
+    return ours.some((marker) => text.includes(marker)) ? "ours" : "dropper";
+  }
+
   function syncWarehouseShippingCarrierFilters() {
     if (!els.warehouseShippingCarrierFilters) return;
     els.warehouseShippingCarrierFilters
@@ -7777,24 +7801,44 @@ ${
       });
   }
 
+  function syncWarehouseShippingOwnerFilters() {
+    if (!els.warehouseShippingOwnerFilters) return;
+    els.warehouseShippingOwnerFilters
+      .querySelectorAll("[data-wh-owner]")
+      .forEach((btn) => {
+        btn.classList.toggle(
+          "active",
+          btn.getAttribute("data-wh-owner") === warehouseShippingOwnerFilter
+        );
+      });
+  }
+
   function renderWarehouseShippingList() {
     const listEl = els.warehouseShippingList;
     if (!listEl) return;
-    const filter = warehouseShippingCarrierFilter || "all";
+    const carrier = warehouseShippingCarrierFilter || "all";
+    const owner = warehouseShippingOwnerFilter || "all";
     const items = warehouseShippingItems.filter((o) => {
-      if (filter === "all") return true;
-      return warehouseShippingCarrierOf(o) === filter;
+      if (carrier !== "all" && warehouseShippingCarrierOf(o) !== carrier) {
+        return false;
+      }
+      if (owner !== "all" && warehouseShippingOwnerOf(o) !== owner) {
+        return false;
+      }
+      return true;
     });
     if (!warehouseShippingItems.length) {
       listEl.innerHTML = `<div class="empty">Немає замовлень на відправлення</div>`;
       syncWarehousePrintButton();
       syncWarehouseShippingCarrierFilters();
+      syncWarehouseShippingOwnerFilters();
       return;
     }
     if (!items.length) {
-      listEl.innerHTML = `<div class="empty">Немає замовлень цієї служби доставки</div>`;
+      listEl.innerHTML = `<div class="empty">Немає замовлень за цим фільтром</div>`;
       syncWarehousePrintButton();
       syncWarehouseShippingCarrierFilters();
+      syncWarehouseShippingOwnerFilters();
       return;
     }
     listEl.innerHTML = items
@@ -7802,6 +7846,7 @@ ${
       .join("");
     syncWarehousePrintButton();
     syncWarehouseShippingCarrierFilters();
+    syncWarehouseShippingOwnerFilters();
   }
 
   async function loadWarehouseQueue(stage) {
@@ -8131,6 +8176,14 @@ ${
       const btn = event.target.closest("[data-wh-carrier]");
       if (!btn) return;
       warehouseShippingCarrierFilter = btn.getAttribute("data-wh-carrier") || "all";
+      renderWarehouseShippingList();
+    });
+  }
+  if (els.warehouseShippingOwnerFilters) {
+    els.warehouseShippingOwnerFilters.addEventListener("click", (event) => {
+      const btn = event.target.closest("[data-wh-owner]");
+      if (!btn) return;
+      warehouseShippingOwnerFilter = btn.getAttribute("data-wh-owner") || "all";
       renderWarehouseShippingList();
     });
   }

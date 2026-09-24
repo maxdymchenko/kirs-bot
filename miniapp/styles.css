@@ -2686,3 +2686,7 @@ input[type="file"] {
   margin-bottom: 10px;
 }
 
+.warehouse-carrier-filters + .warehouse-carrier-filters {
+  margin-top: -4px;
+}
+
