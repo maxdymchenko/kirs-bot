@@ -305,3 +305,38 @@ def persist_order_ttn_pdf(
             )
 
     return storage.merge_order_payload(int(order["id"]), patch)
+
+
+def persist_order_receipt_pdf(
+    storage: Any,
+    order: dict[str, Any],
+    *,
+    pdf_bytes: bytes,
+    filename: str = "",
+) -> dict[str, Any] | None:
+    """Зберегти PDF квитанції оплати на реквізити (локально)."""
+    if not pdf_bytes:
+        return None
+    from bot.ttn_store import save_pdf_bytes
+
+    order_number = str(order.get("order_number") or "")
+    raw_name = str(filename or "").strip() or f"{order_number}_receipt.pdf"
+    name = raw_name if raw_name.lower().endswith(".pdf") else f"{raw_name}.pdf"
+    try:
+        local = save_pdf_bytes(pdf_bytes, filename=name)
+    except Exception:
+        logger.exception(
+            "Receipt local save failed order=%s", order.get("order_number")
+        )
+        return None
+    payload = dict(order.get("payload") or {})
+    payment = dict(payload.get("payment") or {})
+    payment.update(
+        {
+            "receipt_name": raw_name or local.get("name") or name,
+            "receipt_local_path": local.get("relative") or "",
+            "receipt_local_abs": local.get("path") or "",
+            "receipt_saved_at": datetime.now(KYIV).isoformat(timespec="seconds"),
+        }
+    )
+    return storage.merge_order_payload(int(order["id"]), {"payment": payment})

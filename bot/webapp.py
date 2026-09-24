@@ -236,6 +236,7 @@ class OrderCreateRequest(BaseModel):
     cod_amount: float = Field(0, ge=0)
     comment: str = Field("", max_length=1000)
     receipt_name: str = Field("", max_length=260)
+    receipt_pdf_base64: str = Field("", max_length=3_500_000)
     ttn_pdf_name: str = Field("", max_length=260)
     ttn_pdf_base64: str = Field("", max_length=3_500_000)
     cart: list[dict] = Field(default_factory=list)
@@ -1561,8 +1562,40 @@ def create_web_app(
         floor = -max(0.0, float(dropper.negative_balance_limit or 0))
         return max(0.0, balance - floor)
 
+    def _assert_requisites_receipt(
+        payload: OrderCreateRequest, *, existing_receipt_name: str = ""
+    ) -> None:
+        if payload.payment_method != "requisites":
+            return
+        name = str(payload.receipt_name or "").strip()
+        b64 = str(getattr(payload, "receipt_pdf_base64", None) or "").strip()
+        existing = str(existing_receipt_name or "").strip()
+        if b64:
+            check_name = name or existing
+            if not check_name.lower().endswith(".pdf"):
+                raise HTTPException(
+                    status_code=400,
+                    detail="Квитанція має бути у форматі PDF",
+                )
+            return
+        if existing:
+            if name and not name.lower().endswith(".pdf"):
+                raise HTTPException(
+                    status_code=400,
+                    detail="Квитанція має бути у форматі PDF",
+                )
+            return
+        raise HTTPException(
+            status_code=400,
+            detail="Прикріпіть PDF квитанцію оплати",
+        )
+
     def _validate_order_payload(
-        payload: OrderCreateRequest, dropper, *, for_owner_edit: bool = False
+        payload: OrderCreateRequest,
+        dropper,
+        *,
+        for_owner_edit: bool = False,
+        existing_receipt_name: str = "",
     ) -> tuple[float, float, float, float]:
         if not for_owner_edit and dropper.orders_disabled:
             raise HTTPException(status_code=403, detail="Передачу замовлень заблоковано")
@@ -1692,6 +1725,11 @@ def create_web_app(
         else:
             cod_amount = 0.0
             prepay = 0.0
+
+        if not for_owner_edit:
+            _assert_requisites_receipt(
+                payload, existing_receipt_name=existing_receipt_name
+            )
 
         if payload.own_ttn:
             # Доставка й ПІБ вже в етикетці ТТН — перевіряємо лише телефон вище.
@@ -1906,6 +1944,25 @@ def create_web_app(
         storage.set_order_warehouse_stage(int(order["id"]), wh_stage)
         storage.merge_order_payload(int(order["id"]), {"warehouse_stage": wh_stage})
         order = storage.get_order(int(order["id"])) or order
+
+        receipt_b64 = str(getattr(payload, "receipt_pdf_base64", None) or "").strip()
+        if payload.payment_method == "requisites" and receipt_b64:
+            try:
+                from bot.ttn_drive import decode_pdf_base64, persist_order_receipt_pdf
+
+                persist_order_receipt_pdf(
+                    storage,
+                    order,
+                    pdf_bytes=decode_pdf_base64(receipt_b64),
+                    filename=str(payload.receipt_name or "")
+                    or f"{order.get('order_number')}_receipt.pdf",
+                )
+                order = storage.get_order(int(order["id"])) or order
+            except Exception:
+                logger.exception(
+                    "receipt pdf save after order %s failed",
+                    order.get("order_number"),
+                )
 
         if debit > 0:
             # Суму запам'ятовуємо; проводка на баланс — лише після забрання.
@@ -2356,8 +2413,26 @@ def create_web_app(
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
         total, prepay, debit, cod_amount = _validate_order_payload(
-            validate_payload, dropper, for_owner_edit=for_owner_edit
+            validate_payload,
+            dropper,
+            for_owner_edit=for_owner_edit,
+            existing_receipt_name=str(
+                ((order.get("payload") or {}).get("payment") or {}).get(
+                    "receipt_name"
+                )
+                or ""
+            ),
         )
+        if actor_role == "dropper":
+            _assert_requisites_receipt(
+                validate_payload,
+                existing_receipt_name=str(
+                    ((order.get("payload") or {}).get("payment") or {}).get(
+                        "receipt_name"
+                    )
+                    or ""
+                ),
+            )
 
         own_ttn = bool(validate_payload.own_ttn)
         carrier = (
@@ -2455,13 +2530,28 @@ def create_web_app(
             "np_warehouse": validate_payload.np_warehouse,
             "np_street": validate_payload.np_street,
         }
+        old_payment = old_payload.get("payment") or {}
+        receipt_name = str(validate_payload.receipt_name or "").strip() or str(
+            old_payment.get("receipt_name") or ""
+        )
+        receipt_b64 = str(
+            getattr(validate_payload, "receipt_pdf_base64", None) or ""
+        ).strip()
         payment_block = {
             "method": validate_payload.payment_method,
             "prepay": prepay,
             "cod_amount": cod_amount,
             "prepay_balance_debit": debit,
-            "receipt_name": validate_payload.receipt_name,
+            "receipt_name": receipt_name,
         }
+        if not receipt_b64:
+            for key in (
+                "receipt_local_path",
+                "receipt_local_abs",
+                "receipt_saved_at",
+            ):
+                if old_payment.get(key):
+                    payment_block[key] = old_payment[key]
 
         new_snap = {
             "payment_method": validate_payload.payment_method,
@@ -2481,7 +2571,7 @@ def create_web_app(
         diffs = compute_order_diff(order, new_snap)
         pdf_b64 = str(getattr(validate_payload, "ttn_pdf_base64", None) or "").strip()
         pdf_only = bool(own_ttn and pdf_b64 and not diffs)
-        if not diffs and not pdf_only:
+        if not diffs and not pdf_only and not receipt_b64:
             changes = storage.list_order_changes(order_id, limit=100)
             return {
                 "ok": True,
@@ -2660,6 +2750,24 @@ def create_web_app(
         )
         if not saved:
             raise HTTPException(status_code=500, detail="Не вдалося зберегти замовлення")
+
+        if receipt_b64:
+            try:
+                from bot.ttn_drive import decode_pdf_base64, persist_order_receipt_pdf
+
+                persist_order_receipt_pdf(
+                    storage,
+                    saved,
+                    pdf_bytes=decode_pdf_base64(receipt_b64),
+                    filename=receipt_name
+                    or f"{saved.get('order_number')}_receipt.pdf",
+                )
+                saved = storage.get_order(order_id) or saved
+            except Exception:
+                logger.exception(
+                    "receipt pdf save on edit %s failed",
+                    saved.get("order_number"),
+                )
 
         try:
             sync_ledger_for_edited_order(storage, saved)

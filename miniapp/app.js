@@ -253,6 +253,8 @@
     ttnPdfField: document.getElementById("ttnPdfField"),
     ttnPdf: document.getElementById("ttnPdf"),
     ttnPdfName: document.getElementById("ttnPdfName"),
+    receiptPdf: document.getElementById("receiptPdf"),
+    receiptPdfName: document.getElementById("receiptPdfName"),
     phone: document.getElementById("phone"),
     phoneGhost: document.getElementById("phoneGhost"),
     city: document.getElementById("city"),
@@ -491,6 +493,11 @@
     if (els.ttnPdfName) {
       els.ttnPdfName.textContent = els.ttnPdfName.dataset.empty || "Файл не обрано";
       els.ttnPdfName.classList.remove("is-selected");
+    }
+    if (els.receiptPdf) els.receiptPdf.value = "";
+    if (els.receiptPdfName) {
+      els.receiptPdfName.textContent = els.receiptPdfName.dataset.empty || "Файл не обрано";
+      els.receiptPdfName.classList.remove("is-selected");
     }
     if (els.confirmSummary) els.confirmSummary.innerHTML = "";
     if (els.confirmError) {
@@ -1607,6 +1614,7 @@
     const paymentMethod =
       form.querySelector('input[name="paymentMethod"]:checked')?.value || "";
     const ttnPdfFile = els.ttnPdf?.files?.[0] || null;
+    const receiptFile = els.receiptPdf?.files?.[0] || null;
     const ownTtnNumber =
       selectedOwnTtnCarrier() === "rozetka"
         ? normalizeRmpNumber(form.rmpNumber?.value || "")
@@ -1639,13 +1647,23 @@
       prepay: form.prepay.value.trim(),
       comment: form.comment.value.trim(),
       rulesAccepted: Boolean(form.rulesAccepted.checked),
-      receiptName: "",
-      receiptFile: null,
+      receiptName: receiptFile ? receiptFile.name : "",
+      receiptFile,
       ttnPdfName: ttnPdfFile ? ttnPdfFile.name : "",
       ttnPdfFile,
       cart: loadCart(),
       total: cartMoneyTotal(),
     };
+  }
+
+  function isPdfAttachment(file) {
+    if (!file) return false;
+    const name = String(file.name || "").toLowerCase();
+    const type = String(file.type || "");
+    if (type && type !== "application/pdf" && !name.endsWith(".pdf")) {
+      return false;
+    }
+    return name.endsWith(".pdf");
   }
 
   function validateCheckout(data) {
@@ -1802,6 +1820,15 @@
       data.codAmount = 0;
       data.prepayBalanceDebit = 0;
     }
+
+    if (data.paymentMethod === "requisites") {
+      if (!data.receiptFile) {
+        return "Прикріпіть PDF квитанцію оплати";
+      }
+      if (!isPdfAttachment(data.receiptFile)) {
+        return "Квитанція має бути у форматі PDF";
+      }
+    }
     return "";
   }
 
@@ -1936,6 +1963,11 @@ ${escapeHtml(deliveryExtra)}</div>
 Дроп ціна: ${escapeHtml(formatMoneyAmount(totalExact))} ₴
 ${paymentExtra}
 ${debit > 0 ? `З балансу спишеться після отримання: ${escapeHtml(formatMoneyAmount(debit))} ₴` : ""}
+${
+  data.paymentMethod === "requisites"
+    ? `Квитанція: ${escapeHtml(data.receiptName || "—")}`
+    : ""
+}
 ${ttnLine}</div>
       </div>
       <div class="confirm-block">
@@ -2010,6 +2042,7 @@ ${ttnLine}</div>
       cod_amount: Number(data.codAmount || 0),
       comment: data.comment || "",
       receipt_name: data.receiptName || "",
+      receipt_pdf_base64: data.receiptPdfBase64 || "",
       ttn_pdf_name: data.ttnPdfName || "",
       ttn_pdf_base64: data.ttnPdfBase64 || "",
       cart: (data.cart || []).map((item) => ({
@@ -2049,6 +2082,12 @@ ${ttnLine}</div>
     try {
       if (checkoutDraft.ownTtn && checkoutDraft.ttnPdfFile) {
         checkoutDraft.ttnPdfBase64 = await readFileAsBase64(checkoutDraft.ttnPdfFile);
+      }
+      if (checkoutDraft.paymentMethod === "requisites") {
+        if (!checkoutDraft.receiptFile) {
+          throw new Error("Прикріпіть PDF квитанцію оплати");
+        }
+        checkoutDraft.receiptPdfBase64 = await readFileAsBase64(checkoutDraft.receiptFile);
       }
       const response = await fetch("/api/orders", {
         method: "POST",
@@ -2641,6 +2680,11 @@ ${
     : ""
 }
 ${debit > 0 ? `З балансу: ${escapeHtml(formatMoneyAmount(debit))} ₴` : ""}
+${
+  method === "requisites" && payment.receipt_name
+    ? `Квитанція: ${escapeHtml(payment.receipt_name)}`
+    : ""
+}
 ${
   ownTtn
     ? ownCarrier === "rozetka"
@@ -3274,6 +3318,33 @@ ${
               ${paymentOptions}
             </select>
           </label>
+          <div class="field compact-field" data-edit-receipt-wrap style="grid-column:1/-1">
+            <span class="field-label">Квитанція оплати (PDF)</span>
+            <label class="file-picker">
+              <input
+                name="receipt_pdf"
+                class="file-picker-input"
+                type="file"
+                accept="application/pdf,.pdf"
+                data-edit-receipt-pdf
+              />
+              <span class="file-picker-btn">Обрати файл</span>
+              <span
+                class="file-picker-name${payment.receipt_name ? " is-selected" : ""}"
+                data-edit-receipt-pdf-name
+                data-empty="Файл не обрано"
+                data-current-name="${escapeHtml(payment.receipt_name || "")}"
+              >${escapeHtml(payment.receipt_name || "Файл не обрано")}</span>
+            </label>
+            <input type="hidden" name="receipt_name" value="${escapeHtml(
+              payment.receipt_name || ""
+            )}" />
+            <span class="field-hint">${
+              payment.receipt_name
+                ? "Можна замінити поточну квитанцію новим PDF"
+                : "Обовʼязково для оплати на реквізити · PDF квитанція"
+            }</span>
+          </div>
           <label class="field compact-field" data-edit-prepay-wrap>
             <span class="field-label">Передплата ₴</span>
             <input name="prepay" type="number" min="0" step="1" value="${escapeHtml(
@@ -3402,6 +3473,13 @@ ${
     if (pdfFile) {
       ttnPdfName = pdfFile.name || ttnPdfName;
     }
+    const receiptInput = form.querySelector("[data-edit-receipt-pdf]");
+    const receiptFile = receiptInput?.files?.[0] || null;
+    const oldReceiptName = String((payload.payment || {}).receipt_name || "").trim();
+    let receiptName = form.receipt_name?.value?.trim() || oldReceiptName;
+    if (receiptFile) {
+      receiptName = receiptFile.name || receiptName;
+    }
     return {
       ...base,
       first_name: form.first_name?.value?.trim() || "",
@@ -3422,6 +3500,7 @@ ${
       own_ttn_carrier: form.own_ttn_carrier?.value || "nova_poshta",
       ttn_number: form.ttn_number?.value?.trim() || "",
       ttn_pdf_name: ttnPdfName,
+      receipt_name: receiptName,
       payment_method: form.payment_method?.value || "cod",
       prepay: Number(form.prepay?.value || 0),
       cod_amount: Number(form.cod_amount?.value || 0),
@@ -3450,6 +3529,35 @@ ${
     const apt = form.apartment?.closest(".field");
     if (house) house.classList.toggle("hidden", !isCourier || isOwn);
     if (apt) apt.classList.toggle("hidden", !isCourier || isOwn);
+  }
+
+  function bindOrderEditReceiptPicker(form) {
+    if (!form) return;
+    const inputEl = form.querySelector("[data-edit-receipt-pdf]");
+    const nameEl = form.querySelector("[data-edit-receipt-pdf-name]");
+    const hiddenName = form.querySelector('input[name="receipt_name"]');
+    if (!inputEl || !nameEl || inputEl.dataset.bound === "1") return;
+    inputEl.dataset.bound = "1";
+    const currentName = nameEl.dataset.currentName || "";
+    const emptyText = nameEl.dataset.empty || "Файл не обрано";
+    const sync = () => {
+      const file = inputEl.files && inputEl.files[0];
+      if (file) {
+        nameEl.textContent = file.name;
+        nameEl.classList.add("is-selected");
+        if (hiddenName) hiddenName.value = file.name;
+      } else if (currentName) {
+        nameEl.textContent = currentName;
+        nameEl.classList.add("is-selected");
+        if (hiddenName) hiddenName.value = currentName;
+      } else {
+        nameEl.textContent = emptyText;
+        nameEl.classList.remove("is-selected");
+        if (hiddenName) hiddenName.value = "";
+      }
+    };
+    inputEl.addEventListener("change", sync);
+    sync();
   }
 
   function bindOrderEditTtnPdfPicker(form) {
@@ -3823,6 +3931,9 @@ ${
     form.querySelectorAll("[data-edit-estimated-wrap]").forEach((el) => {
       el.classList.toggle("hidden", isCod);
     });
+    form.querySelectorAll("[data-edit-receipt-wrap]").forEach((el) => {
+      el.classList.toggle("hidden", method !== "requisites");
+    });
   }
 
   async function openOwnerOrderEdit(orderId, card, modeHint) {
@@ -3844,6 +3955,7 @@ ${
     form?.payment_method?.addEventListener("change", () => syncOrderEditPaymentFields(form));
     bindOrderEditNpAutocomplete(form, hit.order);
     bindOrderEditTtnPdfPicker(form);
+    bindOrderEditReceiptPicker(form);
   }
 
   async function saveOwnerOrderEdit(form) {
@@ -3917,6 +4029,43 @@ ${
           }
           return;
         }
+      }
+    }
+    if (body.payment_method === "requisites") {
+      const receiptInput = form.querySelector("[data-edit-receipt-pdf]");
+      const receiptFile = receiptInput?.files?.[0] || null;
+      const receiptName = String(body.receipt_name || "").trim();
+      if (mode === "dropper" && !receiptName && !receiptFile) {
+        if (errEl) {
+          errEl.textContent = "Прикріпіть PDF квитанцію оплати";
+          errEl.classList.remove("hidden");
+        }
+        return;
+      }
+      if (receiptFile) {
+        if (!isPdfAttachment(receiptFile)) {
+          if (errEl) {
+            errEl.textContent = "Квитанція має бути у форматі PDF";
+            errEl.classList.remove("hidden");
+          }
+          return;
+        }
+        try {
+          body.receipt_pdf_base64 = await readFileAsBase64(receiptFile);
+          body.receipt_name = receiptFile.name || receiptName;
+        } catch (e) {
+          if (errEl) {
+            errEl.textContent = e.message || "Не вдалося прочитати PDF квитанції";
+            errEl.classList.remove("hidden");
+          }
+          return;
+        }
+      } else if (mode === "dropper" && receiptName && !receiptName.toLowerCase().endsWith(".pdf")) {
+        if (errEl) {
+          errEl.textContent = "Квитанція має бути у форматі PDF";
+          errEl.classList.remove("hidden");
+        }
+        return;
       }
     }
     const submitBtn = form.querySelector('button[type="submit"]');
@@ -4053,6 +4202,7 @@ ${
       );
       bindOrderEditNpAutocomplete(formAfter, panel._orderRef);
       bindOrderEditTtnPdfPicker(formAfter);
+      bindOrderEditReceiptPicker(formAfter);
     } catch (error) {
       showToast(error.message || "Помилка пошуку");
     }
@@ -5224,6 +5374,7 @@ ${
   }
 
   bindFilePicker(els.ttnPdf, els.ttnPdfName);
+  bindFilePicker(els.receiptPdf, els.receiptPdfName);
 
   els.checkoutForm.addEventListener("change", (event) => {
     if (event.target.name === "deliveryMethod") syncDeliveryFields();

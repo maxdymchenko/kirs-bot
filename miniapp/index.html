@@ -736,6 +736,23 @@
                 <p class="requisites-warn">Зверніть увагу! Реквізити було оновлено.</p>
                 <div class="requisites-details" id="requisitesDetails"></div>
               </div>
+              <div class="field" id="receiptField">
+                <span class="field-label">Квитанція оплати (PDF)</span>
+                <label class="file-picker">
+                  <input
+                    id="receiptPdf"
+                    name="receiptPdf"
+                    class="file-picker-input"
+                    type="file"
+                    accept="application/pdf,.pdf"
+                  />
+                  <span class="file-picker-btn">Обрати файл</span>
+                  <span class="file-picker-name" id="receiptPdfName" data-empty="Файл не обрано"
+                    >Файл не обрано</span
+                  >
+                </label>
+                <span class="field-hint">Обовʼязково · PDF квитанція оплати на реквізити</span>
+              </div>
             </div>
           </div>
 
