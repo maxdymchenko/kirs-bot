@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import os
 import re
+import time
 from datetime import datetime
 from typing import Any, Callable, TypeVar
 
@@ -17,6 +18,13 @@ from bot.novaposhta import (
     map_np_status_code,
     np_payload_looks_like_redirect,
     np_tracking_is_redirect,
+)
+from bot.rmp_tracking import (
+    fetch_rmp_status_with_retry,
+    map_rmp_status,
+    normalize_rmp_track_id,
+    order_rmp_trackable,
+    tracking_row_from_rmp,
 )
 
 logger = logging.getLogger(__name__)
@@ -893,10 +901,17 @@ async def apply_tracking_event(
         "mapped": "",
         "order": order,
     }
-    if not order or not order_np_trackable(order):
+    is_rmp = order_rmp_trackable(order)
+    is_np = order_np_trackable(order)
+    if not order or not (is_np or is_rmp):
         return result
 
-    mapped = map_np_status_code(status_code, status_text)
+    mapped = (
+        map_rmp_status(status_code, status_text)
+        if is_rmp
+        else map_np_status_code(status_code, status_text)
+    )
+    source_label = "Rozetka Delivery" if is_rmp else "Нова Пошта"
     prev = str(order.get("ttn_status") or "")
     payload_prev = order.get("payload") or {}
     ever_received = bool(
@@ -906,8 +921,9 @@ async def apply_tracking_event(
         or payload_prev.get("goods_debited")
     )
     ret_prev = payload_prev.get("dropper_return")
-    is_redirect = np_tracking_is_redirect(tracking_row) or np_payload_looks_like_redirect(
-        payload_prev
+    is_redirect = (not is_rmp) and (
+        np_tracking_is_redirect(tracking_row)
+        or np_payload_looks_like_redirect(payload_prev)
     )
     if (
         mapped == "received"
@@ -1007,7 +1023,7 @@ async def apply_tracking_event(
                     order_id=int(order["id"]),
                     order_number=str(order.get("order_number") or ""),
                     actor_role="system",
-                    actor_label="Нова Пошта",
+                    actor_label=source_label,
                     change_type="tracking",
                     summary=f"Статус доставки: {prev or '—'} → {mapped}"
                     + (f" ({text_s})" if text_s else ""),
@@ -1272,6 +1288,75 @@ def repair_redirect_treated_as_return(
     }
 
 
+async def _apply_track_result(
+    storage: AppStorage,
+    order: dict[str, Any],
+    stats: dict[str, int],
+    *,
+    status_code: str | int | None,
+    status_text: str,
+    tracking_row: dict[str, Any] | None,
+    notify: NotifyFn | None,
+    owner_notify: OwnerNotifyFn | None,
+) -> None:
+    stats["checked"] += 1
+    applied = await apply_tracking_event(
+        storage,
+        order,
+        status_code=status_code,
+        status_text=status_text,
+        tracking_row=tracking_row,
+        notify=notify,
+        owner_notify=owner_notify,
+    )
+    if applied["updated"]:
+        stats["updated"] += 1
+    if applied["received"]:
+        stats["received"] += 1
+    if applied["returned"]:
+        stats["returned"] += 1
+
+
+async def _track_rmp_orders_async(
+    storage: AppStorage,
+    orders: list[dict[str, Any]],
+    stats: dict[str, int],
+    notify: NotifyFn | None,
+    owner_notify: OwnerNotifyFn | None,
+    *,
+    limit: int = 40,
+) -> None:
+    pending = [
+        order
+        for order in orders
+        if order_rmp_trackable(order) and str(order.get("ttn_number") or "").strip()
+    ]
+    for index, order in enumerate(pending[: max(1, limit)]):
+        raw = str(order.get("ttn_number") or "").strip()
+        track_id = normalize_rmp_track_id(raw) or raw
+        if index:
+            time.sleep(0.45)
+        try:
+            data = fetch_rmp_status_with_retry(track_id)
+        except Exception:
+            stats["errors"] += 1
+            logger.exception("RMP tracking failed for %s", order.get("order_number"))
+            continue
+        if not data:
+            continue
+        row = tracking_row_from_rmp(data, track_id)
+        await _apply_track_result(
+            storage,
+            order,
+            stats,
+            status_code=row.get("StatusCode"),
+            status_text=str(row.get("Status") or ""),
+            tracking_row=row,
+            notify=notify,
+            owner_notify=owner_notify,
+        )
+
+
 async def track_order_statuses_async(
     storage: AppStorage,
     notify: NotifyFn | None = None,
@@ -1286,8 +1371,6 @@ async def track_order_statuses_async(
         "returned": 0,
         "errors": 0,
     }
-    if not clients:
-        return stats
 
     orders = storage.list_orders_for_tracking(limit=200)
     if not orders:
@@ -1305,44 +1388,43 @@ async def track_order_statuses_async(
         docs.append({"DocumentNumber": number, "Phone": phone})
         by_number[number] = order
 
-    if not docs:
-        return stats
+    if docs and clients:
+        rows: list[dict[str, Any]] = []
+        last_err: Exception | None = None
+        for label, client, _is_primary in clients:
+            try:
+                rows = client.get_status_documents(docs)
+                break
+            except Exception as exc:
+                last_err = exc
+                logger.warning("NP tracking batch failed via «%s»: %s", label, exc)
+        else:
+            logger.error("NP tracking batch failed on all keys: %s", last_err)
+            stats["errors"] += 1
+        if rows:
+            for row in rows:
+                number = str(
+                    row.get("Number") or row.get("DocumentNumber") or ""
+                ).strip()
+                order = by_number.get(number)
+                if not order:
+                    continue
+                await _apply_track_result(
+                    storage,
+                    order,
+                    stats,
+                    status_code=row.get("StatusCode"),
+                    status_text=str(row.get("Status") or ""),
+                    tracking_row=row,
+                    notify=notify,
+                    owner_notify=owner_notify,
+                )
+    elif docs and not clients:
+        logger.warning("NP tracking skipped: no API keys")
 
-    rows: list[dict[str, Any]] = []
-    last_err: Exception | None = None
-    for label, client, _is_primary in clients:
-        try:
-            rows = client.get_status_documents(docs)
-            break
-        except Exception as exc:
-            last_err = exc
-            logger.warning("NP tracking batch failed via «%s»: %s", label, exc)
-    else:
-        logger.error("NP tracking batch failed on all keys: %s", last_err)
-        stats["errors"] += 1
-        return stats
-
-    for row in rows:
-        number = str(row.get("Number") or row.get("DocumentNumber") or "").strip()
-        order = by_number.get(number)
-        if not order:
-            continue
-        stats["checked"] += 1
-        applied = await apply_tracking_event(
-            storage,
-            order,
-            status_code=row.get("StatusCode"),
-            status_text=str(row.get("Status") or ""),
-            tracking_row=row,
-            notify=notify,
-            owner_notify=owner_notify,
-        )
-        if applied["updated"]:
-            stats["updated"] += 1
-        if applied["received"]:
-            stats["received"] += 1
-        if applied["returned"]:
-            stats["returned"] += 1
+    await _track_rmp_orders_async(
+        storage, orders, stats, notify, owner_notify
+    )
     return stats
 
 

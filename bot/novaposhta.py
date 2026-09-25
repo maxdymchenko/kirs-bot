@@ -656,12 +656,20 @@ def extract_warehouse_arrival_iso(row: dict[str, Any] | None) -> str:
         "ActualDeliveryDate",
         "ScheduledDeliveryDate",
         "DateScan",
+        "last_status_date",
     ):
         raw = str(row.get(key) or "").strip()
         if not raw:
             continue
-        # НП часто дає dd.mm.yyyy [HH:MM:SS]
-        for fmt in ("%d.%m.%Y %H:%M:%S", "%d.%m.%Y %H:%M", "%d.%m.%Y", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%d"):
+        # НП часто дає dd.mm.yyyy [HH:MM:SS]; Rozetka — YYYY-MM-DD HH:MM:SS
+        for fmt in (
+            "%d.%m.%Y %H:%M:%S",
+            "%d.%m.%Y %H:%M",
+            "%d.%m.%Y",
+            "%Y-%m-%dT%H:%M:%S",
+            "%Y-%m-%d %H:%M:%S",
+            "%Y-%m-%d",
+        ):
             try:
                 return datetime.strptime(raw[:19], fmt).isoformat(timespec="seconds")
             except ValueError:

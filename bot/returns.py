@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import re
+import time
 from datetime import datetime
 from typing import Any, Callable
 
@@ -12,6 +13,13 @@ from bot.novaposhta import (
     map_np_status_code,
     np_payload_looks_like_redirect,
     np_tracking_is_redirect,
+)
+from bot.rmp_tracking import (
+    fetch_rmp_status_with_retry,
+    is_rmp_trackable_number,
+    map_rmp_status,
+    normalize_rmp_track_id,
+    tracking_row_from_rmp,
 )
 
 logger = logging.getLogger(__name__)
@@ -568,6 +576,55 @@ def settle_confirmed_return(
     }
 
 
+async def _apply_return_tracking_mapped(
+    storage: AppStorage,
+    order: dict[str, Any],
+    mapped: str,
+    stats: dict[str, int],
+    *,
+    owner_notify: OwnerNotifyFn | None,
+    tracking_row: dict[str, Any] | None = None,
+    allow_redirect_repair: bool = False,
+) -> None:
+    ret = dict(order.get("dropper_return") or {})
+    auto = is_auto_return(ret)
+    if allow_redirect_repair and auto and np_tracking_is_redirect(tracking_row):
+        from bot.np_fulfillment import repair_redirect_treated_as_return
+
+        repaired = repair_redirect_treated_as_return(storage, order, tracking_row)
+        if repaired.get("ok"):
+            stats["redirect_repaired"] += 1
+        return
+    should_close = (
+        mapped_closes_auto_return(mapped)
+        if auto
+        else mapped in {"received", "at_warehouse", "return_at_warehouse"}
+    )
+    if str(ret.get("ttn_status") or "") != mapped:
+        ret["ttn_status"] = mapped
+        storage.merge_order_payload(int(order["id"]), {"dropper_return": ret})
+        order = storage.get_order(int(order["id"])) or order
+
+    if should_close:
+        full = storage.get_order(int(order["id"])) or order
+        before_ret = (full.get("payload") or {}).get("dropper_return") or {}
+        before = normalize_return_status(before_ret.get("status"))
+        await mark_return_received_async(
+            storage,
+            full,
+            ttn_status=mapped,
+            owner_notify=owner_notify,
+        )
+        after_order = storage.get_order(int(order["id"])) or full
+        after_ret = (after_order.get("payload") or {}).get("dropper_return") or {}
+        if (
+            normalize_return_status(after_ret.get("status"))
+            == STATUS_AWAITING_CONFIRM
+            and before != STATUS_AWAITING_CONFIRM
+        ):
+            stats["moved"] += 1
+
+
 async def track_return_ttns_async(
     storage: AppStorage,
     *,
@@ -582,12 +639,11 @@ async def track_return_ttns_async(
     except Exception:
         logger.exception("auto-return backfill failed")
     clients = list_np_clients(storage)
-    if not clients:
-        return stats
 
     items = storage.list_dropper_return_requests(limit=250)
     docs: list[dict[str, str]] = []
     by_number: dict[str, dict[str, Any]] = {}
+    rmp_orders: list[dict[str, Any]] = []
     for order in items:
         ret = order.get("dropper_return") or {}
         st = normalize_return_status(ret.get("status"))
@@ -597,76 +653,73 @@ async def track_return_ttns_async(
         if not auto and st != STATUS_AWAITING_RECEIPT:
             continue
         ttn = str(ret.get("ttn_number") or "").strip()
+        if is_rmp_trackable_number(ttn):
+            rmp_orders.append(order)
+            continue
         if not is_trackable_return_ttn(ttn):
             continue
         digits = re.sub(r"\D", "", ttn)
         docs.append({"DocumentNumber": digits, "Phone": ""})
         by_number[digits] = order
 
-    if not docs:
-        return stats
+    if docs and clients:
+        rows: list[dict[str, Any]] = []
+        last_err: Exception | None = None
+        for label, client, _is_primary in clients:
+            try:
+                rows = client.get_status_documents(docs)
+                break
+            except Exception as exc:
+                last_err = exc
+                logger.warning("NP return-TTN batch failed via «%s»: %s", label, exc)
+        else:
+            logger.error("NP return-TTN batch failed: %s", last_err)
+            stats["errors"] += 1
+            rows = []
+        for row in rows:
+            number = str(row.get("Number") or row.get("DocumentNumber") or "").strip()
+            order = by_number.get(number)
+            if not order:
+                continue
+            stats["checked"] += 1
+            mapped = map_np_status_code(
+                row.get("StatusCode"), str(row.get("Status") or "")
+            )
+            await _apply_return_tracking_mapped(
+                storage,
+                order,
+                mapped,
+                stats,
+                owner_notify=owner_notify,
+                tracking_row=row,
+                allow_redirect_repair=True,
+            )
 
-    rows: list[dict[str, Any]] = []
-    last_err: Exception | None = None
-    for label, client, _is_primary in clients:
+    for index, order in enumerate(rmp_orders[:40]):
+        ret = order.get("dropper_return") or {}
+        raw = str(ret.get("ttn_number") or "").strip()
+        track_id = normalize_rmp_track_id(raw) or raw
+        if index:
+            time.sleep(0.45)
         try:
-            rows = client.get_status_documents(docs)
-            break
-        except Exception as exc:
-            last_err = exc
-            logger.warning("NP return-TTN batch failed via «%s»: %s", label, exc)
-    else:
-        logger.error("NP return-TTN batch failed: %s", last_err)
-        stats["errors"] += 1
-        return stats
-
-    for row in rows:
-        number = str(row.get("Number") or row.get("DocumentNumber") or "").strip()
-        order = by_number.get(number)
-        if not order:
+            data = fetch_rmp_status_with_retry(track_id)
+        except Exception:
+            stats["errors"] += 1
+            logger.exception(
+                "RMP return tracking failed for %s", order.get("order_number")
+            )
+            continue
+        if not data:
             continue
         stats["checked"] += 1
-        mapped = map_np_status_code(
-            row.get("StatusCode"), str(row.get("Status") or "")
+        row = tracking_row_from_rmp(data, track_id)
+        mapped = map_rmp_status(row.get("StatusCode"), str(row.get("Status") or ""))
+        await _apply_return_tracking_mapped(
+            storage,
+            order,
+            mapped,
+            stats,
+            owner_notify=owner_notify,
         )
-        ret = dict(order.get("dropper_return") or {})
-        auto = is_auto_return(ret)
-        if auto and np_tracking_is_redirect(row):
-            from bot.np_fulfillment import repair_redirect_treated_as_return
-
-            repaired = repair_redirect_treated_as_return(storage, order, row)
-            if repaired.get("ok"):
-                stats["redirect_repaired"] += 1
-            continue
-        should_close = (
-            mapped_closes_auto_return(mapped)
-            if auto
-            else mapped in {"received", "at_warehouse", "return_at_warehouse"}
-        )
-        if str(ret.get("ttn_status") or "") != mapped:
-            ret["ttn_status"] = mapped
-            storage.merge_order_payload(
-                int(order["id"]), {"dropper_return": ret}
-            )
-            order = storage.get_order(int(order["id"])) or order
-
-        if should_close:
-            full = storage.get_order(int(order["id"])) or order
-            before_ret = (full.get("payload") or {}).get("dropper_return") or {}
-            before = normalize_return_status(before_ret.get("status"))
-            await mark_return_received_async(
-                storage,
-                full,
-                ttn_status=mapped,
-                owner_notify=owner_notify,
-            )
-            after_order = storage.get_order(int(order["id"])) or full
-            after_ret = (after_order.get("payload") or {}).get("dropper_return") or {}
-            if (
-                normalize_return_status(after_ret.get("status"))
-                == STATUS_AWAITING_CONFIRM
-                and before != STATUS_AWAITING_CONFIRM
-            ):
-                stats["moved"] += 1
 
     return stats
