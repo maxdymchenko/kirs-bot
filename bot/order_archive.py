@@ -326,17 +326,16 @@ def set_orders_archived(
                 }
             ],
         )
+        updated.append(saved)
+    if updated:
         try:
-            from bot.orders_sheets import sync_archived_settlement_to_sheet
+            from bot.orders_sheets import sync_archived_settlements_batch
 
-            sync_archived_settlement_to_sheet(
-                storage, saved, archived=archived
+            sync_archived_settlements_batch(
+                storage, updated, archived=archived
             )
         except Exception:
-            logger.exception(
-                "archive sheet Q failed for %s", saved.get("order_number")
-            )
-        updated.append(saved)
+            logger.exception("archive sheet Q batch failed")
     return {"ok": True, "updated": updated, "skipped": skipped}
 
 

@@ -1867,6 +1867,46 @@
     }
   }
 
+  function orderArchiveSettledAt(order) {
+    const payload = order?.payload || {};
+    if (!payload.owner_archived) return "";
+    const raw = String(payload.owner_archived_at || "").trim();
+    if (raw) return raw;
+    const changes = Array.isArray(order?.changes) ? order.changes : [];
+    for (const ch of changes) {
+      if (String(ch.change_type || "") !== "archive") continue;
+      const diff = Array.isArray(ch.diff) ? ch.diff : [];
+      const archived = diff.some((d) => d && d.field === "owner_archived" && d.new);
+      if (archived || String(ch.summary || "").toLowerCase().includes("архів")) {
+        return String(ch.created_at || "").trim();
+      }
+    }
+    return "";
+  }
+
+  function formatRozrahovanoLabel(iso) {
+    if (!iso) return "";
+    try {
+      const d = new Date(iso);
+      if (Number.isNaN(d.getTime())) return "";
+      const date = d.toLocaleDateString("uk-UA", {
+        timeZone: "Europe/Kyiv",
+        day: "2-digit",
+        month: "2-digit",
+        year: "numeric",
+      });
+      const time = d.toLocaleTimeString("uk-UA", {
+        timeZone: "Europe/Kyiv",
+        hour: "2-digit",
+        minute: "2-digit",
+        hour12: false,
+      });
+      return `Розраховано ${date} о ${time}`;
+    } catch {
+      return "";
+    }
+  }
+
   function formatWarehouseEnteredLabel(raw) {
     const text = String(raw || "").trim();
     if (!text) return "";
@@ -3215,6 +3255,10 @@ ${
     const sourceHtml = sourceLabel
       ? `<div class="meta">${escapeHtml(sourceLabel)}</div>`
       : "";
+    const settledLabel = formatRozrahovanoLabel(orderArchiveSettledAt(order));
+    const settledHtml = settledLabel
+      ? `<div class="order-card-settled">${escapeHtml(settledLabel)}</div>`
+      : "";
     const pdfHold = Boolean(payload.ttn_pdf_hold);
     const pdfHoldHtml = pdfHold
       ? `<div class="form-error order-pdf-hold">⚠️ Номер ТТН і PDF не збігаються — виправте, інакше замовлення не піде на упаковку. ${escapeHtml(
@@ -3237,6 +3281,7 @@ ${
         <button type="button" class="order-card-toggle" aria-expanded="false">
           <div class="order-card-main">
             <div class="order-card-num">${escapeHtml(order.order_number || "")}</div>
+            ${settledHtml}
             ${sourceHtml}
             <div class="meta">${escapeHtml(formatOrderDate(order.created_at))}</div>
             <div class="meta">${escapeHtml(name || "—")} · ${escapeHtml(recipient.phone || "")}</div>

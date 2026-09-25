@@ -1902,6 +1902,14 @@ input[type="file"] {
   font-size: 15px;
 }
 
+.order-card-settled {
+  margin-top: 2px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #2563eb;
+  line-height: 1.35;
+}
+
 /* Статуси історії замовлень */
 .order-card-status.status-accepted { color: #2563eb; } /* синій — прийнято */
 .order-card-status.status-transit { color: #0d9488; } /* бірюзовий — в дорозі */

@@ -1996,6 +1996,28 @@ class AppStorage:
                 break
         return out
 
+    def list_orders_owner_archived(self, limit: int = 500) -> list[dict[str, Any]]:
+        """Замовлення з payload.owner_archived (для допису Q у лист)."""
+        limit = max(1, min(int(limit or 500), 800))
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT * FROM orders
+                WHERE payload_json LIKE '%"owner_archived": true%'
+                   OR payload_json LIKE '%"owner_archived":true%'
+                ORDER BY id DESC
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+        out: list[dict[str, Any]] = []
+        for row in rows:
+            order = self._row_order(row)
+            payload = order.get("payload") if isinstance(order.get("payload"), dict) else {}
+            if payload.get("owner_archived"):
+                out.append(order)
+        return out
+
     def list_orders_for_auto_return_backfill(
         self,
         *,

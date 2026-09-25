@@ -1480,46 +1480,90 @@ def sync_archived_settlement_to_sheet(
     archived: bool,
 ) -> None:
     """Лише Q цього №/ТТН: «РОЗРАХОВАНІ» + синя заливка. Новий рядок не створює."""
-    if not order:
-        return
-    if str(order.get("sheets_sync_status") or "").strip() == "skip_sheet":
-        return
-    order_no = str(order.get("order_number") or "").strip()
-    if not order_no:
-        return
-    payload = order.get("payload") if isinstance(order.get("payload"), dict) else {}
-    ttn = str(order.get("ttn_number") or payload.get("ttn_number") or "").strip()
-    text = (
-        SETTLEMENT_ARCHIVED_LABEL
-        if archived
-        else sheet_settlement_label(storage, order)
-    )
+    if order:
+        sync_archived_settlements_batch(storage, [order], archived=archived)
+
+
+def sync_archived_settlements_batch(
+    storage: AppStorage,
+    orders: list[dict[str, Any]],
+    *,
+    archived: bool,
+) -> int:
+    """Один прохід по листу: Q для всіх переданих замовлень. Нові рядки не створює."""
+    todo: list[tuple[str, str, str]] = []
+    for order in orders or []:
+        if not order:
+            continue
+        if str(order.get("sheets_sync_status") or "").strip() == "skip_sheet":
+            continue
+        order_no = str(order.get("order_number") or "").strip()
+        if not order_no:
+            continue
+        payload = order.get("payload") if isinstance(order.get("payload"), dict) else {}
+        ttn = str(order.get("ttn_number") or payload.get("ttn_number") or "").strip()
+        text = (
+            SETTLEMENT_ARCHIVED_LABEL
+            if archived
+            else sheet_settlement_label(storage, order)
+        )
+        todo.append((order_no, ttn, text))
+    if not todo:
+        return 0
     try:
         ws = _open_orders_worksheet(storage)
-        row_numbers = find_sheet_rows_by_order_and_ttn(ws, order_no, ttn)
-        if not row_numbers:
-            logger.warning(
-                "orders sheet skip archive Q: no B/M row order=%s ttn=%s",
-                order_no,
-                ttn,
-            )
-            return
+        index = _order_no_by_sheet_row(ws)
+        ttn_col = ws.col_values(COL_TTN)
+        row_texts: list[tuple[int, str]] = []
+        seen: set[int] = set()
+        for order_no, ttn, text in todo:
+            rows = [row for row, no in index.items() if no == order_no]
+            ttn_key = _sheet_ttn_key(ttn)
+            if ttn_key and rows:
+                matched = []
+                for row in rows:
+                    cell = ttn_col[row - 1] if row - 1 < len(ttn_col) else ""
+                    if _sheet_ttn_key(cell) == ttn_key:
+                        matched.append(row)
+                rows = matched or rows
+            if not rows:
+                logger.warning(
+                    "orders sheet skip archive Q: no B/M row order=%s ttn=%s",
+                    order_no,
+                    ttn,
+                )
+                continue
+            for row in rows:
+                if row in seen:
+                    continue
+                seen.add(row)
+                row_texts.append((row, text))
+        if not row_texts:
+            return 0
         ws.batch_update(
-            [{"range": f"Q{n}", "values": [[text]]} for n in row_numbers],
+            [{"range": f"Q{n}", "values": [[text]]} for n, text in row_texts],
             value_input_option="USER_ENTERED",
         )
-        paint_settlement_q_cells(ws, [(n, text) for n in row_numbers])
+        paint_settlement_q_cells(ws, row_texts)
         logger.info(
-            "orders sheet archive Q order=%s ttn=%s rows=%s archived=%s",
-            order_no,
-            ttn,
-            row_numbers,
+            "orders sheet archive Q batch rows=%s orders=%s archived=%s",
+            [n for n, _ in row_texts],
+            len(todo),
             archived,
         )
+        return len(row_texts)
     except Exception:
-        logger.exception(
-            "orders sheet archive Q failed order=%s", order.get("order_number")
-        )
+        logger.exception("orders sheet archive Q batch failed")
+        return 0
+
+
+def backfill_archived_settlements_to_sheet(
+    storage: AppStorage, *, limit: int = 500
+) -> dict[str, int]:
+    """Дописати Q «РОЗРАХОВАНІ» для вже архівованих (без нових рядків)."""
+    orders = storage.list_orders_owner_archived(limit=limit)
+    written = sync_archived_settlements_batch(storage, orders, archived=True)
+    return {"orders": len(orders), "rows": written}
 
 
 def sync_order_to_sheet(

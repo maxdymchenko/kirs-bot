@@ -1618,4 +1618,12 @@ async def run_np_maintenance_once(
         stats["return_ttn_moved"] = int(ret_stats.get("moved") or 0)
     except Exception:
         logger.exception("return TTN tracking failed")
+    try:
+        from bot.orders_sheets import backfill_archived_settlements_to_sheet
+
+        q_stats = backfill_archived_settlements_to_sheet(storage, limit=500)
+        stats["archive_q_orders"] = int(q_stats.get("orders") or 0)
+        stats["archive_q_rows"] = int(q_stats.get("rows") or 0)
+    except Exception:
+        logger.exception("archived settlement Q backfill failed")
     return stats
