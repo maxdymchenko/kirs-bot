@@ -125,7 +125,7 @@ def referral_should_post(order: dict[str, Any]) -> bool:
     payload = _payload(order)
     if payload.get("return_referral_reversed") or payload.get("return_settled"):
         return False
-    return order_history_bucket(order) in {"received", "archive"}
+    return order_history_bucket(order) in {"received", "awaiting_payment", "archive"}
 
 
 def compute_order_referral_amount(
@@ -211,7 +211,7 @@ def pending_referral_amount(
     if payload.get("return_referral_reversed") or payload.get("return_settled"):
         return 0.0
     bucket = order_history_bucket(order)
-    if bucket not in {"awaiting", "transit", "received", "archive"}:
+    if bucket not in {"awaiting", "transit", "received", "awaiting_payment", "archive"}:
         return 0.0
     ref_id = int(getattr(referrer, "id", 0) or 0) if referrer is not None else None
     if referral_credit_posted(
@@ -354,7 +354,7 @@ def pending_balance_delta(storage: AppStorage, order: dict[str, Any]) -> float:
     bucket = order_history_bucket(order)
     if bucket == "returns":
         return 0.0
-    if bucket not in {"awaiting", "transit", "received", "archive"}:
+    if bucket not in {"awaiting", "transit", "received", "awaiting_payment", "archive"}:
         return 0.0
 
     payload = _payload(order)

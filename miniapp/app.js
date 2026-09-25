@@ -2179,7 +2179,7 @@ ${ttnLine}</div>
     return Math.max(0, Math.floor((Date.now() - start) / 86400000));
   }
 
-  /** Вкладка історії: awaiting | next_ship | transit | received | archive | returns */
+  /** Вкладка історії: awaiting | next_ship | transit | received | awaiting_payment | archive | returns */
   function orderHistoryBucket(order) {
     const payload = order.payload || {};
     const ret = payload.dropper_return;
@@ -2197,6 +2197,7 @@ ${ttnLine}</div>
     }
     if (ttn === "received") {
       if (payload.owner_archived) return "archive";
+      if (payload.awaiting_payment) return "awaiting_payment";
       return "received";
     }
     if (ttn === "in_transit" || ttn === "at_warehouse") {
@@ -2232,18 +2233,63 @@ ${ttnLine}</div>
     return { count, sum: roundMoney(sum) };
   }
 
+  function settlementActionLabel(action) {
+    if (action === "bill") return "Очікує оплату";
+    if (action === "unbill") return "Повернути в Отримано";
+    if (action === "archive") return "В архів";
+    if (action === "unarchive") return "Повернути в Отримано";
+    return action;
+  }
+
+  function settlementBarButtons(bucket) {
+    if (bucket === "received") {
+      return `<button type="button" class="btn primary" data-settlement-submit="bill" disabled>Очікує оплату</button>`;
+    }
+    if (bucket === "awaiting_payment") {
+      return `<button type="button" class="btn secondary" data-settlement-submit="unbill" disabled>Повернути в Отримано</button>
+      <button type="button" class="btn primary" data-settlement-submit="archive" disabled>В архів</button>`;
+    }
+    if (bucket === "archive") {
+      return `<button type="button" class="btn primary" data-settlement-submit="unarchive" disabled>Повернути в Отримано</button>`;
+    }
+    return "";
+  }
+
   function archiveBarHtml(bucket) {
-    const toArchive = bucket !== "archive";
     return `<div class="history-archive-bar" data-archive-bar>
       <label class="history-archive-all">
         <input type="checkbox" data-archive-select-all />
         Вибрати всі
       </label>
       <span class="history-archive-sum" data-archive-sum>0 зак. · 0,00 ₴</span>
-      <button type="button" class="btn primary" data-archive-submit disabled>
-        ${toArchive ? "В архів" : "Повернути в Отримано"}
-      </button>
+      ${settlementBarButtons(bucket)}
     </div>`;
+  }
+
+  function dropperPaidBarHtml() {
+    return `<div class="history-archive-bar" data-paid-bar>
+      <span class="history-archive-sum" data-paid-sum>0 зак. · 0,00 ₴</span>
+      <button type="button" class="btn primary" data-mark-paid>Сплачено</button>
+    </div>`;
+  }
+
+  function awaitingPaymentTabTone(orders) {
+    const waiting = (orders || []).filter(
+      (o) => orderHistoryBucket(o) === "awaiting_payment"
+    );
+    if (!waiting.length) return "";
+    if (waiting.some((o) => !(o.payload || {}).dropper_marked_paid)) return "alert";
+    return "paid";
+  }
+
+  function applyPaymentTabTone(btn, tone) {
+    if (!btn) return;
+    btn.classList.toggle("is-pay-alert", tone === "alert");
+    btn.classList.toggle("is-pay-paid", tone === "paid");
+  }
+
+  function viewerCanMarkPaid() {
+    return sessionState.role === "dropper";
   }
 
   function syncArchiveBar(root, filteredOrders, selected, bucket) {
@@ -2251,19 +2297,15 @@ ${ttnLine}</div>
     if (!bar) return;
     const { count, sum } = selectedArchiveStats(filteredOrders, selected);
     const sumEl = bar.querySelector("[data-archive-sum]");
-    const btn = bar.querySelector("[data-archive-submit]");
     const all = bar.querySelector("[data-archive-select-all]");
-    const toArchive = bucket !== "archive";
     const money = formatMoneyAmount(sum);
     if (sumEl) sumEl.textContent = `${count} зак. · ${money} ₴`;
-    if (btn) {
+    bar.querySelectorAll("[data-settlement-submit]").forEach((btn) => {
+      const action = btn.getAttribute("data-settlement-submit") || "";
+      const label = settlementActionLabel(action);
       btn.disabled = count < 1;
-      btn.textContent = count
-        ? `${toArchive ? "В архів" : "Повернути в Отримано"} · ${count} зак. · ${money} ₴`
-        : toArchive
-          ? "В архів"
-          : "Повернути в Отримано";
-    }
+      btn.textContent = count ? `${label} · ${count} зак. · ${money} ₴` : label;
+    });
     if (all) {
       const selectable = (filteredOrders || []).filter(orderSelectableForArchive);
       const allOn =
@@ -2343,6 +2385,48 @@ ${ttnLine}</div>
     return data;
   }
 
+  async function postOwnerOrdersAwaitingPayment(chatId, orderIds, awaiting) {
+    const response = await fetch(
+      `/api/owner/droppers/${encodeURIComponent(chatId)}/orders/awaiting-payment`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(
+          ownerAuthBody({
+            order_ids: (orderIds || []).map(String),
+            awaiting: Boolean(awaiting),
+          })
+        ),
+      }
+    );
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      throw new Error(
+        typeof data.detail === "string" ? data.detail : "Не вдалося виставити до оплати"
+      );
+    }
+    return data;
+  }
+
+  async function postDropperOrdersMarkPaid() {
+    const chatId = effectiveDropperChatId();
+    const response = await fetch("/api/dropper/orders/mark-paid", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        chat_id: chatId,
+        user_id: sessionState.user_id || "",
+      }),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      throw new Error(
+        typeof data.detail === "string" ? data.detail : "Не вдалося підтвердити оплату"
+      );
+    }
+    return data;
+  }
+
   function ukOrdersWord(n) {
     const abs = Math.abs(Number(n) || 0) % 100;
     const d = abs % 10;
@@ -2356,6 +2440,7 @@ ${ttnLine}</div>
     selected,
     bucket,
     filtered,
+    action,
     onApplied,
   }) {
     const chosen = (filtered || []).filter(
@@ -2369,11 +2454,22 @@ ${ttnLine}</div>
       showToast("Немає chat_id дроппера");
       return;
     }
-    const archived = bucket !== "archive";
+    const kind =
+      action ||
+      (bucket === "received"
+        ? "bill"
+        : bucket === "awaiting_payment"
+          ? "archive"
+          : "unarchive");
     const sum = roundMoney(
       chosen.reduce((s, o) => s + (Number(o.total) || 0), 0)
     );
-    const dest = archived ? "Архів" : "Отримано";
+    const dest =
+      kind === "bill"
+        ? "Очікує оплату"
+        : kind === "archive"
+          ? "Архів"
+          : "Отримано";
     if (
       !window.confirm(
         `${chosen.length} ${ukOrdersWord(chosen.length)}, ${formatMoneyAmount(sum)} ₴ → ${dest}?`
@@ -2382,20 +2478,51 @@ ${ttnLine}</div>
       return;
     }
     try {
-      const data = await postOwnerOrdersArchive(
-        chatId,
-        chosen.map((o) => o.id),
-        archived
-      );
+      const ids = chosen.map((o) => o.id);
+      const data =
+        kind === "bill" || kind === "unbill"
+          ? await postOwnerOrdersAwaitingPayment(chatId, ids, kind === "bill")
+          : await postOwnerOrdersArchive(chatId, ids, kind === "archive");
       applyArchivedItemsToCaches(data.items || [], chatId);
       selected.clear();
       if (typeof onApplied === "function") onApplied(data);
       const n = (data.items || []).length;
       const skipped = Number(data.skipped || 0);
-      showToast(
-        (archived ? `В архів: ${n}` : `Повернуто в Отримано: ${n}`) +
-          (skipped ? ` · пропущено ${skipped}` : "")
-      );
+      const done =
+        kind === "bill"
+          ? `До оплати: ${n}`
+          : kind === "archive"
+            ? `В архів: ${n}`
+            : `Повернуто в Отримано: ${n}`;
+      showToast(done + (skipped ? ` · пропущено ${skipped}` : ""));
+    } catch (error) {
+      showToast(error.message || "Помилка");
+    }
+  }
+
+  async function submitDropperMarkPaid({ onApplied }) {
+    const { inBucket } = historyOrdersInView("awaiting_payment");
+    const unpaid = inBucket.filter((o) => !(o.payload || {}).dropper_marked_paid);
+    if (!unpaid.length) {
+      showToast("Немає замовлень до підтвердження");
+      return;
+    }
+    const sum = roundMoney(
+      inBucket.reduce((s, o) => s + (Number(o.total) || 0), 0)
+    );
+    if (
+      !window.confirm(
+        `Підтвердити оплату ${inBucket.length} ${ukOrdersWord(inBucket.length)}, ${formatMoneyAmount(sum)} ₴?`
+      )
+    ) {
+      return;
+    }
+    try {
+      const data = await postDropperOrdersMarkPaid();
+      applyArchivedItemsToCaches(data.items || [], effectiveDropperChatId());
+      if (typeof onApplied === "function") onApplied(data);
+      const n = (data.items || []).length;
+      showToast(n ? `Сплачено: ${n}` : "Уже підтверджено");
     } catch (error) {
       showToast(error.message || "Помилка");
     }
@@ -2430,7 +2557,22 @@ ${ttnLine}</div>
       }
     });
     root.addEventListener("click", async (event) => {
-      const submit = event.target.closest("[data-archive-submit]");
+      const markPaid = event.target.closest("[data-mark-paid]");
+      if (markPaid && root.contains(markPaid)) {
+        await submitDropperMarkPaid({
+          onApplied: () => {
+            paintOrdersHistoryList();
+            document.querySelectorAll("[data-owner-orders]").forEach((ob) => {
+              if (ob.querySelector("[data-owner-orders-list]")) {
+                syncOwnerOrdersBucketTabs(ob);
+                renderOwnerDropperOrdersList(ob);
+              }
+            });
+          },
+        });
+        return;
+      }
+      const submit = event.target.closest("[data-settlement-submit]");
       if (!submit || !root.contains(submit)) return;
       const { filtered } = historyOrdersInView();
       const dropperChat = effectiveDropperChatId();
@@ -2438,6 +2580,7 @@ ${ttnLine}</div>
         chatId: dropperChat,
         selected: historyArchiveSelected,
         bucket: historyBucket,
+        action: submit.getAttribute("data-settlement-submit") || "",
         filtered,
         onApplied: () => {
           historyArchiveSelected = new Set();
@@ -2573,6 +2716,13 @@ ${ttnLine}</div>
     if (ttn === "received") {
       if (payload.owner_archived) {
         return { kind: "received", label: "Отримано", sub: "Архів" };
+      }
+      if (payload.awaiting_payment) {
+        return {
+          kind: "received",
+          label: "Очікує оплату",
+          sub: payload.dropper_marked_paid ? "Сплачено" : "",
+        };
       }
       return { kind: "received", label: "Отримано", sub: "" };
     }
@@ -4417,6 +4567,7 @@ ${
       next_ship: "Наступна відправка",
       transit: "В дорозі",
       received: "Отримано",
+      awaiting_payment: "Очікує оплату",
       archive: "Архів",
       returns: "Повернення",
     };
@@ -4425,6 +4576,7 @@ ${
       next_ship: 0,
       transit: 0,
       received: 0,
+      awaiting_payment: 0,
       archive: 0,
       returns: 0,
     };
@@ -4432,12 +4584,14 @@ ${
       const bucket = orderHistoryBucket(order);
       if (counts[bucket] != null) counts[bucket] += 1;
     }
+    const payTone = awaitingPaymentTabTone(dropperOrdersCache);
     els.historyBuckets.querySelectorAll("[data-history-bucket]").forEach((btn) => {
       const key = btn.getAttribute("data-history-bucket");
       btn.classList.toggle("active", key === historyBucket);
       const label = labels[key] || key || "";
       const n = counts[key] || 0;
       btn.textContent = n ? `${label} (${n})` : label;
+      applyPaymentTabTone(btn, key === "awaiting_payment" ? payTone : "");
     });
   }
 
@@ -4464,6 +4618,7 @@ ${
       next_ship: "Немає замовлень на наступну відправку",
       transit: "Немає замовлень у дорозі",
       received: "Немає отриманих замовлень",
+      awaiting_payment: "Немає замовлень, що очікують оплату",
       archive: "Немає замовлень в архіві",
       returns: "Немає повернень",
     };
@@ -4490,7 +4645,13 @@ ${
     }
     const canSelect =
       viewerCanArchiveOrders() &&
-      (historyBucket === "received" || historyBucket === "archive");
+      (historyBucket === "received" ||
+        historyBucket === "awaiting_payment" ||
+        historyBucket === "archive");
+    const canPay =
+      viewerCanMarkPaid() &&
+      historyBucket === "awaiting_payment" &&
+      inBucket.some((o) => !(o.payload || {}).dropper_marked_paid);
     const cards = pageItems.length
       ? pageItems
           .map((o) =>
@@ -4511,14 +4672,29 @@ ${
             ? "Нічого не знайдено за фільтрами"
             : emptyByBucket[historyBucket] || "Порожньо"
         )}</div>`;
+    const paidHint =
+      viewerCanMarkPaid() &&
+      historyBucket === "awaiting_payment" &&
+      inBucket.length &&
+      !canPay
+        ? `<div class="hint">Очікує підтвердження власника після оплати.</div>`
+        : "";
     els.ordersHistory.innerHTML =
       lockedHint +
       (canSelect && inBucket.length ? archiveBarHtml(historyBucket) : "") +
+      (canPay ? dropperPaidBarHtml() : paidHint) +
       cards;
     syncHistoryBucketTabs();
     bindOrderCardClicks(els.ordersHistory);
     bindHistoryArchiveUi();
     syncArchiveBar(els.ordersHistory, filtered, historyArchiveSelected, historyBucket);
+    const paidSum = els.ordersHistory.querySelector("[data-paid-sum]");
+    if (paidSum) {
+      const total = roundMoney(
+        inBucket.reduce((s, o) => s + (Number(o.total) || 0), 0)
+      );
+      paidSum.textContent = `${inBucket.length} зак. · ${formatMoneyAmount(total)} ₴`;
+    }
   }
 
   function isOwnerSelfForm() {
@@ -4704,6 +4880,7 @@ ${
       next_ship: "Наступна відправка",
       transit: "В дорозі",
       received: "Отримано",
+      awaiting_payment: "Очікує оплату",
       archive: "Архів",
       returns: "Повернення",
     };
@@ -4712,6 +4889,7 @@ ${
       next_ship: 0,
       transit: 0,
       received: 0,
+      awaiting_payment: 0,
       archive: 0,
       returns: 0,
     };
@@ -4719,12 +4897,14 @@ ${
       const key = orderHistoryBucket(order);
       if (counts[key] != null) counts[key] += 1;
     }
+    const payTone = awaitingPaymentTabTone(box._ordersCache);
     box.querySelectorAll("[data-owner-orders-bucket]").forEach((btn) => {
       const key = btn.getAttribute("data-owner-orders-bucket");
       btn.classList.toggle("active", key === bucket);
       const label = labels[key] || key || "";
       const n = counts[key] || 0;
       btn.textContent = n ? `${label} (${n})` : label;
+      applyPaymentTabTone(btn, key === "awaiting_payment" ? payTone : "");
     });
   }
 
@@ -4739,6 +4919,25 @@ ${
     const returnsBtn = nav.querySelector('[data-owner-orders-bucket="returns"]');
     if (returnsBtn) nav.insertBefore(btn, returnsBtn);
     else nav.appendChild(btn);
+  }
+
+  function ensureOwnerOrdersAwaitingPaymentTab(box) {
+    const nav = box.querySelector("[data-owner-orders-buckets]");
+    if (!nav || nav.querySelector('[data-owner-orders-bucket="awaiting_payment"]')) {
+      return;
+    }
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "tab";
+    btn.setAttribute("data-owner-orders-bucket", "awaiting_payment");
+    btn.textContent = "Очікує оплату";
+    const archiveBtn = nav.querySelector('[data-owner-orders-bucket="archive"]');
+    if (archiveBtn) nav.insertBefore(btn, archiveBtn);
+    else {
+      const returnsBtn = nav.querySelector('[data-owner-orders-bucket="returns"]');
+      if (returnsBtn) nav.insertBefore(btn, returnsBtn);
+      else nav.appendChild(btn);
+    }
   }
 
   function ensureOwnerOrdersAwaitingTab(box) {
@@ -4764,6 +4963,7 @@ ${
           <button type="button" class="tab" data-owner-orders-bucket="next_ship">Наступна відправка</button>
           <button type="button" class="tab active" data-owner-orders-bucket="transit">В дорозі</button>
           <button type="button" class="tab" data-owner-orders-bucket="received">Отримано</button>
+          <button type="button" class="tab" data-owner-orders-bucket="awaiting_payment">Очікує оплату</button>
           <button type="button" class="tab" data-owner-orders-bucket="archive">Архів</button>
           <button type="button" class="tab" data-owner-orders-bucket="returns">Повернення</button>
         </nav>
@@ -4859,7 +5059,7 @@ ${
             await downloadOwnerDropperOrdersExcel(box);
             return;
           }
-          const archiveSubmit = event.target.closest("[data-archive-submit]");
+          const archiveSubmit = event.target.closest("[data-settlement-submit]");
           if (archiveSubmit && box.contains(archiveSubmit)) {
             if (!box._archiveSelected) box._archiveSelected = new Set();
             const { filtered, bucket } = ownerOrdersInView(box);
@@ -4867,6 +5067,7 @@ ${
               chatId: box.dataset.dropperChat || "",
               selected: box._archiveSelected,
               bucket,
+              action: archiveSubmit.getAttribute("data-settlement-submit") || "",
               filtered,
               onApplied: () => {
                 box._archiveSelected = new Set();
@@ -4894,6 +5095,7 @@ ${
 
     ensureOwnerOrdersAwaitingTab(box);
     ensureOwnerOrdersArchiveTab(box);
+    ensureOwnerOrdersAwaitingPaymentTab(box);
     bindOwnerArchiveUi(box);
     if (!box._archiveSelected) box._archiveSelected = new Set();
     syncOwnerOrdersBucketTabs(box);
@@ -4922,6 +5124,7 @@ ${
       next_ship: "Немає замовлень на наступну відправку",
       transit: "Немає замовлень у дорозі",
       received: "Немає отриманих замовлень",
+      awaiting_payment: "Немає замовлень, що очікують оплату",
       archive: "Немає замовлень в архіві",
       returns: "Немає повернень",
     };
@@ -4937,7 +5140,10 @@ ${
     if (nextBtn) nextBtn.disabled = filtered.length === 0 || safePage >= pageCount - 1;
     if (!box._archiveSelected) box._archiveSelected = new Set();
     const canSelect =
-      viewerCanArchiveOrders() && (bucket === "received" || bucket === "archive");
+      viewerCanArchiveOrders() &&
+      (bucket === "received" ||
+        bucket === "awaiting_payment" ||
+        bucket === "archive");
     if (listEl) {
       const cards = pageItems.length
         ? pageItems

@@ -129,6 +129,30 @@ body {
   color: #fff;
 }
 
+.tab.is-pay-alert {
+  background: #fee2e2;
+  border-color: #ef4444;
+  color: #b91c1c;
+}
+
+.tab.is-pay-alert.active {
+  background: #dc2626;
+  border-color: #dc2626;
+  color: #fff;
+}
+
+.tab.is-pay-paid {
+  background: #dcfce7;
+  border-color: #16a34a;
+  color: #166534;
+}
+
+.tab.is-pay-paid.active {
+  background: #16a34a;
+  border-color: #16a34a;
+  color: #fff;
+}
+
 .view { padding: 0 16px; }
 .hidden { display: none !important; }
 

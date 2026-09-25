@@ -187,6 +187,18 @@ class OwnerOrdersArchiveRequest(BaseModel):
     archived: bool = True
 
 
+class OwnerOrdersAwaitingPaymentRequest(BaseModel):
+    owner_chat_id: str = Field("", max_length=64)
+    owner_user_id: str = Field("", max_length=64)
+    order_ids: list[str | int] = Field(default_factory=list)
+    awaiting: bool = True
+
+
+class DropperOrdersMarkPaidRequest(BaseModel):
+    chat_id: str = Field(..., max_length=64)
+    user_id: str = Field("", max_length=64)
+
+
 class WarehouseAttachPdfRequest(BaseModel):
     chat_id: str = Field("", max_length=64)
     user_id: str = Field("", max_length=64)
@@ -2265,6 +2277,88 @@ def create_web_app(
             "archived": bool(payload.archived),
             "count": len(items),
             "skipped": int(result.get("skipped") or 0),
+            "items": items,
+        }
+
+    @app.post("/api/owner/droppers/{chat_id}/orders/awaiting-payment")
+    async def owner_dropper_orders_awaiting_payment(
+        chat_id: str,
+        payload: OwnerOrdersAwaitingPaymentRequest,
+    ) -> dict:
+        from bot.order_archive import (
+            format_awaiting_payment_notice,
+            set_orders_awaiting_payment,
+        )
+        from bot.order_edit import enrich_orders_with_changes
+
+        _require_owner(payload.owner_chat_id, payload.owner_user_id)
+        dropper = storage.get_dropper_by_chat(chat_id.strip())
+        if not dropper:
+            raise HTTPException(status_code=404, detail="Дроппера не знайдено")
+        if not payload.order_ids:
+            raise HTTPException(status_code=400, detail="Оберіть замовлення")
+        result = set_orders_awaiting_payment(
+            storage,
+            dropper_id=dropper.id,
+            order_ids=payload.order_ids,
+            awaiting=bool(payload.awaiting),
+            actor_user_id=payload.owner_user_id,
+            actor_label="Власник",
+        )
+        items = enrich_orders_with_changes(storage, result.get("updated") or [])
+        if items and payload.awaiting:
+            text = format_awaiting_payment_notice(result)
+            try:
+                await _notify(str(dropper.chat_id or ""), text)
+            except Exception:
+                logger.exception("awaiting-payment notify dropper failed")
+            try:
+                await _notify_owners(text)
+            except Exception:
+                logger.exception("awaiting-payment notify owners failed")
+        return {
+            "ok": True,
+            "awaiting": bool(payload.awaiting),
+            "count": len(items),
+            "skipped": int(result.get("skipped") or 0),
+            "sum": result.get("sum") or 0,
+            "items": items,
+        }
+
+    @app.post("/api/dropper/orders/mark-paid")
+    async def dropper_orders_mark_paid(payload: DropperOrdersMarkPaidRequest) -> dict:
+        from bot.order_archive import (
+            format_dropper_paid_notice,
+            mark_orders_paid_by_dropper,
+        )
+        from bot.order_edit import enrich_orders_with_changes
+
+        dropper = storage.get_dropper_by_chat(str(payload.chat_id or "").strip())
+        if not dropper:
+            raise HTTPException(status_code=404, detail="Дроппера не знайдено")
+        result = mark_orders_paid_by_dropper(
+            storage,
+            dropper_id=dropper.id,
+            actor_user_id=payload.user_id,
+            actor_label=str(dropper.company_name or "Дроппер"),
+        )
+        items = enrich_orders_with_changes(storage, result.get("updated") or [])
+        if items:
+            text = format_dropper_paid_notice(result)
+            try:
+                await _notify(str(dropper.chat_id or ""), text)
+            except Exception:
+                logger.exception("mark-paid notify dropper failed")
+            try:
+                await _notify_owners(text)
+            except Exception:
+                logger.exception("mark-paid notify owners failed")
+        return {
+            "ok": True,
+            "count": len(items),
+            "already": int(result.get("already") or 0),
+            "sum": result.get("sum") or 0,
+            "tone": result.get("tone") or "",
             "items": items,
         }
 

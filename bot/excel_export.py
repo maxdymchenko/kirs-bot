@@ -16,8 +16,13 @@ def order_is_owner_archived(order: dict[str, Any]) -> bool:
     return bool(payload.get("owner_archived"))
 
 
+def order_is_awaiting_payment(order: dict[str, Any]) -> bool:
+    payload = order.get("payload") if isinstance(order.get("payload"), dict) else {}
+    return bool(payload.get("awaiting_payment"))
+
+
 def order_history_bucket(order: dict[str, Any]) -> str:
-    """Як у miniapp: awaiting | next_ship | transit | received | archive | returns."""
+    """Як у miniapp: awaiting | next_ship | transit | received | awaiting_payment | archive | returns."""
     payload = order.get("payload") or {}
     ret = payload.get("dropper_return")
     ttn = str(order.get("ttn_status") or "")
@@ -33,6 +38,8 @@ def order_history_bucket(order: dict[str, Any]) -> str:
     if ttn == "received":
         if order_is_owner_archived(order):
             return "archive"
+        if order_is_awaiting_payment(order):
+            return "awaiting_payment"
         return "received"
     if ttn in {"in_transit", "at_warehouse"}:
         return "transit"
@@ -50,6 +57,7 @@ def bucket_label_uk(bucket: str) -> str:
         "next_ship": "Наступна відправка",
         "transit": "В дорозі",
         "received": "Отримано",
+        "awaiting_payment": "Очікує оплату",
         "archive": "Архів",
         "returns": "Повернення",
     }.get(bucket, bucket or "—")
