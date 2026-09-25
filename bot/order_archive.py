@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import logging
 from datetime import datetime
 from typing import Any
 from zoneinfo import ZoneInfo
 
 from bot.accounts import AppStorage
 from bot.excel_export import order_history_bucket
+
+logger = logging.getLogger(__name__)
 
 KYIV = ZoneInfo("Europe/Kyiv")
 
@@ -109,5 +112,15 @@ def set_orders_archived(
             )
         except Exception:
             pass
+        try:
+            from bot.orders_sheets import sync_archived_settlement_to_sheet
+
+            sync_archived_settlement_to_sheet(
+                storage, saved, archived=archived
+            )
+        except Exception:
+            logger.exception(
+                "archive sheet Q failed for %s", saved.get("order_number")
+            )
         updated.append(saved)
     return {"ok": True, "updated": updated, "skipped": skipped}

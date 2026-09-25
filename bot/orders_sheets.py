@@ -56,6 +56,7 @@ COL_SETTLEMENT = 17
 COL_LOCATION = 18
 COL_QTY = 8
 SHEET_COL_COUNT = len(ORDER_SHEET_HEADERS)
+SETTLEMENT_ARCHIVED_LABEL = "РОЗРАХОВАНІ"
 
 TTN_STATUS_LABELS = {
     "none": "немає ТТН",
@@ -335,6 +336,8 @@ def sheet_settlement_label(storage: AppStorage, order: dict[str, Any]) -> str:
     if str(order.get("status") or "") == "cancelled":
         return "—"
     payload = order.get("payload") or {}
+    if payload.get("owner_archived"):
+        return SETTLEMENT_ARCHIVED_LABEL
     if payload.get("return_settled"):
         notes = []
         if payload.get("return_goods_credited"):
@@ -763,6 +766,42 @@ def _order_no_by_sheet_row(ws: gspread.Worksheet) -> dict[int, str]:
     return {idx + 1: str(value or "").strip() for idx, value in enumerate(col) if idx >= 1}
 
 
+def _sheet_ttn_key(raw: str) -> str:
+    return (
+        str(raw or "")
+        .strip()
+        .upper()
+        .replace(" ", "")
+        .replace("\u00a0", "")
+    )
+
+
+def find_sheet_rows_by_order_and_ttn(
+    ws: gspread.Worksheet,
+    order_number: str,
+    ttn: str = "",
+) -> list[int]:
+    """Рядки цього № в B; якщо є ТТН — спочатку ті, де M збігається."""
+    wanted = str(order_number or "").strip()
+    if not wanted:
+        return []
+    rows = [
+        row
+        for row, no in _order_no_by_sheet_row(ws).items()
+        if no == wanted
+    ]
+    ttn_key = _sheet_ttn_key(ttn)
+    if not ttn_key or not rows:
+        return rows
+    ttn_col = ws.col_values(COL_TTN)
+    matched: list[int] = []
+    for row in rows:
+        cell = ttn_col[row - 1] if row - 1 < len(ttn_col) else ""
+        if _sheet_ttn_key(cell) == ttn_key:
+            matched.append(row)
+    return matched if matched else rows
+
+
 def find_sheet_rows_by_order_number(
     ws: gspread.Worksheet, order_number: str
 ) -> list[int]:
@@ -907,6 +946,13 @@ def append_order_rows(
         ws,
         [
             (row_num, rows[i][7] if len(rows[i]) > 7 else 1)
+            for i, row_num in enumerate(written)
+        ],
+    )
+    paint_settlement_q_cells(
+        ws,
+        [
+            (row_num, str(rows[i][16] if len(rows[i]) > 16 else ""))
             for i, row_num in enumerate(written)
         ],
     )
@@ -1197,6 +1243,65 @@ def paint_qty_highlight_cells(
         logger.exception("failed to paint qty column H")
 
 
+def settlement_q_fill_rgb(text: str) -> tuple[float, float, float]:
+    if str(text or "").strip().upper() == SETTLEMENT_ARCHIVED_LABEL:
+        return (
+            DAY_SEPARATOR_BLUE["red"],
+            DAY_SEPARATOR_BLUE["green"],
+            DAY_SEPARATOR_BLUE["blue"],
+        )
+    return (1.0, 1.0, 1.0)
+
+
+def paint_settlement_q_cells(
+    ws: gspread.Worksheet, row_texts: list[tuple[int, str]]
+) -> None:
+    """Синя заливка Q лише для «РОЗРАХОВАНІ»; інакше біла."""
+    buckets: dict[tuple[float, float, float], list[int]] = {}
+    for row_num, text in row_texts:
+        try:
+            n = int(row_num)
+        except (TypeError, ValueError):
+            continue
+        if n < 2:
+            continue
+        buckets.setdefault(settlement_q_fill_rgb(text), []).append(n)
+    requests: list[dict[str, Any]] = []
+    for (red, green, blue), rows in buckets.items():
+        for start, end in _consecutive_row_spans(rows):
+            requests.append(
+                {
+                    "repeatCell": {
+                        "range": {
+                            "sheetId": ws.id,
+                            "startRowIndex": start - 1,
+                            "endRowIndex": end,
+                            "startColumnIndex": COL_SETTLEMENT - 1,
+                            "endColumnIndex": COL_SETTLEMENT,
+                        },
+                        "cell": {
+                            "userEnteredFormat": {
+                                "backgroundColor": {
+                                    "red": red,
+                                    "green": green,
+                                    "blue": blue,
+                                }
+                            }
+                        },
+                        "fields": "userEnteredFormat.backgroundColor",
+                    }
+                }
+            )
+    if not requests:
+        return
+    try:
+        chunk = 80
+        for i in range(0, len(requests), chunk):
+            ws.spreadsheet.batch_update({"requests": requests[i : i + chunk]})
+    except Exception:
+        logger.exception("failed to paint settlement column Q")
+
+
 def paint_qty_column_from_sheet(ws: gspread.Worksheet) -> int:
     """Підсвітити всі наявні комірки H з кількістю > 1. Повертає їх число."""
     values = ws.col_values(COL_QTY)
@@ -1257,6 +1362,13 @@ def update_rows_values(
         qty_pairs.append((row_num, values[7] if len(values) > 7 else 1))
     qty_pairs.extend((row_num, 0) for row_num in leftover)
     paint_qty_highlight_cells(ws, qty_pairs)
+    paint_settlement_q_cells(
+        ws,
+        [
+            (row_num, str(values[16] if len(values) > 16 else ""))
+            for row_num, values in zip(safe_rows, rows)
+        ],
+    )
 
 
 def replace_order_rows(
@@ -1289,8 +1401,14 @@ def replace_order_rows(
             while len(old) < 18:
                 old.append("")
             for col in (9, 15, 16):
-                prev = str(old[col] or "").strip()
-                if prev:
+                new_s = str(patched[i][col] or "").strip()
+                old_s = str(old[col] or "").strip()
+                if col == 16 and (
+                    new_s == SETTLEMENT_ARCHIVED_LABEL
+                    or old_s == SETTLEMENT_ARCHIVED_LABEL
+                ):
+                    continue
+                if old_s:
                     patched[i][col] = old[col]
 
     written: list[int] = []
@@ -1313,6 +1431,7 @@ def replace_order_rows(
                 value_input_option="USER_ENTERED",
             )
             paint_qty_highlight_cells(ws, [(n, 0) for n in leftover])
+            paint_settlement_q_cells(ws, [(n, "") for n in leftover])
     if len(patched) > keep:
         written.extend(append_order_rows(ws, patched[keep:]))
     return written
@@ -1351,6 +1470,56 @@ def update_lifecycle_columns(
         )
     ws.batch_update(data, value_input_option="USER_ENTERED")
     paint_status_n_cells(ws, [(n, status) for n in row_numbers])
+    paint_settlement_q_cells(ws, [(n, settlement) for n in row_numbers])
+
+
+def sync_archived_settlement_to_sheet(
+    storage: AppStorage,
+    order: dict[str, Any] | None,
+    *,
+    archived: bool,
+) -> None:
+    """Лише Q цього №/ТТН: «РОЗРАХОВАНІ» + синя заливка. Новий рядок не створює."""
+    if not order:
+        return
+    if str(order.get("sheets_sync_status") or "").strip() == "skip_sheet":
+        return
+    order_no = str(order.get("order_number") or "").strip()
+    if not order_no:
+        return
+    payload = order.get("payload") if isinstance(order.get("payload"), dict) else {}
+    ttn = str(order.get("ttn_number") or payload.get("ttn_number") or "").strip()
+    text = (
+        SETTLEMENT_ARCHIVED_LABEL
+        if archived
+        else sheet_settlement_label(storage, order)
+    )
+    try:
+        ws = _open_orders_worksheet(storage)
+        row_numbers = find_sheet_rows_by_order_and_ttn(ws, order_no, ttn)
+        if not row_numbers:
+            logger.warning(
+                "orders sheet skip archive Q: no B/M row order=%s ttn=%s",
+                order_no,
+                ttn,
+            )
+            return
+        ws.batch_update(
+            [{"range": f"Q{n}", "values": [[text]]} for n in row_numbers],
+            value_input_option="USER_ENTERED",
+        )
+        paint_settlement_q_cells(ws, [(n, text) for n in row_numbers])
+        logger.info(
+            "orders sheet archive Q order=%s ttn=%s rows=%s archived=%s",
+            order_no,
+            ttn,
+            row_numbers,
+            archived,
+        )
+    except Exception:
+        logger.exception(
+            "orders sheet archive Q failed order=%s", order.get("order_number")
+        )
 
 
 def sync_order_to_sheet(
