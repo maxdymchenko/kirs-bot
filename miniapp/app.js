@@ -3260,10 +3260,18 @@ ${
       ? `<div class="order-card-settled">${escapeHtml(settledLabel)}</div>`
       : "";
     const pdfHold = Boolean(payload.ttn_pdf_hold);
+    const canOverridePdf =
+      pdfHold && sessionState.role === "owner" && orderNumericId(order);
     const pdfHoldHtml = pdfHold
       ? `<div class="form-error order-pdf-hold">⚠️ Номер ТТН і PDF не збігаються — виправте, інакше замовлення не піде на упаковку. ${escapeHtml(
           payload.ttn_pdf_check_message || ""
-        )} Відкрийте «Редагувати» і ще раз прикріпіть PDF етикетки, потім збережіть.</div>`
+        )} Відкрийте «Редагувати» і ще раз прикріпіть PDF етикетки, потім збережіть.${
+          canOverridePdf
+            ? `<button type="button" class="btn primary order-pdf-override" data-ttn-pdf-override="${orderId}" data-dropper-chat="${escapeHtml(
+                order.chat_id || ""
+              )}">Все гаразд — на упаковку</button>`
+            : ""
+        }</div>`
       : "";
     return `
       <article class="order-card${selectable ? " has-pick" : ""}${
@@ -3290,7 +3298,6 @@ ${
               ${order.prepay ? ` · передплата ${escapeHtml(formatMoney(order.prepay))}` : ""}
             </div>
             <div class="meta">${escapeHtml(ttnLine)}</div>
-            ${pdfHoldHtml}
             <div class="meta">${escapeHtml(itemsPreview + more)}</div>
           </div>
           <div class="order-card-aside">
@@ -3306,6 +3313,7 @@ ${
             </div>
           </div>
         </button>
+        ${pdfHoldHtml}
         <div class="order-card-details hidden">
           ${renderOrderDetailsHtml(order, {
             editable,
@@ -3319,12 +3327,74 @@ ${
     `;
   }
 
+  async function postOwnerTtnPdfOverride(chatId, orderId) {
+    const response = await fetch(
+      `/api/owner/droppers/${encodeURIComponent(chatId)}/orders/${encodeURIComponent(
+        orderId
+      )}/ttn-pdf-override`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(ownerAuthBody()),
+      }
+    );
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      throw new Error(
+        typeof data.detail === "string"
+          ? data.detail
+          : "Не вдалося пропустити на упаковку"
+      );
+    }
+    return data;
+  }
+
   function bindOrderCardClicks(root) {
     if (!root || root.dataset.orderClicksBound === "1") return;
     root.dataset.orderClicksBound = "1";
     root.addEventListener("click", (event) => {
+      const overrideBtn = event.target.closest("[data-ttn-pdf-override]");
+      if (overrideBtn && root.contains(overrideBtn)) {
+        event.preventDefault();
+        event.stopPropagation();
+        const oid = overrideBtn.getAttribute("data-ttn-pdf-override");
+        const chatId =
+          overrideBtn.getAttribute("data-dropper-chat") ||
+          root.closest("[data-dropper-chat]")?.getAttribute("data-dropper-chat") ||
+          effectiveDropperChatId();
+        if (!oid || !chatId) {
+          showToast("Немає chat_id дроппера");
+          return;
+        }
+        if (overrideBtn.disabled) return;
+        overrideBtn.disabled = true;
+        postOwnerTtnPdfOverride(chatId, oid)
+          .then((data) => {
+            if (data.order) applyArchivedItemsToCaches([data.order], chatId);
+            showToast("Маркировку підтверджено — замовлення йде на упаковку");
+            document.querySelectorAll("[data-owner-orders]").forEach((box) => {
+              if (
+                !chatId ||
+                !box.dataset.dropperChat ||
+                String(box.dataset.dropperChat) === String(chatId)
+              ) {
+                renderOwnerDropperOrdersList(box);
+              }
+            });
+            if (
+              (dropperOrdersCache || []).some((o) => String(o.id) === String(oid))
+            ) {
+              renderOrdersHistory();
+            }
+          })
+          .catch((err) => {
+            showToast(err.message || "Помилка");
+            overrideBtn.disabled = false;
+          });
+        return;
+      }
       if (event.target.closest(
-        "[data-order-edit-open], [data-order-edit-panel], .order-edit-panel, [data-order-cancel], [data-order-correction-request], [data-correction-text], [data-order-return-open], [data-order-return-form], .order-return-form, [data-order-return-submit], [data-order-return-cancel], [data-return-ttn], [data-return-error], [data-archive-pick], [data-archive-bar], .order-card-pick"
+        "[data-order-edit-open], [data-order-edit-panel], .order-edit-panel, [data-order-cancel], [data-order-correction-request], [data-correction-text], [data-order-return-open], [data-order-return-form], .order-return-form, [data-order-return-submit], [data-order-return-cancel], [data-return-ttn], [data-return-error], [data-archive-pick], [data-archive-bar], .order-card-pick, [data-ttn-pdf-override], .order-pdf-hold"
       )) {
         return;
       }

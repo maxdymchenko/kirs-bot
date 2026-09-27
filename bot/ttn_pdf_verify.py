@@ -14,6 +14,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _RMP_RE = re.compile(r"(RMP-\d{6,20})", re.IGNORECASE)
+_RMP_BARE12_RE = re.compile(r"(?<!\d)(\d{12})(?!\d)")
 _NP_GROUPED_RE = re.compile(
     r"(?<!\d)(\d{4}(?:[\s\-]+\d{4}){2}[\s\-]+\d{2,4})(?!\d)"
 )
@@ -54,12 +55,23 @@ def decode_pdf_base64(raw: str) -> bytes:
     return data
 
 
+def _normalize_rozetka_waybill(value: str) -> str:
+    from bot.rmp_tracking import normalize_rmp_track_id
+
+    raw = str(value or "").strip()
+    canon = normalize_rmp_track_id(raw)
+    if canon:
+        return canon
+    compact = raw.replace(" ", "").upper()
+    m = _RMP_RE.search(compact)
+    return m.group(1).upper() if m else ""
+
+
 def normalize_waybill(value: str, carrier: str = "") -> str:
     raw = str(value or "").strip()
     carrier = str(carrier or "").strip().lower()
     if carrier == "rozetka" or raw.upper().startswith("RMP-"):
-        m = _RMP_RE.search(raw.replace(" ", ""))
-        return m.group(1).upper() if m else ""
+        return _normalize_rozetka_waybill(raw)
     digits = _digits_only(raw)
     if len(digits) > 14 and digits.startswith(_NP_PREFIXES):
         return digits[:14]
@@ -184,6 +196,8 @@ def extract_waybill_candidates(pdf_bytes: bytes, filename: str = "") -> list[str
     seen: set[str] = set()
     for m in _RMP_RE.finditer(blob):
         _add_unique(found, seen, m.group(1).upper())
+    for m in _RMP_BARE12_RE.finditer(blob):
+        _add_unique(found, seen, m.group(1))
     _collect_np_from_text(blob, found, seen)
 
     # Сирий PDF — лише номери з префіксом НП, без дат на кшталт 20260912…
@@ -193,7 +207,14 @@ def extract_waybill_candidates(pdf_bytes: bytes, filename: str = "") -> list[str
         raw_blob = ""
     if raw_blob:
         _collect_np_from_text(raw_blob, found, seen)
+        for m in _RMP_RE.finditer(raw_blob):
+            _add_unique(found, seen, m.group(1).upper())
+        for m in _RMP_BARE12_RE.finditer(raw_blob):
+            _add_unique(found, seen, m.group(1))
     _collect_np_from_filename(filename, found, seen)
+    digits = _digits_only(filename)
+    if len(digits) == 12:
+        _add_unique(found, seen, digits)
     return found
 
 
@@ -209,8 +230,13 @@ def verify_ttn_pdf(
     ok=False якщо номер не знайдено в PDF або не збігається.
     """
     carrier_l = str(carrier or "").strip().lower()
-    if carrier_l == "rozetka" or str(ttn_number or "").upper().startswith("RMP-"):
-        expected = normalize_waybill(ttn_number, "rozetka")
+    typed_raw = str(ttn_number or "").strip()
+    if (
+        carrier_l == "rozetka"
+        or typed_raw.upper().startswith("RMP-")
+        or len(_digits_only(typed_raw)) == 12
+    ):
+        expected = normalize_waybill(typed_raw, "rozetka")
         if not expected:
             return {
                 "ok": False,
@@ -220,6 +246,27 @@ def verify_ttn_pdf(
             }
         found = extract_waybill_candidates(pdf_bytes, filename=filename)
         match = any(normalize_waybill(x, "rozetka") == expected for x in found)
+        if not match:
+            expected_digits = _digits_only(expected)
+            try:
+                raw_blob = pdf_bytes.decode("latin-1", errors="ignore")
+            except Exception:
+                raw_blob = ""
+            blob_digits = _digits_only(
+                " ".join(found) + " " + (filename or "") + " " + raw_blob
+            )
+            if expected_digits and expected_digits in blob_digits:
+                match = True
+                if expected not in found:
+                    found.append(expected)
+        if match:
+            return {
+                "ok": True,
+                "expected": expected,
+                "found": found or [expected],
+                "official": expected,
+                "message": "OK",
+            }
         if not found:
             return {
                 "ok": False,
@@ -230,24 +277,16 @@ def verify_ttn_pdf(
                     "Прикріпіть оригінальну етикетку 100×100 (текст/вектор), не скан-фото."
                 ),
             }
-        if not match:
-            preview = ", ".join(found[:3])
-            return {
-                "ok": False,
-                "expected": expected,
-                "found": found,
-                "official": "",
-                "message": (
-                    f"Номер у замовленні ({expected}) не збігається з номером у PDF "
-                    f"({preview}). Перевірте ТТН і файл етикетки."
-                ),
-            }
+        preview = ", ".join(found[:3])
         return {
-            "ok": True,
+            "ok": False,
             "expected": expected,
             "found": found,
-            "official": expected,
-            "message": "OK",
+            "official": "",
+            "message": (
+                f"Номер у замовленні ({expected}) не збігається з номером у PDF "
+                f"({preview}). Перевірте ТТН і файл етикетки."
+            ),
         }
 
     typed = _digits_only(ttn_number)
@@ -650,4 +689,66 @@ def format_ttn_pdf_mismatch_message(order: dict[str, Any], check: dict[str, Any]
         "Виправте номер ТТН або прикріпіть правильний PDF у «Історії». "
         "Поки це не виправлено, замовлення не піде кладовщику на упаковку."
     )
+
+
+def release_ttn_pdf_hold(
+    storage: "AppStorage",
+    order: dict[str, Any],
+    *,
+    actor_user_id: str = "",
+    actor_label: str = "Власник",
+) -> dict[str, Any]:
+    """Власник підтвердив маркировку вручну: зняти hold і пустити в упаковку."""
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    if not order or not order.get("id"):
+        raise ValueError("Немає замовлення")
+    payload = order.get("payload") if isinstance(order.get("payload"), dict) else {}
+    if not payload.get("ttn_pdf_hold"):
+        return order
+    now = datetime.now(ZoneInfo("Europe/Kyiv")).isoformat(timespec="seconds")
+    saved = storage.merge_order_payload(
+        int(order["id"]),
+        {
+            "ttn_pdf_hold": False,
+            "ttn_pdf_ok": True,
+            "ttn_pdf_override": True,
+            "ttn_pdf_overridden_at": now,
+            "ttn_pdf_overridden_by": str(actor_label or "Власник"),
+            "ttn_pdf_check_message": "Власник підтвердив маркировку вручну",
+        },
+    )
+    storage.update_order_flags(int(order["id"]), sheets_sync_status="pending")
+    latest = storage.get_order(int(order["id"])) or saved or order
+    try:
+        storage.add_order_change(
+            order_id=int(order["id"]),
+            order_number=str(latest.get("order_number") or ""),
+            actor_role="owner",
+            actor_user_id=str(actor_user_id or "").strip(),
+            actor_label=str(actor_label or "Власник"),
+            change_type="ttn",
+            summary="Власник підтвердив маркировку — hold знято, на упаковку",
+            diff=[
+                {
+                    "field": "ttn_pdf_hold",
+                    "old": True,
+                    "new": False,
+                }
+            ],
+        )
+    except Exception:
+        logger.exception("ttn pdf override log failed for %s", order.get("order_number"))
+    try:
+        from bot.orders_sheets import sync_order_to_sheet
+
+        synced = sync_order_to_sheet(storage, latest, full=True)
+        if synced:
+            latest = synced
+    except Exception:
+        logger.exception(
+            "ttn pdf override sheet sync failed for %s", latest.get("order_number")
+        )
+    return storage.get_order(int(order["id"])) or latest
 

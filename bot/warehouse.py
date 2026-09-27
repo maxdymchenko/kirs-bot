@@ -325,6 +325,13 @@ def _np_ttn_digits(raw: str) -> str:
     text = str(raw or "").strip()
     if text.upper().startswith("RMP-"):
         return ""
+    try:
+        from bot.rmp_tracking import is_rmp_trackable_number
+
+        if is_rmp_trackable_number(text):
+            return ""
+    except Exception:
+        pass
     digits = re.sub(r"\D+", "", text)
     if not _looks_like_np_ttn(text):
         return ""
@@ -339,6 +346,13 @@ def warehouse_delivery_carrier(order: dict[str, Any]) -> str:
     ttn = str(order.get("ttn_number") or payload.get("ttn_number") or "").strip()
     if ttn.upper().startswith("RMP-"):
         return "rozetka"
+    try:
+        from bot.rmp_tracking import is_rmp_trackable_number
+
+        if is_rmp_trackable_number(ttn):
+            return "rozetka"
+    except Exception:
+        pass
     own = str(payload.get("own_ttn_carrier") or "").strip().lower().replace("-", "_")
     if own in {"rozetka", "rz", "rmp"}:
         return "rozetka"
@@ -894,6 +908,13 @@ def _is_rozetka_queue_order(order: dict[str, Any]) -> bool:
     ttn = str(order.get("ttn_number") or payload.get("ttn_number") or "")
     if ttn.upper().startswith("RMP-"):
         return True
+    try:
+        from bot.rmp_tracking import is_rmp_trackable_number
+
+        if is_rmp_trackable_number(ttn):
+            return True
+    except Exception:
+        pass
     src = str(
         payload.get("market_source") or order.get("source_label") or ""
     ).casefold()

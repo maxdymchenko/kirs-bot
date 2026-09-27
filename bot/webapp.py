@@ -194,6 +194,11 @@ class OwnerOrdersAwaitingPaymentRequest(BaseModel):
     awaiting: bool = True
 
 
+class OwnerTtnPdfOverrideRequest(BaseModel):
+    owner_chat_id: str = Field("", max_length=64)
+    owner_user_id: str = Field("", max_length=64)
+
+
 class DropperOrdersMarkPaidRequest(BaseModel):
     chat_id: str = Field(..., max_length=64)
     user_id: str = Field("", max_length=64)
@@ -1654,11 +1659,16 @@ def create_web_app(
             carrier = (payload.own_ttn_carrier or "nova_poshta").strip().lower()
             raw_ttn = str(payload.ttn_number or "").strip()
             if carrier == "rozetka":
+                from bot.rmp_tracking import is_rmp_trackable_number
+
                 rmp = re.sub(r"\s+", "", raw_ttn).upper()
-                if not re.fullmatch(r"RMP-\d{6,20}", rmp):
+                if not (
+                    is_rmp_trackable_number(rmp)
+                    or re.fullmatch(r"RMP-\d{6,20}", rmp)
+                ):
                     raise HTTPException(
                         status_code=400,
-                        detail="Вкажіть номер RMP у форматі RMP-XXXXXXXXX",
+                        detail="Вкажіть номер Rozetka: RMP-XXXXXXXXX або 12 цифр",
                     )
             else:
                 ttn = re.sub(r"\D", "", raw_ttn)
@@ -2279,6 +2289,34 @@ def create_web_app(
             "skipped": int(result.get("skipped") or 0),
             "items": items,
         }
+
+    @app.post("/api/owner/droppers/{chat_id}/orders/{order_id}/ttn-pdf-override")
+    async def owner_dropper_order_ttn_pdf_override(
+        chat_id: str,
+        order_id: int,
+        payload: OwnerTtnPdfOverrideRequest,
+    ) -> dict:
+        from bot.order_edit import enrich_orders_with_changes
+        from bot.ttn_pdf_verify import release_ttn_pdf_hold
+
+        _require_owner(payload.owner_chat_id, payload.owner_user_id)
+        dropper = storage.get_dropper_by_chat(chat_id.strip())
+        if not dropper:
+            raise HTTPException(status_code=404, detail="Дроппера не знайдено")
+        order = storage.get_order(int(order_id))
+        if not order or int(order.get("dropper_id") or 0) != int(dropper.id):
+            raise HTTPException(status_code=404, detail="Замовлення не знайдено")
+        if not (order.get("payload") or {}).get("ttn_pdf_hold"):
+            items = enrich_orders_with_changes(storage, [order])
+            return {"ok": True, "already": True, "order": items[0] if items else order}
+        saved = release_ttn_pdf_hold(
+            storage,
+            order,
+            actor_user_id=payload.owner_user_id,
+            actor_label="Власник",
+        )
+        items = enrich_orders_with_changes(storage, [saved or order])
+        return {"ok": True, "already": False, "order": items[0] if items else saved}
 
     @app.post("/api/owner/droppers/{chat_id}/orders/awaiting-payment")
     async def owner_dropper_orders_awaiting_payment(
