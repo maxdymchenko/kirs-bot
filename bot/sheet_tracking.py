@@ -411,9 +411,15 @@ def run_sheet_tracking_sync(storage: AppStorage) -> dict[str, Any]:
         )
 
     if paint_pairs:
-        from bot.orders_sheets import paint_status_n_cells
+        from bot.orders_sheets import (
+            paint_return_picked_rows_matching_note,
+            paint_status_n_cells,
+        )
 
         paint_status_n_cells(ws, paint_pairs)
+        paint_return_picked_rows_matching_note(
+            ws, [row for row, _ in paint_pairs]
+        )
 
     return {
         "ok": True,

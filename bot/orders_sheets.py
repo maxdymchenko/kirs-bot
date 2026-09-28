@@ -57,6 +57,8 @@ COL_LOCATION = 18
 COL_QTY = 8
 SHEET_COL_COUNT = len(ORDER_SHEET_HEADERS)
 SETTLEMENT_ARCHIVED_LABEL = "РОЗРАХОВАНІ"
+RETURN_PICKED_NOTE = "ПОВЕРНЕННЯ ЗАБРАЛИ"
+RETURN_PICKED_RED = {"red": 0.918, "green": 0.263, "blue": 0.208}  # #EA4335
 
 TTN_STATUS_LABELS = {
     "none": "немає ТТН",
@@ -312,6 +314,8 @@ def sheet_client_line(order: dict[str, Any]) -> str:
 
 def sheet_note(order: dict[str, Any]) -> str:
     payload = order.get("payload") or {}
+    if order_return_picked(order):
+        return RETURN_PICKED_NOTE
     bits: list[str] = []
     comment = str(payload.get("comment") or "").strip()
     if comment:
@@ -321,6 +325,23 @@ def sheet_note(order: dict[str, Any]) -> str:
     if payload.get("ttn_pdf_hold"):
         bits.append("hold PDF")
     return " · ".join(bits)
+
+
+def order_return_picked(order: dict[str, Any] | None) -> bool:
+    if not order:
+        return False
+    payload = order.get("payload") if isinstance(order.get("payload"), dict) else {}
+    if payload.get("return_settled"):
+        return True
+    ret = payload.get("dropper_return")
+    if not isinstance(ret, dict):
+        return False
+    st = str(ret.get("status") or "").strip().lower()
+    return st in {"accepted", "closed"}
+
+
+def _is_return_picked_note(value: Any) -> bool:
+    return str(value or "").strip().upper() == RETURN_PICKED_NOTE
 
 
 def sheet_receipt_label(order: dict[str, Any]) -> str:
@@ -956,6 +977,12 @@ def append_order_rows(
             for i, row_num in enumerate(written)
         ],
     )
+    picked = [
+        written[i]
+        for i, row in enumerate(rows)
+        if i < len(written) and _is_return_picked_note(row[14] if len(row) > 14 else "")
+    ]
+    paint_return_picked_rows(ws, picked)
     if storage is not None:
         from bot.warehouse import remember_sheet_entered_at
 
@@ -1085,6 +1112,53 @@ def _paint_rows_white(ws: gspread.Worksheet, row_numbers: list[int]) -> None:
         ws.spreadsheet.batch_update({"requests": requests})
     except Exception:
         logger.exception("failed to paint new order rows white")
+
+
+def paint_return_picked_rows(ws: gspread.Worksheet, row_numbers: list[int]) -> None:
+    """Червона заливка A:R для рядків «ПОВЕРНЕННЯ ЗАБРАЛИ». Чужі рядки не чіпає."""
+    spans = _consecutive_row_spans(row_numbers)
+    if not spans:
+        return
+    requests = [
+        {
+            "repeatCell": {
+                "range": {
+                    "sheetId": ws.id,
+                    "startRowIndex": start - 1,
+                    "endRowIndex": end,
+                    "startColumnIndex": 0,
+                    "endColumnIndex": SHEET_COL_COUNT,
+                },
+                "cell": {
+                    "userEnteredFormat": {
+                        "backgroundColor": RETURN_PICKED_RED
+                    }
+                },
+                "fields": "userEnteredFormat.backgroundColor",
+            }
+        }
+        for start, end in spans
+    ]
+    try:
+        chunk = 80
+        for i in range(0, len(requests), chunk):
+            ws.spreadsheet.batch_update({"requests": requests[i : i + chunk]})
+    except Exception:
+        logger.exception("failed to paint return-picked rows red")
+
+
+def paint_return_picked_rows_matching_note(
+    ws: gspread.Worksheet, row_numbers: list[int] | None = None
+) -> int:
+    wanted = {int(n) for n in (row_numbers or []) if n}
+    notes = ws.col_values(COL_NOTE)
+    rows = [
+        idx
+        for idx, val in enumerate(notes[1:], start=2)
+        if _is_return_picked_note(val) and (not wanted or idx in wanted)
+    ]
+    paint_return_picked_rows(ws, rows)
+    return len(rows)
 
 
 _STATUS_N_GREEN = (0.776, 0.937, 0.808)  # #C6EFCE
@@ -1369,6 +1443,12 @@ def update_rows_values(
             for row_num, values in zip(safe_rows, rows)
         ],
     )
+    picked = [
+        row_num
+        for row_num, values in zip(safe_rows, rows)
+        if _is_return_picked_note(values[14] if len(values) > 14 else "")
+    ]
+    paint_return_picked_rows(ws, picked)
 
 
 def replace_order_rows(
@@ -1421,6 +1501,16 @@ def replace_order_rows(
             ws,
             [(existing[i], str(patched[i][13] or "")) for i in range(keep)],
         )
+        paint_return_picked_rows(
+            ws,
+            [
+                existing[i]
+                for i in range(keep)
+                if _is_return_picked_note(
+                    patched[i][14] if len(patched[i]) > 14 else ""
+                )
+            ],
+        )
         leftover = owned_sheet_rows(ws, order_no, existing[keep:])
         if leftover:
             ws.batch_update(
@@ -1471,6 +1561,8 @@ def update_lifecycle_columns(
     ws.batch_update(data, value_input_option="USER_ENTERED")
     paint_status_n_cells(ws, [(n, status) for n in row_numbers])
     paint_settlement_q_cells(ws, [(n, settlement) for n in row_numbers])
+    if _is_return_picked_note(note):
+        paint_return_picked_rows(ws, row_numbers)
 
 
 def sync_archived_settlement_to_sheet(
@@ -1545,6 +1637,9 @@ def sync_archived_settlements_batch(
             value_input_option="USER_ENTERED",
         )
         paint_settlement_q_cells(ws, row_texts)
+        paint_return_picked_rows_matching_note(
+            ws, [n for n, _ in row_texts]
+        )
         logger.info(
             "orders sheet archive Q batch rows=%s orders=%s archived=%s",
             [n for n, _ in row_texts],
@@ -1554,6 +1649,51 @@ def sync_archived_settlements_batch(
         return len(row_texts)
     except Exception:
         logger.exception("orders sheet archive Q batch failed")
+        return 0
+
+
+def sync_return_picked_to_sheet(
+    storage: AppStorage,
+    order: dict[str, Any] | None,
+) -> int:
+    """O = «ПОВЕРНЕННЯ ЗАБРАЛИ» + червоний рядок. Новий рядок не створює."""
+    if not order or not order_return_picked(order):
+        return 0
+    if str(order.get("sheets_sync_status") or "").strip() == "skip_sheet":
+        return 0
+    order_no = str(order.get("order_number") or "").strip()
+    if not order_no:
+        return 0
+    payload = order.get("payload") if isinstance(order.get("payload"), dict) else {}
+    ttn = str(order.get("ttn_number") or payload.get("ttn_number") or "").strip()
+    try:
+        ws = _open_orders_worksheet(storage)
+        row_numbers = find_sheet_rows_by_order_and_ttn(ws, order_no, ttn)
+        if not row_numbers:
+            logger.warning(
+                "orders sheet skip return picked: no B/M row order=%s ttn=%s",
+                order_no,
+                ttn,
+            )
+            return 0
+        ws.batch_update(
+            [
+                {"range": f"O{n}", "values": [[RETURN_PICKED_NOTE]]}
+                for n in row_numbers
+            ],
+            value_input_option="USER_ENTERED",
+        )
+        paint_return_picked_rows(ws, row_numbers)
+        logger.info(
+            "orders sheet return picked order=%s rows=%s",
+            order_no,
+            row_numbers,
+        )
+        return len(row_numbers)
+    except Exception:
+        logger.exception(
+            "orders sheet return picked failed order=%s", order.get("order_number")
+        )
         return 0
 
 

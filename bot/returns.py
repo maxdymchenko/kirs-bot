@@ -568,6 +568,14 @@ def settle_confirmed_return(
             }
         ],
     )
+    try:
+        from bot.orders_sheets import sync_return_picked_to_sheet
+
+        sync_return_picked_to_sheet(storage, saved or order)
+    except Exception:
+        logger.exception(
+            "orders sheet return picked failed for %s", order_number
+        )
     return {
         "order": saved or storage.get_order(int(order["id"])) or order,
         "already": False,
