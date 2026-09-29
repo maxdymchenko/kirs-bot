@@ -2219,12 +2219,20 @@ ${ttnLine}</div>
     return Math.max(0, Math.floor((Date.now() - start) / 86400000));
   }
 
-  /** Вкладка історії: awaiting | next_ship | transit | received | awaiting_payment | archive | returns */
+  function dropperReturnIsClosed(order) {
+    const ret = (order.payload || {}).dropper_return;
+    if (!ret || typeof ret !== "object") return false;
+    return normalizeReturnStatus(ret.status) === "accepted";
+  }
+
+  /** Вкладка історії: awaiting | next_ship | transit | received | awaiting_payment | archive | returns | returns_closed */
   function orderHistoryBucket(order) {
     const payload = order.payload || {};
     const ret = payload.dropper_return;
     const ttn = String(order.ttn_status || "");
-    if (ret && typeof ret === "object") return "returns";
+    if (ret && typeof ret === "object") {
+      return dropperReturnIsClosed(order) ? "returns_closed" : "returns";
+    }
     if (
       ttn === "returned" ||
       ttn === "refused" ||
@@ -4685,6 +4693,7 @@ ${
       awaiting_payment: "Очікує оплату",
       archive: "Архів",
       returns: "Повернення",
+      returns_closed: "Закриті повернення",
     };
     const counts = {
       awaiting: 0,
@@ -4694,6 +4703,7 @@ ${
       awaiting_payment: 0,
       archive: 0,
       returns: 0,
+      returns_closed: 0,
     };
     for (const order of dropperOrdersCache || []) {
       const bucket = orderHistoryBucket(order);
@@ -4736,6 +4746,7 @@ ${
       awaiting_payment: "Немає замовлень, що очікують оплату",
       archive: "Немає замовлень в архіві",
       returns: "Немає повернень",
+      returns_closed: "Немає закритих повернень",
     };
     if (els.historyOrdersCount) {
       if (!inBucket.length) {
@@ -4998,6 +5009,7 @@ ${
       awaiting_payment: "Очікує оплату",
       archive: "Архів",
       returns: "Повернення",
+      returns_closed: "Закриті повернення",
     };
     const counts = {
       awaiting: 0,
@@ -5007,6 +5019,7 @@ ${
       awaiting_payment: 0,
       archive: 0,
       returns: 0,
+      returns_closed: 0,
     };
     for (const order of box._ordersCache || []) {
       const key = orderHistoryBucket(order);
@@ -5055,6 +5068,19 @@ ${
     }
   }
 
+  function ensureOwnerOrdersReturnsClosedTab(box) {
+    const nav = box.querySelector("[data-owner-orders-buckets]");
+    if (!nav || nav.querySelector('[data-owner-orders-bucket="returns_closed"]')) return;
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "tab";
+    btn.setAttribute("data-owner-orders-bucket", "returns_closed");
+    btn.textContent = "Закриті повернення";
+    const returnsBtn = nav.querySelector('[data-owner-orders-bucket="returns"]');
+    if (returnsBtn) nav.insertBefore(btn, returnsBtn.nextSibling);
+    else nav.appendChild(btn);
+  }
+
   function ensureOwnerOrdersAwaitingTab(box) {
     const nav = box.querySelector("[data-owner-orders-buckets]");
     if (!nav || nav.querySelector('[data-owner-orders-bucket="awaiting"]')) return;
@@ -5081,6 +5107,7 @@ ${
           <button type="button" class="tab" data-owner-orders-bucket="awaiting_payment">Очікує оплату</button>
           <button type="button" class="tab" data-owner-orders-bucket="archive">Архів</button>
           <button type="button" class="tab" data-owner-orders-bucket="returns">Повернення</button>
+          <button type="button" class="tab" data-owner-orders-bucket="returns_closed">Закриті повернення</button>
         </nav>
         <div class="orders-toolbar">
           <button type="button" class="btn secondary" data-owner-filters-toggle>Фільтри</button>
@@ -5211,6 +5238,7 @@ ${
     ensureOwnerOrdersAwaitingTab(box);
     ensureOwnerOrdersArchiveTab(box);
     ensureOwnerOrdersAwaitingPaymentTab(box);
+    ensureOwnerOrdersReturnsClosedTab(box);
     bindOwnerArchiveUi(box);
     if (!box._archiveSelected) box._archiveSelected = new Set();
     syncOwnerOrdersBucketTabs(box);
@@ -5242,6 +5270,7 @@ ${
       awaiting_payment: "Немає замовлень, що очікують оплату",
       archive: "Немає замовлень в архіві",
       returns: "Немає повернень",
+      returns_closed: "Немає закритих повернень",
     };
     if (countEl) {
       countEl.textContent = inBucket.length
@@ -6605,7 +6634,7 @@ ${
       const emptyByBucket = {
         awaiting_receipt: "Немає повернень у дорозі",
         awaiting_confirm: "Немає повернень на підтвердження",
-        closed: "Архів порожній",
+        closed: "Немає закритих повернень",
       };
       if (!items.length) {
         const emptyMsg = String(ownerReturnsState.search || "").trim()
@@ -6774,6 +6803,22 @@ ${
           ? `Прийнято · на баланс +${formatMoney(refund)}`
           : "Повернення прийнято"
       );
+      if (data.order) {
+        applyArchivedItemsToCaches([data.order], "");
+        document.querySelectorAll("[data-owner-orders]").forEach((box) => {
+          if (!box._ordersCache) return;
+          syncOwnerOrdersBucketTabs(box);
+          if (box._ordersBucket === "returns" || box._ordersBucket === "returns_closed") {
+            renderOwnerDropperOrdersList(box);
+          }
+        });
+        if (els.historyBuckets) {
+          syncHistoryBucketTabs();
+          if (historyBucket === "returns" || historyBucket === "returns_closed") {
+            paintOrdersHistoryList();
+          }
+        }
+      }
       ownerReturnsState.bucket = "closed";
       await renderOwnerReturns();
     } catch (error) {

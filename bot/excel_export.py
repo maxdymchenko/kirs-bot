@@ -21,13 +21,23 @@ def order_is_awaiting_payment(order: dict[str, Any]) -> bool:
     return bool(payload.get("awaiting_payment"))
 
 
+def order_return_is_closed(order: dict[str, Any]) -> bool:
+    payload = order.get("payload") if isinstance(order.get("payload"), dict) else {}
+    ret = payload.get("dropper_return")
+    if not isinstance(ret, dict) or not ret:
+        return False
+    from bot.returns import STATUS_ACCEPTED, normalize_return_status
+
+    return normalize_return_status(ret.get("status")) == STATUS_ACCEPTED
+
+
 def order_history_bucket(order: dict[str, Any]) -> str:
-    """Як у miniapp: awaiting | next_ship | transit | received | awaiting_payment | archive | returns."""
+    """Як у miniapp: awaiting | next_ship | transit | received | awaiting_payment | archive | returns | returns_closed."""
     payload = order.get("payload") or {}
     ret = payload.get("dropper_return")
     ttn = str(order.get("ttn_status") or "")
     if isinstance(ret, dict) and ret:
-        return "returns"
+        return "returns_closed" if order_return_is_closed(order) else "returns"
     if ttn in {
         "returned",
         "refused",
@@ -60,6 +70,7 @@ def bucket_label_uk(bucket: str) -> str:
         "awaiting_payment": "Очікує оплату",
         "archive": "Архів",
         "returns": "Повернення",
+        "returns_closed": "Закриті повернення",
     }.get(bucket, bucket or "—")
 
 

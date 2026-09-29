@@ -352,7 +352,7 @@ def pending_balance_delta(storage: AppStorage, order: dict[str, Any]) -> float:
     from bot.np_fulfillment import order_cod_profit
 
     bucket = order_history_bucket(order)
-    if bucket == "returns":
+    if bucket in {"returns", "returns_closed"}:
         return 0.0
     if bucket not in {"awaiting", "transit", "received", "awaiting_payment", "archive"}:
         return 0.0
