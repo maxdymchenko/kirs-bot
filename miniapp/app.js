@@ -2703,6 +2703,29 @@ ${ttnLine}</div>
     return "Ручне повернення від клієнта";
   }
 
+  function orderCartCodeColorText(order) {
+    const payload = (order && order.payload) || {};
+    const cart = Array.isArray(payload.cart)
+      ? payload.cart
+      : Array.isArray(order && order.cart)
+        ? order.cart
+        : [];
+    const parts = [];
+    for (const item of cart) {
+      if (!item || typeof item !== "object") continue;
+      const code = String(item.code || "").trim();
+      const color = String(item.color || "").trim();
+      let qty = Number(item.qty || item.quantity || 1);
+      if (!Number.isFinite(qty) || qty < 1) qty = 1;
+      if (!code && !color) continue;
+      let bit = code || "—";
+      if (color) bit += ` · ${color}`;
+      if (qty !== 1) bit += ` ×${qty}`;
+      parts.push(bit);
+    }
+    return parts.join("; ");
+  }
+
   function dropperReturnStatusLabel(status) {
     const st = String(status || "");
     if (st === "accepted" || st === "closed") return "Закрито";
@@ -6677,6 +6700,7 @@ ${
                 ret.ttn_status
               )}</div>`
             : "";
+          const goods = orderCartCodeColorText(row);
           return `
           <article class="owner-return-card" data-return-order-id="${escapeHtml(
             String(row.id || "")
@@ -6693,6 +6717,11 @@ ${
                 dropperReturnStatusLabel(st)
               )}</div>
             </div>
+            ${
+              goods
+                ? `<div class="meta">Товар: <b>${escapeHtml(goods)}</b></div>`
+                : ""
+            }
             <div class="meta">Тип: <b>${escapeHtml(dropperReturnTypeLabel(ret))}</b></div>
             <div class="meta">ТТН повернення: <b>${escapeHtml(ret.ttn_number || "—")}</b></div>
             <div class="meta">Оригінальна ТТН: ${escapeHtml(row.ttn_number || "—")}</div>
