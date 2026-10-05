@@ -64,6 +64,7 @@
     historyPageNext: document.getElementById("historyPageNext"),
     historyPageLabel: document.getElementById("historyPageLabel"),
     historyOrdersCount: document.getElementById("historyOrdersCount"),
+    historyOrdersSearch: document.getElementById("historyOrdersSearch"),
     historyViewHint: document.getElementById("historyViewHint"),
     balanceFiltersToggle: document.getElementById("balanceFiltersToggle"),
     balanceFiltersPanel: document.getElementById("balanceFiltersPanel"),
@@ -2365,19 +2366,15 @@ ${ttnLine}</div>
 
   function historyOrdersInView(bucket = historyBucket) {
     const items = dropperOrdersCache || [];
-    const inBucket = items.filter((o) => orderHistoryBucket(o) === bucket);
-    const filters = collectOrderFilterValues(els.historyFiltersPanel);
-    const filtered = inBucket.filter((o) => orderMatchesOwnerFilters(o, filters));
-    return { inBucket, filtered };
+    const filters = historyFilterValues();
+    return { ...ordersFilteredForView(items, bucket, filters), filters };
   }
 
   function ownerOrdersInView(box) {
     const all = Array.isArray(box._ordersCache) ? box._ordersCache : [];
     const bucket = box._ordersBucket || "transit";
     const filters = ownerOrderFilterValues(box);
-    const inBucket = all.filter((o) => orderHistoryBucket(o) === bucket);
-    const filtered = inBucket.filter((o) => orderMatchesOwnerFilters(o, filters));
-    return { all, bucket, inBucket, filtered };
+    return { all, bucket, filters, ...ordersFilteredForView(all, bucket, filters) };
   }
 
   function applyArchivedItemsToCaches(items, dropperChatId) {
@@ -4746,9 +4743,12 @@ ${
   function paintOrdersHistoryList() {
     if (!els.ordersHistory) return;
     const items = dropperOrdersCache || [];
-    const inBucket = items.filter((o) => orderHistoryBucket(o) === historyBucket);
-    const filters = collectOrderFilterValues(els.historyFiltersPanel);
-    const filtered = inBucket.filter((o) => orderMatchesOwnerFilters(o, filters));
+    const filters = historyFilterValues();
+    const { inBucket, filtered, searchOn } = ordersFilteredForView(
+      items,
+      historyBucket,
+      filters
+    );
     const pageCount = Math.max(1, Math.ceil(filtered.length / ORDERS_PAGE_SIZE) || 1);
     if (historyPage >= pageCount) historyPage = Math.max(0, pageCount - 1);
     if (historyPage < 0) historyPage = 0;
@@ -4772,13 +4772,15 @@ ${
       returns_closed: "Немає закритих повернень",
     };
     if (els.historyOrdersCount) {
-      if (!inBucket.length) {
+      if (!filtered.length && !inBucket.length && !searchOn) {
         els.historyOrdersCount.classList.add("hidden");
         els.historyOrdersCount.textContent = "";
       } else {
         els.historyOrdersCount.classList.remove("hidden");
         const shown = pageItems.length;
-        els.historyOrdersCount.textContent = `Показано ${shown} з ${filtered.length} (у вкладці ${inBucket.length})`;
+        els.historyOrdersCount.textContent = searchOn
+          ? `Знайдено ${filtered.length}`
+          : `Показано ${shown} з ${filtered.length} (у вкладці ${inBucket.length})`;
       }
     }
     if (els.historyPageLabel) {
@@ -4793,11 +4795,13 @@ ${
         filtered.length === 0 || historyPage >= pageCount - 1;
     }
     const canSelect =
+      !searchOn &&
       viewerCanArchiveOrders() &&
       (historyBucket === "received" ||
         historyBucket === "awaiting_payment" ||
         historyBucket === "archive");
     const canPay =
+      !searchOn &&
       viewerCanMarkPaid() &&
       historyBucket === "awaiting_payment" &&
       inBucket.some((o) => !(o.payload || {}).dropper_marked_paid);
@@ -4817,9 +4821,11 @@ ${
           )
           .join("")
       : `<div class="empty">${escapeHtml(
-          inBucket.length
-            ? "Нічого не знайдено за фільтрами"
-            : emptyByBucket[historyBucket] || "Порожньо"
+          searchOn
+            ? "Нічого не знайдено за номером чи ТТН"
+            : inBucket.length
+              ? "Нічого не знайдено за фільтрами"
+              : emptyByBucket[historyBucket] || "Порожньо"
         )}</div>`;
     const paidHint =
       viewerCanMarkPaid() &&
@@ -4924,6 +4930,7 @@ ${
         phone: "",
         clientName: "",
         ttnNumber: "",
+        searchQuery: "",
         dateFrom: "",
         dateTo: "",
       };
@@ -4934,15 +4941,54 @@ ${
       phone: root.querySelector("[data-filter-phone]")?.value?.trim() || "",
       clientName: root.querySelector("[data-filter-name]")?.value?.trim() || "",
       ttnNumber: root.querySelector("[data-filter-ttn]")?.value?.trim() || "",
+      searchQuery: root.querySelector("[data-orders-search]")?.value?.trim() || "",
       dateFrom: root.querySelector("[data-filter-date-from]")?.value || "",
       dateTo: root.querySelector("[data-filter-date-to]")?.value || "",
     };
   }
 
+  function historyFilterValues() {
+    const base = collectOrderFilterValues(els.historyFiltersPanel);
+    base.searchQuery = els.historyOrdersSearch?.value?.trim() || "";
+    return base;
+  }
+
   function ownerOrderFilterValues(box) {
     const base = collectOrderFilterValues(box);
+    base.searchQuery =
+      box?.querySelector("[data-orders-search]")?.value?.trim() || base.searchQuery || "";
     base.status = box?._ordersBucket || "transit";
     return base;
+  }
+
+  function orderMatchesSearchQuery(order, raw) {
+    const q = String(raw || "").trim().toLowerCase();
+    if (!q) return true;
+    const qCompact = q.replace(/\s+/g, "");
+    const qDigits = q.replace(/\D/g, "");
+    const number = String(order.order_number || "").toLowerCase();
+    if (number.includes(q) || number.replace(/\s+/g, "").includes(qCompact)) return true;
+    const payload = order.payload || {};
+    const ret = payload.dropper_return && typeof payload.dropper_return === "object"
+      ? payload.dropper_return
+      : {};
+    const ttns = [order.ttn_number, payload.ttn_number, ret.ttn_number];
+    for (const ttn of ttns) {
+      const t = String(ttn || "").toLowerCase().replace(/\s+/g, "");
+      if (!t) continue;
+      if (t.includes(qCompact)) return true;
+      if (qDigits.length >= 4 && t.replace(/\D/g, "").includes(qDigits)) return true;
+    }
+    return false;
+  }
+
+  function ordersFilteredForView(all, bucket, filters) {
+    const items = Array.isArray(all) ? all : [];
+    const searchOn = Boolean(String(filters.searchQuery || "").trim());
+    const inBucket = items.filter((o) => orderHistoryBucket(o) === bucket);
+    const pool = searchOn ? items : inBucket;
+    const filtered = pool.filter((o) => orderMatchesOwnerFilters(o, filters));
+    return { inBucket, filtered, searchOn };
   }
 
   function orderCreatedDateLocal(order) {
@@ -4960,6 +5006,10 @@ ${
     const payload = order.payload || {};
     const recipient = payload.recipient || {};
     const cart = payload.cart || [];
+
+    if (filters.searchQuery && !orderMatchesSearchQuery(order, filters.searchQuery)) {
+      return false;
+    }
 
     if (filters.productCode) {
       const q = filters.productCode.toLowerCase();
@@ -5104,6 +5154,21 @@ ${
     else nav.appendChild(btn);
   }
 
+  function ensureOwnerOrdersSearch(box) {
+    if (box.querySelector("[data-orders-search]")) return;
+    const label = document.createElement("label");
+    label.className = "field compact-field orders-search-field";
+    label.innerHTML = `
+      <span class="field-label">Пошук за № або ТТН</span>
+      <input type="search" data-orders-search placeholder="K-26… / 2045… / RMP-…" autocomplete="off" />
+    `;
+    const title = box.querySelector(".owner-orders-title");
+    const nav = box.querySelector("[data-owner-orders-buckets]");
+    if (title) title.after(label);
+    else if (nav) nav.before(label);
+    else box.prepend(label);
+  }
+
   function ensureOwnerOrdersAwaitingTab(box) {
     const nav = box.querySelector("[data-owner-orders-buckets]");
     if (!nav || nav.querySelector('[data-owner-orders-bucket="awaiting"]')) return;
@@ -5122,6 +5187,10 @@ ${
     if (!box.querySelector("[data-owner-order-filters]")) {
       box.innerHTML = `
         <p class="owner-orders-title">Історія замовлень</p>
+        <label class="field compact-field orders-search-field">
+          <span class="field-label">Пошук за № або ТТН</span>
+          <input type="search" data-orders-search placeholder="K-26… / 2045… / RMP-…" autocomplete="off" />
+        </label>
         <nav class="tabs history-buckets owner-orders-buckets" data-owner-orders-buckets aria-label="Статус замовлень">
           <button type="button" class="tab" data-owner-orders-bucket="awaiting">Очікує відправлення</button>
           <button type="button" class="tab" data-owner-orders-bucket="next_ship">Наступна відправка</button>
@@ -5180,12 +5249,22 @@ ${
       if (!box.dataset.filtersBound) {
         box.dataset.filtersBound = "1";
         box.addEventListener("input", (event) => {
-          if (!event.target.closest("[data-owner-order-filters]")) return;
+          if (
+            !event.target.closest("[data-owner-order-filters]") &&
+            !event.target.closest("[data-orders-search]")
+          ) {
+            return;
+          }
           box._ordersPage = 0;
           renderOwnerDropperOrdersList(box);
         });
         box.addEventListener("change", (event) => {
-          if (!event.target.closest("[data-owner-order-filters]")) return;
+          if (
+            !event.target.closest("[data-owner-order-filters]") &&
+            !event.target.closest("[data-orders-search]")
+          ) {
+            return;
+          }
           box._ordersPage = 0;
           renderOwnerDropperOrdersList(box);
         });
@@ -5215,6 +5294,8 @@ ${
             box.querySelectorAll("[data-owner-order-filters] input").forEach((input) => {
               input.value = "";
             });
+            const search = box.querySelector("[data-orders-search]");
+            if (search) search.value = "";
             box._ordersPage = 0;
             renderOwnerDropperOrdersList(box);
             return;
@@ -5262,6 +5343,7 @@ ${
     ensureOwnerOrdersArchiveTab(box);
     ensureOwnerOrdersAwaitingPaymentTab(box);
     ensureOwnerOrdersReturnsClosedTab(box);
+    ensureOwnerOrdersSearch(box);
     bindOwnerArchiveUi(box);
     if (!box._archiveSelected) box._archiveSelected = new Set();
     syncOwnerOrdersBucketTabs(box);
@@ -5272,8 +5354,7 @@ ${
     const all = Array.isArray(box._ordersCache) ? box._ordersCache : [];
     const bucket = box._ordersBucket || "transit";
     const filters = ownerOrderFilterValues(box);
-    const inBucket = all.filter((o) => orderHistoryBucket(o) === bucket);
-    const filtered = inBucket.filter((o) => orderMatchesOwnerFilters(o, filters));
+    const { inBucket, filtered, searchOn } = ordersFilteredForView(all, bucket, filters);
     const page = Math.max(0, Number(box._ordersPage) || 0);
     const pageCount = Math.max(1, Math.ceil(filtered.length / ORDERS_PAGE_SIZE) || 1);
     const safePage = Math.min(page, pageCount - 1);
@@ -5296,9 +5377,11 @@ ${
       returns_closed: "Немає закритих повернень",
     };
     if (countEl) {
-      countEl.textContent = inBucket.length
-        ? `Показано ${pageItems.length} з ${filtered.length}`
-        : "Показано 0 з 0";
+      countEl.textContent = searchOn
+        ? `Знайдено ${filtered.length}`
+        : inBucket.length
+          ? `Показано ${pageItems.length} з ${filtered.length}`
+          : "Показано 0 з 0";
     }
     if (pageLabel) {
       pageLabel.textContent = filtered.length ? `${safePage + 1} / ${pageCount}` : "0 / 0";
@@ -5307,6 +5390,7 @@ ${
     if (nextBtn) nextBtn.disabled = filtered.length === 0 || safePage >= pageCount - 1;
     if (!box._archiveSelected) box._archiveSelected = new Set();
     const canSelect =
+      !searchOn &&
       viewerCanArchiveOrders() &&
       (bucket === "received" ||
         bucket === "awaiting_payment" ||
@@ -5325,9 +5409,11 @@ ${
             )
             .join("")
         : `<div class="empty">${
-            inBucket.length
-              ? "Нічого не знайдено за фільтрами"
-              : emptyByBucket[bucket] || "Замовлень ще немає"
+            searchOn
+              ? "Нічого не знайдено за номером чи ТТН"
+              : inBucket.length
+                ? "Нічого не знайдено за фільтрами"
+                : emptyByBucket[bucket] || "Замовлень ще немає"
           }</div>`;
       listEl.innerHTML =
         (canSelect && inBucket.length ? archiveBarHtml(bucket) : "") + cards;
@@ -8656,11 +8742,18 @@ ${
       paintOrdersHistoryList();
     });
   }
+  if (els.historyOrdersSearch) {
+    els.historyOrdersSearch.addEventListener("input", () => {
+      historyPage = 0;
+      paintOrdersHistoryList();
+    });
+  }
   if (els.historyFiltersReset) {
     els.historyFiltersReset.addEventListener("click", () => {
       els.historyFiltersPanel?.querySelectorAll("input").forEach((input) => {
         input.value = "";
       });
+      if (els.historyOrdersSearch) els.historyOrdersSearch.value = "";
       historyPage = 0;
       paintOrdersHistoryList();
     });

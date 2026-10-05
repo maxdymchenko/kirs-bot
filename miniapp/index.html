@@ -7,7 +7,7 @@
   <link rel="icon" type="image/png" href="/static/favicon.png?v=20260912icon1" />
   <link rel="apple-touch-icon" href="/static/favicon.png?v=20260912icon1" />
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
-  <link rel="stylesheet" href="/static/styles.css?v=20261002ret1" />
+  <link rel="stylesheet" href="/static/styles.css?v=20261005search1" />
 </head>
 <body>
   <div class="app">
@@ -798,6 +798,16 @@
       <section id="historyView" class="view hidden">
         <h1 class="title">Історія замовлень</h1>
         <p class="hint" id="historyViewHint">Усі передані вами замовлення з номерами.</p>
+        <label class="field compact-field orders-search-field">
+          <span class="field-label">Пошук за № або ТТН</span>
+          <input
+            id="historyOrdersSearch"
+            type="search"
+            data-orders-search
+            placeholder="K-26… / 2045… / RMP-…"
+            autocomplete="off"
+          />
+        </label>
         <nav class="tabs history-buckets" id="historyBuckets" aria-label="Фільтр історії">
           <button type="button" class="tab active" data-history-bucket="awaiting">Очікує відправлення</button>
           <button type="button" class="tab" data-history-bucket="next_ship">Наступна відправка</button>
@@ -1011,6 +1021,6 @@
   </div>
 
   <button type="button" id="photoZoomBackdrop" class="photo-zoom-backdrop hidden" aria-label="Закрити фото"></button>
-  <script src="/static/app.js?v=20261002ret1"></script>
+  <script src="/static/app.js?v=20261005search1"></script>
 </body>
 </html>

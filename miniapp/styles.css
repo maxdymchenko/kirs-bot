@@ -1937,6 +1937,14 @@ input[type="file"] {
   flex-wrap: wrap;
 }
 
+.orders-search-field {
+  margin: 0 0 12px;
+}
+
+.orders-search-field input {
+  width: 100%;
+}
+
 .history-filters-bar {
   padding: 0 16px 10px;
   display: flex;
