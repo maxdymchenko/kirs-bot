@@ -199,6 +199,11 @@ class OwnerTtnPdfOverrideRequest(BaseModel):
     owner_user_id: str = Field("", max_length=64)
 
 
+class OwnerOrderDeleteRequest(BaseModel):
+    owner_chat_id: str = Field("", max_length=64)
+    owner_user_id: str = Field("", max_length=64)
+
+
 class DropperOrdersMarkPaidRequest(BaseModel):
     chat_id: str = Field(..., max_length=64)
     user_id: str = Field("", max_length=64)
@@ -2525,6 +2530,11 @@ def create_web_app(
         order = storage.get_order(order_id)
         if not order:
             raise HTTPException(status_code=404, detail="Замовлення не знайдено")
+        if (order.get("payload") or {}).get("owner_deleted"):
+            raise HTTPException(
+                status_code=400,
+                detail="Замовлення видалено — спочатку відновіть",
+            )
         if not skip_unshipped_check and not can_modify_unshipped_order(order):
             raise HTTPException(
                 status_code=400,
@@ -3143,6 +3153,98 @@ def create_web_app(
             for_owner_edit=True,
             skip_unshipped_check=True,
         )
+
+    @app.post("/api/owner/orders/{order_id}/delete")
+    async def owner_delete_order_api(
+        order_id: int,
+        payload: OwnerOrderDeleteRequest,
+    ) -> dict:
+        from bot.order_delete import owner_delete_order
+        from bot.order_edit import enrich_orders_with_changes
+
+        _require_owner(payload.owner_chat_id, payload.owner_user_id)
+        order = storage.get_order(order_id)
+        if not order:
+            raise HTTPException(status_code=404, detail="Замовлення не знайдено")
+        try:
+            saved = owner_delete_order(
+                storage,
+                order,
+                catalog=catalog,
+                actor_user_id=payload.owner_user_id,
+                actor_label="Власник",
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except Exception:
+            logger.exception("owner delete order %s failed", order_id)
+            raise HTTPException(
+                status_code=503,
+                detail="Не вдалося видалити замовлення. Спробуйте ще раз.",
+            ) from None
+
+        dropper = storage.get_dropper_by_id(int((saved or order).get("dropper_id") or 0))
+        text = (
+            f"❌ Замовлення видалено власником\n"
+            f"Номер: {(saved or order).get('order_number')}\n"
+            f"Наявність повернуто на склад.\n"
+            f"ТТН у кабінеті Нової Пошти не змінювали."
+        )
+        if dropper:
+            try:
+                await _notify(str(order.get("chat_id") or dropper.chat_id), text)
+            except Exception:
+                logger.exception("notify owner-delete to dropper failed")
+        items = enrich_orders_with_changes(storage, [saved or order])
+        return {"ok": True, "deleted": True, "order": items[0] if items else saved}
+
+    @app.post("/api/owner/orders/{order_id}/restore")
+    async def owner_restore_order_api(
+        order_id: int,
+        payload: OwnerOrderDeleteRequest,
+    ) -> dict:
+        from bot.catalog import InsufficientStockError
+        from bot.order_delete import owner_restore_order
+        from bot.order_edit import enrich_orders_with_changes
+
+        _require_owner(payload.owner_chat_id, payload.owner_user_id)
+        order = storage.get_order(order_id)
+        if not order:
+            raise HTTPException(status_code=404, detail="Замовлення не знайдено")
+        try:
+            saved = owner_restore_order(
+                storage,
+                order,
+                catalog=catalog,
+                actor_user_id=payload.owner_user_id,
+                actor_label="Власник",
+            )
+        except InsufficientStockError as exc:
+            raise HTTPException(
+                status_code=400,
+                detail=str(exc) or "Немає в наявності для відновлення",
+            ) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except Exception:
+            logger.exception("owner restore order %s failed", order_id)
+            raise HTTPException(
+                status_code=503,
+                detail="Не вдалося відновити замовлення. Спробуйте ще раз.",
+            ) from None
+
+        dropper = storage.get_dropper_by_id(int((saved or order).get("dropper_id") or 0))
+        text = (
+            f"♻️ Замовлення відновлено власником\n"
+            f"Номер: {(saved or order).get('order_number')}"
+        )
+        if dropper:
+            try:
+                await _notify(str(order.get("chat_id") or dropper.chat_id), text)
+            except Exception:
+                logger.exception("notify owner-restore to dropper failed")
+        items = enrich_orders_with_changes(storage, [saved or order])
+        return {"ok": True, "restored": True, "order": items[0] if items else saved}
 
     @app.patch("/api/dropper/orders/{order_id}")
     async def dropper_update_order(

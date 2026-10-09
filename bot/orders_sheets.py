@@ -1114,6 +1114,148 @@ def _paint_rows_white(ws: gspread.Worksheet, row_numbers: list[int]) -> None:
         logger.exception("failed to paint new order rows white")
 
 
+def paint_rows_red(ws: gspread.Worksheet, row_numbers: list[int]) -> None:
+    """Червона заливка A:R. Чужі рядки не чіпає, рядки не зсуває."""
+    paint_return_picked_rows(ws, row_numbers)
+
+
+def blank_deleted_order_rows(
+    storage: AppStorage, order: dict[str, Any] | None
+) -> list[int]:
+    """Очистити A:R рядків цього № (без зсуву) і залити червоним. B теж порожній."""
+    if not order:
+        return []
+    if str(order.get("sheets_sync_status") or "").strip() == "skip_sheet":
+        return []
+    order_no = str(order.get("order_number") or "").strip()
+    if not order_no:
+        return []
+    try:
+        ws = _open_orders_worksheet(storage)
+        row_numbers = owned_sheet_rows(ws, order_no)
+        if not row_numbers:
+            return []
+        empty = [""] * SHEET_COL_COUNT
+        ws.batch_update(
+            [
+                {"range": f"A{n}:R{n}", "values": [empty]}
+                for n in row_numbers
+            ],
+            value_input_option="USER_ENTERED",
+        )
+        paint_rows_red(ws, row_numbers)
+        logger.info(
+            "orders sheet blank deleted order=%s rows=%s",
+            order_no,
+            row_numbers,
+        )
+        return row_numbers
+    except Exception:
+        logger.exception(
+            "orders sheet blank deleted failed order=%s",
+            order.get("order_number"),
+        )
+        return []
+
+
+def restore_blanked_order_rows(
+    storage: AppStorage,
+    order: dict[str, Any] | None,
+    *,
+    catalog: Any = None,
+    preferred_rows: list[int] | None = None,
+) -> list[int]:
+    """Записати замовлення назад: у збережені порожні рядки, інакше в кінець."""
+    if not order or not order.get("id"):
+        return []
+    order_no = str(order.get("order_number") or "").strip()
+    if not order_no:
+        return []
+    try:
+        ws = _open_orders_worksheet(storage)
+        built = build_sheet_rows(storage, order, catalog=catalog)
+        if not built:
+            return []
+        by_row = _order_no_by_sheet_row(ws)
+        reusable: list[int] = []
+        for raw in preferred_rows or []:
+            try:
+                row = int(raw)
+            except (TypeError, ValueError):
+                continue
+            have = str(by_row.get(row) or "").strip()
+            if have and have != order_no:
+                logger.error(
+                    "orders sheet skip restore overwrite row=%s has %s want %s",
+                    row,
+                    have,
+                    order_no,
+                )
+                continue
+            reusable.append(row)
+        owned = owned_sheet_rows(ws, order_no)
+        for row in owned:
+            if row not in reusable:
+                reusable.append(row)
+        need = len(built)
+        take = reusable[:need]
+        extra: list[int] = []
+        if len(take) < need:
+            extra = append_order_rows(ws, built[len(take) :], storage=storage)
+            take = [*take, *extra]
+        prefix = take[: need - len(extra)] if extra else take
+        if prefix:
+            # B може бути порожнім після blank — не через update_rows_values (там потрібен № в B).
+            prefix_rows = [
+                built[i] if i < len(built) else [""] * SHEET_COL_COUNT
+                for i in range(len(prefix))
+            ]
+            ws.batch_update(
+                [
+                    {
+                        "range": f"A{row_num}:R{row_num}",
+                        "values": [prefix_rows[i]],
+                    }
+                    for i, row_num in enumerate(prefix)
+                ],
+                value_input_option="USER_ENTERED",
+            )
+            _paint_rows_white(ws, prefix)
+            paint_qty_highlight_cells(
+                ws,
+                [
+                    (row_num, prefix_rows[i][7] if len(prefix_rows[i]) > 7 else 1)
+                    for i, row_num in enumerate(prefix)
+                ],
+            )
+            paint_status_n_cells(
+                ws,
+                [
+                    (row_num, str(prefix_rows[i][13] if len(prefix_rows[i]) > 13 else ""))
+                    for i, row_num in enumerate(prefix)
+                ],
+            )
+            paint_settlement_q_cells(
+                ws,
+                [
+                    (row_num, str(prefix_rows[i][16] if len(prefix_rows[i]) > 16 else ""))
+                    for i, row_num in enumerate(prefix)
+                ],
+            )
+        logger.info(
+            "orders sheet restore deleted order=%s rows=%s",
+            order_no,
+            take,
+        )
+        return take
+    except Exception:
+        logger.exception(
+            "orders sheet restore deleted failed order=%s",
+            order.get("order_number"),
+        )
+        return []
+
+
 def paint_return_picked_rows(ws: gspread.Worksheet, row_numbers: list[int]) -> None:
     """Червона заливка A:R для рядків «ПОВЕРНЕННЯ ЗАБРАЛИ». Чужі рядки не чіпає."""
     spans = _consecutive_row_spans(row_numbers)

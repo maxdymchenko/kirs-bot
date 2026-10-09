@@ -142,9 +142,11 @@ def order_warehouse_stage(order: dict[str, Any]) -> str:
 def is_packable_order(order: dict[str, Any]) -> bool:
     if str(order.get("status") or "") == "cancelled":
         return False
+    payload = order.get("payload") or {}
+    if payload.get("owner_deleted"):
+        return False
     if str(order.get("sheets_sync_status") or "") == "hold_pdf":
         return False
-    payload = order.get("payload") or {}
     if payload.get("ttn_pdf_hold") is True:
         return False
     if payload.get("warehouse_left_manually") or payload.get("warehouse_left_via_tracking"):

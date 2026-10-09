@@ -439,6 +439,10 @@ def clear_ledger_for_cancelled_order(storage: AppStorage, order: dict[str, Any])
         "cod_profit_credit",
         "cod_profit_reversal",
         "return_delivery_debit",
+        "return_delivery_reversal",
+        "return_goods_credit",
+        "referral_credit",
+        "referral_reversal",
     ):
         storage.delete_ledger_entry_for_order(
             dropper_id=dropper_id,
@@ -447,8 +451,10 @@ def clear_ledger_for_cancelled_order(storage: AppStorage, order: dict[str, Any])
         )
     source = storage.get_dropper_by_id(dropper_id)
     if source and source.referred_by_dropper_id:
-        storage.delete_ledger_entry_for_order(
-            dropper_id=int(source.referred_by_dropper_id),
-            entry_type="referral_credit",
-            related_order_id=order_number,
-        )
+        referrer_id = int(source.referred_by_dropper_id)
+        for entry_type in ("referral_credit", "referral_reversal"):
+            storage.delete_ledger_entry_for_order(
+                dropper_id=referrer_id,
+                entry_type=entry_type,
+                related_order_id=order_number,
+            )

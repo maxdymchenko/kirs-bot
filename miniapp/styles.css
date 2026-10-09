@@ -1476,6 +1476,12 @@ textarea {
   gap: 10px;
 }
 
+.order-edit-actions-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
 .order-edit-panel {
   padding: 12px;
   border: 1px solid var(--line, #e2e8f0);

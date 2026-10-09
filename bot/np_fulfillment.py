@@ -905,6 +905,9 @@ async def apply_tracking_event(
     is_np = order_np_trackable(order)
     if not order or not (is_np or is_rmp):
         return result
+    payload_guard = order.get("payload") if isinstance(order.get("payload"), dict) else {}
+    if str(order.get("status") or "") == "cancelled" or payload_guard.get("owner_deleted"):
+        return result
 
     mapped = (
         map_rmp_status(status_code, status_text)

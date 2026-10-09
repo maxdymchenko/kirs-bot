@@ -2226,11 +2226,14 @@ ${ttnLine}</div>
     return normalizeReturnStatus(ret.status) === "accepted";
   }
 
-  /** Вкладка історії: awaiting | next_ship | transit | received | awaiting_payment | archive | returns | returns_closed */
+  /** Вкладка історії: awaiting | next_ship | transit | received | awaiting_payment | archive | returns | returns_closed | cancelled */
   function orderHistoryBucket(order) {
     const payload = order.payload || {};
     const ret = payload.dropper_return;
     const ttn = String(order.ttn_status || "");
+    if (payload.owner_deleted || String(order.status || "") === "cancelled") {
+      return "cancelled";
+    }
     if (ret && typeof ret === "object") {
       return dropperReturnIsClosed(order) ? "returns_closed" : "returns";
     }
@@ -2744,6 +2747,9 @@ ${ttnLine}</div>
     const hasTtn = Boolean(order.ttn_number || payload.ttn_number);
     const ret = payload.dropper_return;
 
+    if (payload.owner_deleted) {
+      return { kind: "refused", label: "Видалено", sub: "власником" };
+    }
     if (ret && typeof ret === "object") {
       const st = normalizeReturnStatus(ret.status);
       if (st === "accepted") {
@@ -2816,6 +2822,54 @@ ${ttnLine}</div>
       return { kind: "accepted", label: "Прийнято", sub: "" };
     }
     return { kind: "other", label: String(order.status || "—"), sub: "" };
+  }
+
+  function renderOwnerOrderManageHtml(order, options = {}) {
+    const payload = order.payload || {};
+    const ownerManage =
+      sessionState.role === "owner" &&
+      Boolean(options.ownerManage || options.editable);
+    const oid = orderNumericId(order);
+    const canDelete =
+      ownerManage && oid && !payload.owner_deleted && !payload.sheet_order;
+    const canRestore = ownerManage && oid && payload.owner_deleted;
+    const canEdit = Boolean(options.editable) && !payload.owner_deleted && oid;
+    if (!canDelete && !canRestore && !canEdit) return "";
+    const id = escapeHtml(String(order.id || ""));
+    if (canRestore) {
+      return `
+        <div class="order-edit-actions">
+          <p class="hint">Видалено власником. Кабінет Нової Пошти не змінювали.</p>
+          <button type="button" class="btn primary" data-order-owner-restore="${id}">Відновити</button>
+        </div>`;
+    }
+    return `
+      <div class="order-edit-actions">
+        ${
+          canEdit
+            ? `<p class="hint">ТТН буде перестворено лише якщо ще очікує відправки.</p>`
+            : ""
+        }
+        <div class="order-edit-actions-row">
+          ${
+            canEdit
+              ? `<button type="button" class="btn primary" data-order-edit-open="${id}" data-order-edit-mode="${escapeHtml(
+                  options.editMode || "owner"
+                )}">Редагувати</button>`
+              : ""
+          }
+          ${
+            canDelete
+              ? `<button type="button" class="btn danger" data-order-owner-delete="${id}">Видалити</button>`
+              : ""
+          }
+        </div>
+        ${
+          canEdit
+            ? `<div class="order-edit-panel hidden" data-order-edit-panel="${id}"></div>`
+            : ""
+        }
+      </div>`;
   }
 
   function renderOrderDetailsHtml(order, options = {}) {
@@ -2938,23 +2992,11 @@ ${
         ${renderOrderChangesTimelineHtml(order)}
         ${renderOrderReturnBlockHtml(order, options)}
         ${
-          options.allowDropperEdit
+          options.allowDropperEdit && !payload.owner_deleted
             ? renderOrderDropperActionsHtml(order, options)
             : ""
         }
-        ${
-          options.editable
-            ? `<div class="order-edit-actions">
-                <p class="hint">ТТН буде перестворено лише якщо ще очікує відправки.</p>
-                <button type="button" class="btn primary" data-order-edit-open="${escapeHtml(
-                  String(order.id || "")
-                )}" data-order-edit-mode="${escapeHtml(options.editMode || "owner")}">Редагувати</button>
-                <div class="order-edit-panel hidden" data-order-edit-panel="${escapeHtml(
-                  String(order.id || "")
-                )}"></div>
-              </div>`
-            : ""
-        }
+        ${renderOwnerOrderManageHtml(order, options)}
       </div>
     `;
   }
@@ -3245,6 +3287,7 @@ ${
       editable = false,
       dropperActions = false,
       allowDropperEdit = false,
+      ownerManage = false,
       editWindow = null,
       editMode = "owner",
       selectable = false,
@@ -3347,6 +3390,7 @@ ${
             editable,
             dropperActions,
             allowDropperEdit,
+            ownerManage,
             editWindow,
             editMode,
           })}
@@ -3422,7 +3466,7 @@ ${
         return;
       }
       if (event.target.closest(
-        "[data-order-edit-open], [data-order-edit-panel], .order-edit-panel, [data-order-cancel], [data-order-correction-request], [data-correction-text], [data-order-return-open], [data-order-return-form], .order-return-form, [data-order-return-submit], [data-order-return-cancel], [data-return-ttn], [data-return-error], [data-archive-pick], [data-archive-bar], .order-card-pick, [data-ttn-pdf-override], .order-pdf-hold"
+        "[data-order-edit-open], [data-order-edit-panel], .order-edit-panel, [data-order-cancel], [data-order-owner-delete], [data-order-owner-restore], [data-order-correction-request], [data-correction-text], [data-order-return-open], [data-order-return-form], .order-return-form, [data-order-return-submit], [data-order-return-cancel], [data-return-ttn], [data-return-error], [data-archive-pick], [data-archive-bar], .order-card-pick, [data-ttn-pdf-override], .order-pdf-hold"
       )) {
         return;
       }
@@ -4522,6 +4566,20 @@ ${
       if (orderId) cancelDropperOrder(orderId);
       return;
     }
+    const ownerDeleteBtn = event.target.closest("[data-order-owner-delete]");
+    if (ownerDeleteBtn) {
+      event.preventDefault();
+      const orderId = ownerDeleteBtn.getAttribute("data-order-owner-delete");
+      if (orderId) ownerDeleteOrder(orderId);
+      return;
+    }
+    const ownerRestoreBtn = event.target.closest("[data-order-owner-restore]");
+    if (ownerRestoreBtn) {
+      event.preventDefault();
+      const orderId = ownerRestoreBtn.getAttribute("data-order-owner-restore");
+      if (orderId) ownerRestoreOrder(orderId);
+      return;
+    }
     const correctionBtn = event.target.closest("[data-order-correction-request]");
     if (correctionBtn) {
       event.preventDefault();
@@ -4582,6 +4640,88 @@ ${
       if (form) addProductToEditForm(form);
     }
   });
+
+  function refreshOrdersAfterOwnerAction(order, chatId) {
+    if (order) applyArchivedItemsToCaches([order], chatId || "");
+    document.querySelectorAll("[data-owner-orders]").forEach((box) => {
+      if (!box._ordersCache) return;
+      if (
+        chatId &&
+        box.dataset.dropperChat &&
+        String(box.dataset.dropperChat) !== String(chatId)
+      ) {
+        return;
+      }
+      syncOwnerOrdersBucketTabs(box);
+      renderOwnerDropperOrdersList(box);
+    });
+    if (els.historyBuckets) {
+      syncHistoryBucketTabs();
+      paintOrdersHistoryList();
+    }
+  }
+
+  async function ownerDeleteOrder(orderId) {
+    if (
+      !window.confirm(
+        "Видалити замовлення? Наявність повернеться на склад, рядок у таблиці «Заказы» очиститься і стане червоним. Кабінет Нової Пошти не чіпаємо."
+      )
+    ) {
+      return;
+    }
+    try {
+      const response = await fetch(
+        `/api/owner/orders/${encodeURIComponent(orderId)}/delete`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(ownerAuthBody()),
+        }
+      );
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(
+          typeof data.detail === "string" ? data.detail : "Помилка видалення"
+        );
+      }
+      const order = data.order;
+      showToast("Замовлення видалено");
+      refreshOrdersAfterOwnerAction(order, order?.chat_id || "");
+    } catch (error) {
+      showToast(error.message || "Помилка");
+    }
+  }
+
+  async function ownerRestoreOrder(orderId) {
+    if (
+      !window.confirm(
+        "Відновити замовлення? Наявність спишеться знову, рядок повернеться в таблицю."
+      )
+    ) {
+      return;
+    }
+    try {
+      const response = await fetch(
+        `/api/owner/orders/${encodeURIComponent(orderId)}/restore`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(ownerAuthBody()),
+        }
+      );
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(
+          typeof data.detail === "string" ? data.detail : "Помилка відновлення"
+        );
+      }
+      const order = data.order;
+      showToast("Замовлення відновлено");
+      refreshOrdersAfterOwnerAction(order, order?.chat_id || "");
+    } catch (error) {
+      showToast(error.message || "Помилка");
+    }
+  }
 
   async function cancelDropperOrder(orderId) {
     if (!window.confirm("Скасувати замовлення? ТТН буде видалено, наявність повернеться.")) {
@@ -4714,6 +4854,7 @@ ${
       archive: "Архів",
       returns: "Повернення",
       returns_closed: "Закриті повернення",
+      cancelled: "Видалені/скасовані",
     };
     const counts = {
       awaiting: 0,
@@ -4724,6 +4865,7 @@ ${
       archive: 0,
       returns: 0,
       returns_closed: 0,
+      cancelled: 0,
     };
     for (const order of dropperOrdersCache || []) {
       const bucket = orderHistoryBucket(order);
@@ -4770,6 +4912,7 @@ ${
       archive: "Немає замовлень в архіві",
       returns: "Немає повернень",
       returns_closed: "Немає закритих повернень",
+      cancelled: "Немає видалених або скасованих замовлень",
     };
     if (els.historyOrdersCount) {
       if (!filtered.length && !inBucket.length && !searchOn) {
@@ -4809,12 +4952,17 @@ ${
       ? pageItems
           .map((o) =>
             renderOrderCard(o, {
-              dropperActions: !(o.payload || {}).sheet_order,
+              dropperActions:
+                !(o.payload || {}).sheet_order &&
+                !(o.payload || {}).owner_deleted,
               allowDropperEdit:
                 (historyBucket === "awaiting" || historyBucket === "next_ship") &&
-                !(o.payload || {}).sheet_order,
+                !(o.payload || {}).sheet_order &&
+                !(o.payload || {}).owner_deleted,
               editWindow: dropperOrdersEditWindow,
               editMode: isOwnerSelfForm() ? "owner" : "dropper",
+              ownerManage:
+                sessionState.role === "owner" && !(o.payload || {}).sheet_order,
               selectable: canSelect && orderSelectableForArchive(o),
               selected: historyArchiveSelected.has(String(o.id)),
             })
@@ -5083,6 +5231,7 @@ ${
       archive: "Архів",
       returns: "Повернення",
       returns_closed: "Закриті повернення",
+      cancelled: "Видалені/скасовані",
     };
     const counts = {
       awaiting: 0,
@@ -5093,6 +5242,7 @@ ${
       archive: 0,
       returns: 0,
       returns_closed: 0,
+      cancelled: 0,
     };
     for (const order of box._ordersCache || []) {
       const key = orderHistoryBucket(order);
@@ -5154,6 +5304,19 @@ ${
     else nav.appendChild(btn);
   }
 
+  function ensureOwnerOrdersCancelledTab(box) {
+    const nav = box.querySelector("[data-owner-orders-buckets]");
+    if (!nav || nav.querySelector('[data-owner-orders-bucket="cancelled"]')) return;
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "tab";
+    btn.setAttribute("data-owner-orders-bucket", "cancelled");
+    btn.textContent = "Видалені/скасовані";
+    const closedBtn = nav.querySelector('[data-owner-orders-bucket="returns_closed"]');
+    if (closedBtn) nav.insertBefore(btn, closedBtn.nextSibling);
+    else nav.appendChild(btn);
+  }
+
   function ensureOwnerOrdersSearch(box) {
     if (box.querySelector("[data-orders-search]")) return;
     const label = document.createElement("label");
@@ -5200,6 +5363,7 @@ ${
           <button type="button" class="tab" data-owner-orders-bucket="archive">Архів</button>
           <button type="button" class="tab" data-owner-orders-bucket="returns">Повернення</button>
           <button type="button" class="tab" data-owner-orders-bucket="returns_closed">Закриті повернення</button>
+          <button type="button" class="tab" data-owner-orders-bucket="cancelled">Видалені/скасовані</button>
         </nav>
         <div class="orders-toolbar">
           <button type="button" class="btn secondary" data-owner-filters-toggle>Фільтри</button>
@@ -5343,6 +5507,7 @@ ${
     ensureOwnerOrdersArchiveTab(box);
     ensureOwnerOrdersAwaitingPaymentTab(box);
     ensureOwnerOrdersReturnsClosedTab(box);
+    ensureOwnerOrdersCancelledTab(box);
     ensureOwnerOrdersSearch(box);
     bindOwnerArchiveUi(box);
     if (!box._archiveSelected) box._archiveSelected = new Set();
@@ -5375,6 +5540,7 @@ ${
       archive: "Немає замовлень в архіві",
       returns: "Немає повернень",
       returns_closed: "Немає закритих повернень",
+      cancelled: "Немає видалених або скасованих замовлень",
     };
     if (countEl) {
       countEl.textContent = searchOn
@@ -5402,6 +5568,7 @@ ${
               renderOrderCard(o, {
                 compact: true,
                 editable: true,
+                ownerManage: true,
                 editMode: "owner",
                 selectable: canSelect && orderSelectableForArchive(o),
                 selected: box._archiveSelected.has(String(o.id)),
