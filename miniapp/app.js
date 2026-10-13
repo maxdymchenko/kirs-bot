@@ -52,6 +52,8 @@
     ownerReturnsTabs: document.getElementById("ownerReturnsTabs"),
     ownerReturnsSearch: document.getElementById("ownerReturnsSearch"),
     ownerReturnsDropperFilter: document.getElementById("ownerReturnsDropperFilter"),
+    ownerReturnsCarrierFilters: document.getElementById("ownerReturnsCarrierFilters"),
+    historyCarrierFilters: document.getElementById("historyCarrierFilters"),
     ownerTabSettings: document.getElementById("ownerTabSettings"),
     ownerTabOrder: document.getElementById("ownerTabOrder"),
     ownerTabBlacklist: document.getElementById("ownerTabBlacklist"),
@@ -325,6 +327,8 @@
     bucket: "awaiting_receipt",
     counts: {},
     search: "",
+    carrier: "all",
+    dropperChatId: "",
   };
 
   const npState = {
@@ -4839,6 +4843,7 @@ ${
   let dropperOrdersEditWindow = null;
   let dropperOrdersCache = [];
   let historyBucket = "awaiting";
+  let historyCarrierFilter = "all";
   const ORDERS_PAGE_SIZE = 20;
   let historyPage = 0;
   let historyArchiveSelected = new Set();
@@ -4991,6 +4996,7 @@ ${
     bindOrderCardClicks(els.ordersHistory);
     bindHistoryArchiveUi();
     syncArchiveBar(els.ordersHistory, filtered, historyArchiveSelected, historyBucket);
+    syncCarrierFilterChips(els.historyCarrierFilters, "data-history-carrier", historyCarrierFilter);
     const paidSum = els.ordersHistory.querySelector("[data-paid-sum]");
     if (paidSum) {
       const total = roundMoney(
@@ -5081,6 +5087,7 @@ ${
         searchQuery: "",
         dateFrom: "",
         dateTo: "",
+        carrier: "",
       };
     }
     return {
@@ -5092,12 +5099,14 @@ ${
       searchQuery: root.querySelector("[data-orders-search]")?.value?.trim() || "",
       dateFrom: root.querySelector("[data-filter-date-from]")?.value || "",
       dateTo: root.querySelector("[data-filter-date-to]")?.value || "",
+      carrier: "",
     };
   }
 
   function historyFilterValues() {
     const base = collectOrderFilterValues(els.historyFiltersPanel);
     base.searchQuery = els.historyOrdersSearch?.value?.trim() || "";
+    base.carrier = historyCarrierFilter || "all";
     return base;
   }
 
@@ -5106,7 +5115,48 @@ ${
     base.searchQuery =
       box?.querySelector("[data-orders-search]")?.value?.trim() || base.searchQuery || "";
     base.status = box?._ordersBucket || "transit";
+    base.carrier = box?._carrierFilter || "all";
     return base;
+  }
+
+  function orderDeliveryCarrier(order) {
+    const payload = order.payload || {};
+    const ttn = String(order.ttn_number || payload.ttn_number || "").trim();
+    if (ttn.toUpperCase().startsWith("RMP-")) return "rozetka";
+    const own = String(payload.own_ttn_carrier || "")
+      .trim()
+      .toLowerCase()
+      .replace(/-/g, "_");
+    if (["rozetka", "rz", "rmp"].includes(own)) return "rozetka";
+    if (own.includes("ukr") || own.includes("укрпошт")) return "ukrposhta";
+    if (["nova_poshta", "novaposhta", "np", "нп"].includes(own)) return "np";
+    const delivery = payload.delivery && typeof payload.delivery === "object" ? payload.delivery : {};
+    const bits = [
+      payload.carrier,
+      payload.delivery_carrier,
+      delivery.carrier,
+      delivery.method,
+      order.delivery_method,
+      order.delivery_carrier,
+    ]
+      .join(" ")
+      .toLowerCase();
+    if (bits.includes("укрпошт") || bits.includes("ukrposht")) return "ukrposhta";
+    if (bits.includes("розет") || bits.includes("rozetka") || /\brmp\b/.test(bits)) {
+      return "rozetka";
+    }
+    if ((bits.includes("нов") && (bits.includes("пошт") || bits.includes("почт"))) || bits.includes("nova_poshta")) {
+      return "np";
+    }
+    return String(order.delivery_carrier || "np").trim() || "np";
+  }
+
+  function syncCarrierFilterChips(root, attr, current) {
+    if (!root) return;
+    const key = String(current || "all");
+    root.querySelectorAll(`[${attr}]`).forEach((btn) => {
+      btn.classList.toggle("active", (btn.getAttribute(attr) || "all") === key);
+    });
   }
 
   function orderMatchesSearchQuery(order, raw) {
@@ -5215,6 +5265,11 @@ ${
       if (!day) return false;
       if (filters.dateFrom && day < filters.dateFrom) return false;
       if (filters.dateTo && day > filters.dateTo) return false;
+    }
+
+    const carrier = String(filters.carrier || "").trim().toLowerCase();
+    if (carrier && carrier !== "all" && orderDeliveryCarrier(order) !== carrier) {
+      return false;
     }
 
     return true;
@@ -5332,6 +5387,24 @@ ${
     else box.prepend(label);
   }
 
+  function ensureOwnerOrdersCarrierFilters(box) {
+    if (box.querySelector("[data-orders-carrier-filters]")) return;
+    const wrap = document.createElement("div");
+    wrap.className = "warehouse-carrier-filters";
+    wrap.setAttribute("data-orders-carrier-filters", "");
+    wrap.innerHTML = `
+      <button type="button" class="chip-tag active" data-orders-carrier="all">Усі</button>
+      <button type="button" class="chip-tag" data-orders-carrier="np">Нова Пошта</button>
+      <button type="button" class="chip-tag" data-orders-carrier="rozetka">Розетка</button>
+      <button type="button" class="chip-tag" data-orders-carrier="ukrposhta">Укрпошта</button>
+    `;
+    const search = box.querySelector(".orders-search-field");
+    const nav = box.querySelector("[data-owner-orders-buckets]");
+    if (search) search.after(wrap);
+    else if (nav) nav.before(wrap);
+    else box.prepend(wrap);
+  }
+
   function ensureOwnerOrdersAwaitingTab(box) {
     const nav = box.querySelector("[data-owner-orders-buckets]");
     if (!nav || nav.querySelector('[data-owner-orders-bucket="awaiting"]')) return;
@@ -5354,6 +5427,12 @@ ${
           <span class="field-label">Пошук за № або ТТН</span>
           <input type="search" data-orders-search placeholder="K-26… / 2045… / RMP-…" autocomplete="off" />
         </label>
+        <div class="warehouse-carrier-filters" data-orders-carrier-filters>
+          <button type="button" class="chip-tag active" data-orders-carrier="all">Усі</button>
+          <button type="button" class="chip-tag" data-orders-carrier="np">Нова Пошта</button>
+          <button type="button" class="chip-tag" data-orders-carrier="rozetka">Розетка</button>
+          <button type="button" class="chip-tag" data-orders-carrier="ukrposhta">Укрпошта</button>
+        </div>
         <nav class="tabs history-buckets owner-orders-buckets" data-owner-orders-buckets aria-label="Статус замовлень">
           <button type="button" class="tab" data-owner-orders-bucket="awaiting">Очікує відправлення</button>
           <button type="button" class="tab" data-owner-orders-bucket="next_ship">Наступна відправка</button>
@@ -5444,6 +5523,20 @@ ${
             renderOwnerDropperOrdersList(box);
             return;
           }
+          const carrierBtn = event.target.closest("[data-orders-carrier]");
+          if (carrierBtn && box.contains(carrierBtn)) {
+            const carrier = carrierBtn.getAttribute("data-orders-carrier") || "all";
+            if (carrier === (box._carrierFilter || "all")) return;
+            box._carrierFilter = carrier;
+            box._ordersPage = 0;
+            syncCarrierFilterChips(
+              box.querySelector("[data-orders-carrier-filters]"),
+              "data-orders-carrier",
+              carrier
+            );
+            renderOwnerDropperOrdersList(box);
+            return;
+          }
           const toggle = event.target.closest("[data-owner-filters-toggle]");
           if (toggle && box.contains(toggle)) {
             const panel = box.querySelector("[data-owner-order-filters]");
@@ -5509,6 +5602,8 @@ ${
     ensureOwnerOrdersReturnsClosedTab(box);
     ensureOwnerOrdersCancelledTab(box);
     ensureOwnerOrdersSearch(box);
+    ensureOwnerOrdersCarrierFilters(box);
+    if (!box._carrierFilter) box._carrierFilter = "all";
     bindOwnerArchiveUi(box);
     if (!box._archiveSelected) box._archiveSelected = new Set();
     syncOwnerOrdersBucketTabs(box);
@@ -5588,6 +5683,11 @@ ${
       syncArchiveBar(listEl, filtered, box._archiveSelected, bucket);
     }
     syncOwnerOrdersBucketTabs(box);
+    syncCarrierFilterChips(
+      box.querySelector("[data-orders-carrier-filters]"),
+      "data-orders-carrier",
+      box._carrierFilter || "all"
+    );
     syncOwnerReceivedDropHeader(box);
   }
 
@@ -6889,9 +6989,51 @@ ${
     )}</span></span>`;
   }
 
+  async function fillOwnerReturnsDropperFilter() {
+    const sel = els.ownerReturnsDropperFilter;
+    if (!sel || sel.dataset.filled === "1") return;
+    try {
+      let items = Array.isArray(ownerDroppersCache) ? ownerDroppersCache : [];
+      if (!items.length) {
+        const response = await fetch(`/api/owner/droppers?${ownerAuthParams()}`);
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok) return;
+        items = data.items || [];
+        ownerDroppersCache = items;
+      }
+      const current = String(ownerReturnsState.dropperChatId || sel.value || "");
+      const sorted = [...items].sort((a, b) =>
+        dropperDisplayName(a).localeCompare(dropperDisplayName(b), "uk")
+      );
+      sel.innerHTML =
+        `<option value="">Усі дроппери</option>` +
+        sorted
+          .map(
+            (d) =>
+              `<option value="${escapeHtml(d.chat_id || "")}">${escapeHtml(
+                dropperDisplayName(d)
+              )}</option>`
+          )
+          .join("");
+      sel.value = current;
+      sel.dataset.filled = "1";
+    } catch {
+      /* список дропперів не критичний для вкладки */
+    }
+  }
+
   async function renderOwnerReturns() {
     if (!els.ownerReturnsList) return;
     syncOwnerReturnsTabs();
+    syncCarrierFilterChips(
+      els.ownerReturnsCarrierFilters,
+      "data-returns-carrier",
+      ownerReturnsState.carrier || "all"
+    );
+    if (els.ownerReturnsDropperFilter) {
+      els.ownerReturnsDropperFilter.value = ownerReturnsState.dropperChatId || "";
+    }
+    await fillOwnerReturnsDropperFilter();
     els.ownerReturnsList.innerHTML = `<div class="ac-loading">Завантаження...</div>`;
     try {
       const params = new URLSearchParams(ownerAuthParams());
@@ -6899,6 +7041,10 @@ ${
       params.set("limit", "200");
       const q = String(ownerReturnsState.search || "").trim();
       if (q) params.set("q", q);
+      const carrier = String(ownerReturnsState.carrier || "all").trim();
+      if (carrier && carrier !== "all") params.set("carrier", carrier);
+      const dropperChat = String(ownerReturnsState.dropperChatId || "").trim();
+      if (dropperChat) params.set("dropper_chat_id", dropperChat);
       const response = await fetch(`/api/owner/returns?${params.toString()}`);
       const data = await response.json();
       if (!response.ok) {
@@ -6913,8 +7059,13 @@ ${
         closed: "Немає закритих повернень",
       };
       if (!items.length) {
-        const emptyMsg = String(ownerReturnsState.search || "").trim()
-          ? "Нічого не знайдено за ТТН"
+        const filteredOn = Boolean(
+          String(ownerReturnsState.search || "").trim() ||
+            (ownerReturnsState.carrier && ownerReturnsState.carrier !== "all") ||
+            ownerReturnsState.dropperChatId
+        );
+        const emptyMsg = filteredOn
+          ? "Нічого не знайдено за фільтрами"
           : emptyByBucket[ownerReturnsState.bucket] || "Немає заявок на повернення";
         els.ownerReturnsList.innerHTML = `<div class="empty">${escapeHtml(emptyMsg)}</div>`;
         return;
@@ -6976,6 +7127,9 @@ ${
                 : ""
             }
             <div class="meta">Тип: <b>${escapeHtml(dropperReturnTypeLabel(ret))}</b></div>
+            <div class="meta">Служба: <b>${escapeHtml(
+              row.delivery_carrier_label || "—"
+            )}</b></div>
             <div class="meta">ТТН повернення: <b>${escapeHtml(ret.ttn_number || "—")}</b></div>
             <div class="meta">Оригінальна ТТН: ${escapeHtml(row.ttn_number || "—")}</div>
             <div class="meta">Дроп-ціна: <b>${escapeHtml(formatMoney(row.total || 0))}</b></div>
@@ -9008,6 +9162,38 @@ ${
       ownerReturnsSearchTimer = window.setTimeout(() => {
         renderOwnerReturns();
       }, 250);
+    });
+  }
+
+  if (els.ownerReturnsCarrierFilters) {
+    els.ownerReturnsCarrierFilters.addEventListener("click", (event) => {
+      const btn = event.target.closest("[data-returns-carrier]");
+      if (!btn || !els.ownerReturnsCarrierFilters.contains(btn)) return;
+      const carrier = btn.getAttribute("data-returns-carrier") || "all";
+      if (carrier === (ownerReturnsState.carrier || "all")) return;
+      ownerReturnsState.carrier = carrier;
+      syncCarrierFilterChips(els.ownerReturnsCarrierFilters, "data-returns-carrier", carrier);
+      renderOwnerReturns();
+    });
+  }
+
+  if (els.ownerReturnsDropperFilter) {
+    els.ownerReturnsDropperFilter.addEventListener("change", () => {
+      ownerReturnsState.dropperChatId = els.ownerReturnsDropperFilter.value || "";
+      renderOwnerReturns();
+    });
+  }
+
+  if (els.historyCarrierFilters) {
+    els.historyCarrierFilters.addEventListener("click", (event) => {
+      const btn = event.target.closest("[data-history-carrier]");
+      if (!btn || !els.historyCarrierFilters.contains(btn)) return;
+      const carrier = btn.getAttribute("data-history-carrier") || "all";
+      if (carrier === (historyCarrierFilter || "all")) return;
+      historyCarrierFilter = carrier;
+      historyPage = 0;
+      syncCarrierFilterChips(els.historyCarrierFilters, "data-history-carrier", carrier);
+      paintOrdersHistoryList();
     });
   }
 

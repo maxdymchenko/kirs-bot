@@ -2052,6 +2052,20 @@ input[type="file"] {
   align-items: flex-start;
 }
 
+.owner-returns-filters {
+  display: grid;
+  gap: 10px;
+  margin-top: 10px;
+}
+
+.owner-returns-filters .warehouse-carrier-filters {
+  margin-bottom: 0;
+}
+
+.owner-returns-dropper-field {
+  margin: 0;
+}
+
 .owner-returns-tabs {
   display: flex;
   flex-wrap: wrap;

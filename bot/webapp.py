@@ -3588,6 +3588,7 @@ def create_web_app(
         dropper_chat_id: str = Query("", max_length=64),
         bucket: str = Query("", max_length=32),
         q: str = Query("", max_length=32),
+        carrier: str = Query("", max_length=32),
         limit: int = Query(200, ge=1, le=500),
     ) -> dict:
         from bot.returns import (
@@ -3602,6 +3603,7 @@ def create_web_app(
             return_type_label,
             status_label_uk,
         )
+        from bot.warehouse import warehouse_delivery_carrier, warehouse_delivery_carrier_label
 
         _require_owner(owner_chat_id, owner_user_id)
         try:
@@ -3619,6 +3621,11 @@ def create_web_app(
         )
         bucket_key = str(bucket or "").strip().lower()
         query = str(q or "").strip()
+        carrier_key = str(carrier or "").strip().lower().replace("-", "_")
+        if carrier_key in {"np", "rozetka", "ukrposhta"}:
+            items = [
+                x for x in items if warehouse_delivery_carrier(x) == carrier_key
+            ]
         if bucket_key in {
             BUCKET_AWAITING_RECEIPT,
             BUCKET_AWAITING_CONFIRM,
@@ -3646,6 +3653,10 @@ def create_web_app(
         all_items = storage.list_dropper_return_requests(
             dropper_id=dropper_id, limit=500
         )
+        if carrier_key in {"np", "rozetka", "ukrposhta"}:
+            all_items = [
+                x for x in all_items if warehouse_delivery_carrier(x) == carrier_key
+            ]
         for row in all_items:
             b = return_bucket(row.get("dropper_return"))
             counts[b] = counts.get(b, 0) + 1
@@ -3660,6 +3671,11 @@ def create_web_app(
             ret["type_label"] = return_type_label(ret)
             item["dropper_return"] = ret
             item["return_bucket"] = ret["bucket"]
+            delivery_carrier = warehouse_delivery_carrier(item)
+            item["delivery_carrier"] = delivery_carrier
+            item["delivery_carrier_label"] = warehouse_delivery_carrier_label(
+                delivery_carrier
+            )
             enriched.append(item)
 
         return {
@@ -3667,6 +3683,7 @@ def create_web_app(
             "count": len(enriched),
             "counts": counts,
             "bucket": bucket_key or "all",
+            "carrier": carrier_key or "all",
         }
 
     @app.post("/api/owner/returns/{order_id}/mark-received")
