@@ -2122,6 +2122,7 @@ def create_web_app(
     ) -> dict:
         from bot.order_edit import enrich_orders_with_changes
         from bot.order_edit_window import dropper_edit_window_info
+        from bot.ttn_pdf_verify import enrich_orders_meest_label
 
         dropper = storage.get_dropper_by_chat(chat_id)
         if not dropper:
@@ -2134,6 +2135,7 @@ def create_web_app(
             logger.exception("dropper orders auto-return backfill failed")
         items = storage.list_orders_for_dropper(dropper.id, limit=limit)
         items = enrich_orders_with_changes(storage, items)
+        items = enrich_orders_meest_label(storage, items)
         window = dropper_edit_window_info()
         return {
             "count": len(items),
@@ -2251,6 +2253,7 @@ def create_web_app(
         limit: int = Query(200, ge=1, le=500),
     ) -> dict:
         from bot.order_edit import enrich_orders_with_changes
+        from bot.ttn_pdf_verify import enrich_orders_meest_label
 
         _require_owner(owner_chat_id, owner_user_id)
         dropper = storage.get_dropper_by_chat(chat_id)
@@ -2258,6 +2261,7 @@ def create_web_app(
             raise HTTPException(status_code=404, detail="Дроппера не знайдено")
         items = storage.list_orders_for_dropper(dropper.id, limit=limit)
         items = enrich_orders_with_changes(storage, items)
+        items = enrich_orders_meest_label(storage, items)
         return {
             "dropper": dropper.to_dict(),
             "count": len(items),
@@ -3603,6 +3607,7 @@ def create_web_app(
             return_type_label,
             status_label_uk,
         )
+        from bot.ttn_pdf_verify import maybe_backfill_meest_label, order_meest_label
         from bot.warehouse import warehouse_delivery_carrier, warehouse_delivery_carrier_label
 
         _require_owner(owner_chat_id, owner_user_id)
@@ -3661,6 +3666,7 @@ def create_web_app(
             b = return_bucket(row.get("dropper_return"))
             counts[b] = counts.get(b, 0) + 1
 
+        meest_scans = 0
         for row in items:
             item = dict(row)
             ret = dict(item.get("dropper_return") or {})
@@ -3676,6 +3682,17 @@ def create_web_app(
             item["delivery_carrier_label"] = warehouse_delivery_carrier_label(
                 delivery_carrier
             )
+            payload = item.get("payload") if isinstance(item.get("payload"), dict) else {}
+            if delivery_carrier == "rozetka" and "meest_label" not in payload:
+                path = str(
+                    payload.get("ttn_pdf_local_abs")
+                    or payload.get("ttn_pdf_local_path")
+                    or ""
+                ).strip()
+                if path and meest_scans < 20:
+                    maybe_backfill_meest_label(storage, item)
+                    meest_scans += 1
+            item["meest_label"] = order_meest_label(item)
             enriched.append(item)
 
         return {

@@ -21,6 +21,7 @@ _NP_GROUPED_RE = re.compile(
 _NP_COMPACT_RE = re.compile(r"(?<!\d)(\d{13,14})(?!\d)")
 _NP_PREFIXES = ("204", "205", "206", "207", "208", "590", "591")
 _DATE_PREFIX_RE = re.compile(r"^20(2[0-9]|3[0-9])(0[1-9]|1[0-2])")
+_MEEST_RE = re.compile(r"meest", re.IGNORECASE)
 _MAX_PDF_BYTES = 2_500_000
 
 
@@ -174,6 +175,111 @@ def _collect_np_from_filename(name: str, found: list[str], seen: set[str]) -> No
         head = digits[:14]
         if _looks_like_np_en(head):
             _add_unique(found, seen, head)
+
+
+def pdf_has_meest_mark(pdf_bytes: bytes | None) -> bool:
+    """Чи етикетка Rozetka з відправкою через склад Meest (текст/URL у PDF)."""
+    if not pdf_bytes:
+        return False
+    texts: list[str] = []
+    try:
+        from pypdf import PdfReader
+
+        reader = PdfReader(io.BytesIO(pdf_bytes))
+        for page in reader.pages:
+            try:
+                texts.append(page.extract_text() or "")
+            except Exception:
+                logger.debug("pypdf meest page extract failed", exc_info=True)
+    except Exception:
+        logger.debug("pypdf meest read failed", exc_info=True)
+    blob = "\n".join(texts)
+    if blob and _MEEST_RE.search(blob):
+        return True
+    try:
+        raw_blob = pdf_bytes.decode("latin-1", errors="ignore")
+    except Exception:
+        raw_blob = ""
+    return bool(raw_blob and _MEEST_RE.search(raw_blob))
+
+
+def order_meest_label(order: dict[str, Any] | None) -> bool:
+    payload = (order or {}).get("payload") if isinstance((order or {}).get("payload"), dict) else {}
+    if payload.get("meest_label") is True:
+        return True
+    if (order or {}).get("meest_label") is True:
+        return True
+    return False
+
+
+def _order_looks_like_rozetka_label(order: dict[str, Any] | None) -> bool:
+    row = order or {}
+    payload = row.get("payload") if isinstance(row.get("payload"), dict) else {}
+    carr = str(payload.get("own_ttn_carrier") or "").strip().lower()
+    ttn = str(row.get("ttn_number") or payload.get("ttn_number") or "").upper()
+    return carr == "rozetka" or ttn.startswith("RMP-")
+
+
+def maybe_backfill_meest_label(
+    storage: "AppStorage",
+    order: dict[str, Any],
+) -> bool:
+    """Якщо флаг ще не записаний — прочитати локальний PDF і зберегти meest_label."""
+    payload = order.get("payload") if isinstance(order.get("payload"), dict) else {}
+    if "meest_label" in payload:
+        marked = bool(payload.get("meest_label"))
+        order["meest_label"] = marked
+        return marked
+    if not _order_looks_like_rozetka_label(order):
+        order["meest_label"] = False
+        return False
+    path = str(payload.get("ttn_pdf_local_abs") or payload.get("ttn_pdf_local_path") or "").strip()
+    if not path:
+        order["meest_label"] = False
+        return False
+    try:
+        from bot.ttn_store import read_pdf_bytes
+
+        raw = read_pdf_bytes(path)
+        marked = pdf_has_meest_mark(raw)
+    except Exception:
+        logger.debug("meest backfill pdf read failed", exc_info=True)
+        order["meest_label"] = False
+        return False
+    try:
+        storage.merge_order_payload(int(order["id"]), {"meest_label": marked})
+        payload["meest_label"] = marked
+    except Exception:
+        logger.debug("meest backfill save failed", exc_info=True)
+    order["payload"] = payload
+    order["meest_label"] = marked
+    return marked
+
+
+def enrich_orders_meest_label(
+    storage: "AppStorage",
+    items: list[dict[str, Any]],
+    *,
+    max_scans: int = 20,
+) -> list[dict[str, Any]]:
+    """Додати meest_label у список замовлень; за потреби — разово з локального PDF."""
+    scans = 0
+    out: list[dict[str, Any]] = []
+    for row in items:
+        item = dict(row)
+        payload = item.get("payload") if isinstance(item.get("payload"), dict) else {}
+        if "meest_label" not in payload and _order_looks_like_rozetka_label(item):
+            path = str(
+                payload.get("ttn_pdf_local_abs")
+                or payload.get("ttn_pdf_local_path")
+                or ""
+            ).strip()
+            if path and scans < max_scans:
+                maybe_backfill_meest_label(storage, item)
+                scans += 1
+        item["meest_label"] = order_meest_label(item)
+        out.append(item)
+    return out
 
 
 def extract_waybill_candidates(pdf_bytes: bytes, filename: str = "") -> list[str]:
@@ -654,6 +760,13 @@ def apply_ttn_pdf_check(
     official = str(check.get("official") or "").strip()
     if ok and official:
         patch["ttn_number"] = official
+    if pdf_bytes:
+        is_rmp = (
+            str(carr or "").strip().lower() == "rozetka"
+            or str(number or "").upper().startswith("RMP-")
+        )
+        if is_rmp:
+            patch["meest_label"] = pdf_has_meest_mark(pdf_bytes)
     saved = storage.merge_order_payload(int(order["id"]), patch)
     if ok:
         storage.update_order_flags(

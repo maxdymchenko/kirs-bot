@@ -1913,6 +1913,13 @@ input[type="file"] {
   padding-top: 12px;
 }
 
+.order-card-num-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 8px;
+}
+
 .order-card-num {
   font-weight: 800;
   font-size: 15px;
@@ -2050,6 +2057,20 @@ input[type="file"] {
   justify-content: space-between;
   gap: 10px;
   align-items: flex-start;
+}
+
+.meest-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 6px;
+  background: #2563eb;
+  color: #fff;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.05em;
+  line-height: 1.3;
+  flex-shrink: 0;
 }
 
 .owner-returns-filters {

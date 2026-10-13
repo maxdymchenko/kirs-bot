@@ -3284,6 +3284,18 @@ ${
     return "ТТН: —";
   }
 
+  function orderMeestLabel(order) {
+    if (!order) return false;
+    if (order.meest_label === true) return true;
+    const payload = order.payload || {};
+    return payload.meest_label === true;
+  }
+
+  function meestBadgeHtml(order) {
+    if (!orderMeestLabel(order)) return "";
+    return `<span class="meest-badge" title="Відправка через склад Meest — особливі умови повернення">MEEST</span>`;
+  }
+
   function renderOrderCard(
     order,
     {
@@ -3363,7 +3375,10 @@ ${
         }
         <button type="button" class="order-card-toggle" aria-expanded="false">
           <div class="order-card-main">
-            <div class="order-card-num">${escapeHtml(order.order_number || "")}</div>
+            <div class="order-card-num-row">
+              <div class="order-card-num">${escapeHtml(order.order_number || "")}</div>
+              ${meestBadgeHtml(order)}
+            </div>
             ${settledHtml}
             ${sourceHtml}
             <div class="meta">${escapeHtml(formatOrderDate(order.created_at))}</div>
@@ -7111,7 +7126,10 @@ ${
           )}">
             <div class="owner-return-card-head">
               <div>
-                <div class="owner-card-title">${escapeHtml(row.order_number || "")}</div>
+                <div class="owner-card-title-row">
+                  <div class="owner-card-title">${escapeHtml(row.order_number || "")}</div>
+                  ${meestBadgeHtml(row)}
+                </div>
                 <div class="meta">${escapeHtml(row.dropper_name || "—")}</div>
                 <div class="meta-soft">${escapeHtml(
                   formatOrderDate(ret.created_at || row.created_at) || ""
