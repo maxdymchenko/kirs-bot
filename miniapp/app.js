@@ -2269,6 +2269,14 @@ ${ttnLine}</div>
     return sessionState.role === "owner";
   }
 
+  function historyViewerCanSelectSettlement(bucket) {
+    if (!viewerCanArchiveOrders()) return false;
+    // З вкладки «Очікує оплату» в історії дроппера нікуди не переміщує —
+    // лише власник у картці дроппера (або у своїй формі Mini App).
+    if (bucket === "awaiting_payment") return isOwnerSelfForm();
+    return bucket === "received" || bucket === "archive";
+  }
+
   function orderNumericId(order) {
     const n = Number(order && order.id);
     return Number.isInteger(n) && n > 0 ? n : 0;
@@ -2626,6 +2634,10 @@ ${ttnLine}</div>
       }
       const submit = event.target.closest("[data-settlement-submit]");
       if (!submit || !root.contains(submit)) return;
+      if (!historyViewerCanSelectSettlement(historyBucket)) {
+        showToast("Перемістити з «Очікує оплату» може лише власник");
+        return;
+      }
       const { filtered } = historyOrdersInView();
       const dropperChat = effectiveDropperChatId();
       await submitArchiveSelection({
@@ -4958,11 +4970,7 @@ ${
         filtered.length === 0 || historyPage >= pageCount - 1;
     }
     const canSelect =
-      !searchOn &&
-      viewerCanArchiveOrders() &&
-      (historyBucket === "received" ||
-        historyBucket === "awaiting_payment" ||
-        historyBucket === "archive");
+      !searchOn && historyViewerCanSelectSettlement(historyBucket);
     const canPay =
       !searchOn &&
       viewerCanMarkPaid() &&
