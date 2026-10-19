@@ -1571,6 +1571,52 @@ def mark_order_shipped(
     return storage.get_order(sqlite_id) or order
 
 
+def load_order_ttn_pdf_bytes(order: dict[str, Any]) -> bytes:
+    """Локальний PDF етикетки, інакше копія з Drive."""
+    from bot.ttn_drive import download_pdf_bytes
+    from bot.ttn_store import read_pdf_bytes
+
+    payload = order.get("payload") if isinstance(order.get("payload"), dict) else {}
+    local = str(
+        payload.get("ttn_pdf_local_path")
+        or payload.get("ttn_pdf_local_abs")
+        or ""
+    ).strip()
+    file_id = str(payload.get("ttn_pdf_drive_file_id") or "").strip()
+    last_err: Exception | None = None
+    if local:
+        try:
+            data = read_pdf_bytes(local)
+            if data:
+                return data
+        except Exception as exc:
+            last_err = exc
+            logger.info(
+                "TTN local PDF missing for view %s: %s",
+                order.get("order_number"),
+                exc,
+            )
+    if file_id:
+        data = download_pdf_bytes(file_id)
+        if data:
+            return data
+    raise ValueError(
+        f"{order.get('order_number')}: немає PDF етикетки"
+        + (f" ({last_err})" if last_err else "")
+    )
+
+
+def order_ttn_pdf_filename(order: dict[str, Any]) -> str:
+    payload = order.get("payload") if isinstance(order.get("payload"), dict) else {}
+    name = str(
+        payload.get("ttn_pdf_drive_name") or payload.get("ttn_pdf_name") or ""
+    ).strip()
+    if name.lower().endswith(".pdf"):
+        return name[:180]
+    no = str(order.get("order_number") or "ttn").strip() or "ttn"
+    return f"{no}.pdf"
+
+
 def order_has_ttn_pdf(order: dict[str, Any]) -> bool:
     payload = order.get("payload") or {}
     if payload.get("sheet_order"):

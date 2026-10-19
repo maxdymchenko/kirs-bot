@@ -1871,9 +1871,15 @@ input[type="file"] {
   margin: 0 16px 12px;
 }
 
-.order-pdf-hold .order-pdf-override {
+.order-pdf-hold .order-pdf-override,
+.order-pdf-hold-actions .btn {
   display: block;
   width: 100%;
+}
+
+.order-pdf-hold-actions {
+  display: grid;
+  gap: 8px;
   margin-top: 10px;
 }
 

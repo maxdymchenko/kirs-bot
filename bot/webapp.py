@@ -2327,6 +2327,38 @@ def create_web_app(
         items = enrich_orders_with_changes(storage, [saved or order])
         return {"ok": True, "already": False, "order": items[0] if items else saved}
 
+    @app.get("/api/owner/droppers/{chat_id}/orders/{order_id}/ttn-pdf")
+    async def owner_dropper_order_ttn_pdf(
+        chat_id: str,
+        order_id: int,
+        owner_chat_id: str = Query("", max_length=64),
+        owner_user_id: str = Query("", max_length=64),
+    ) -> Response:
+        from bot.warehouse import load_order_ttn_pdf_bytes, order_ttn_pdf_filename
+
+        _require_owner(owner_chat_id, owner_user_id)
+        dropper = storage.get_dropper_by_chat(chat_id.strip())
+        if not dropper:
+            raise HTTPException(status_code=404, detail="Дроппера не знайдено")
+        order = storage.get_order(int(order_id))
+        if not order or int(order.get("dropper_id") or 0) != int(dropper.id):
+            raise HTTPException(status_code=404, detail="Замовлення не знайдено")
+        try:
+            data = load_order_ttn_pdf_bytes(order)
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except Exception:
+            logger.exception("owner ttn pdf view failed %s", order.get("order_number"))
+            raise HTTPException(
+                status_code=503, detail="Не вдалося відкрити PDF етикетки"
+            ) from None
+        name = order_ttn_pdf_filename(order).replace('"', "")
+        return Response(
+            content=data,
+            media_type="application/pdf",
+            headers={"Content-Disposition": f'inline; filename="{name}"'},
+        )
+
     @app.post("/api/owner/droppers/{chat_id}/orders/awaiting-payment")
     async def owner_dropper_orders_awaiting_payment(
         chat_id: str,

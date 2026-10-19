@@ -3359,16 +3359,25 @@ ${
       ? `<div class="order-card-settled">${escapeHtml(settledLabel)}</div>`
       : "";
     const pdfHold = Boolean(payload.ttn_pdf_hold);
-    const canOverridePdf =
-      pdfHold && sessionState.role === "owner" && orderNumericId(order);
+    const canOwnerPdf =
+      sessionState.role === "owner" && orderNumericId(order);
+    const canOverridePdf = pdfHold && canOwnerPdf;
     const pdfHoldHtml = pdfHold
       ? `<div class="form-error order-pdf-hold">⚠️ Номер ТТН і PDF не збігаються — виправте, інакше замовлення не піде на упаковку. ${escapeHtml(
           payload.ttn_pdf_check_message || ""
-        )} Відкрийте «Редагувати» і ще раз прикріпіть PDF етикетки, потім збережіть.${
-          canOverridePdf
-            ? `<button type="button" class="btn primary order-pdf-override" data-ttn-pdf-override="${orderId}" data-dropper-chat="${escapeHtml(
-                order.chat_id || ""
-              )}">Все гаразд — на упаковку</button>`
+        )} Відкрийте PDF, щоб перевірити маркировку, або «Редагувати» і ще раз прикріпіть файл.${
+          canOwnerPdf
+            ? `<div class="order-pdf-hold-actions">
+            <button type="button" class="btn secondary" data-ttn-pdf-open="${orderId}" data-dropper-chat="${escapeHtml(
+              order.chat_id || ""
+            )}">Відкрити PDF</button>${
+              canOverridePdf
+                ? `<button type="button" class="btn primary order-pdf-override" data-ttn-pdf-override="${orderId}" data-dropper-chat="${escapeHtml(
+                    order.chat_id || ""
+                  )}">Все гаразд — на упаковку</button>`
+                : ""
+            }
+          </div>`
             : ""
         }</div>`
       : "";
@@ -3430,6 +3439,28 @@ ${
     `;
   }
 
+  async function openOwnerTtnPdf(chatId, orderId) {
+    const params = new URLSearchParams(ownerAuthBody());
+    const url = `/api/owner/droppers/${encodeURIComponent(
+      chatId
+    )}/orders/${encodeURIComponent(orderId)}/ttn-pdf?${params}`;
+    const response = await fetch(url);
+    if (!response.ok) {
+      let detail = "Не вдалося відкрити PDF";
+      try {
+        const data = await response.json();
+        if (typeof data.detail === "string") detail = data.detail;
+      } catch {
+        /* ignore */
+      }
+      throw new Error(detail);
+    }
+    const blob = await response.blob();
+    const objectUrl = URL.createObjectURL(blob);
+    window.open(objectUrl, "_blank", "noopener,noreferrer");
+    setTimeout(() => URL.revokeObjectURL(objectUrl), 60_000);
+  }
+
   async function postOwnerTtnPdfOverride(chatId, orderId) {
     const response = await fetch(
       `/api/owner/droppers/${encodeURIComponent(chatId)}/orders/${encodeURIComponent(
@@ -3456,6 +3487,33 @@ ${
     if (!root || root.dataset.orderClicksBound === "1") return;
     root.dataset.orderClicksBound = "1";
     root.addEventListener("click", (event) => {
+      const pdfOpenBtn = event.target.closest("[data-ttn-pdf-open]");
+      if (pdfOpenBtn && root.contains(pdfOpenBtn)) {
+        event.preventDefault();
+        event.stopPropagation();
+        const oid = pdfOpenBtn.getAttribute("data-ttn-pdf-open");
+        const chatId =
+          pdfOpenBtn.getAttribute("data-dropper-chat") ||
+          root.closest("[data-dropper-chat]")?.getAttribute("data-dropper-chat") ||
+          effectiveDropperChatId();
+        if (!oid || !chatId) {
+          showToast("Немає chat_id дроппера");
+          return;
+        }
+        if (pdfOpenBtn.disabled) return;
+        pdfOpenBtn.disabled = true;
+        openOwnerTtnPdf(chatId, oid)
+          .then(() => {
+            showToast("PDF відкрито");
+          })
+          .catch((err) => {
+            showToast(err.message || "Помилка");
+          })
+          .finally(() => {
+            pdfOpenBtn.disabled = false;
+          });
+        return;
+      }
       const overrideBtn = event.target.closest("[data-ttn-pdf-override]");
       if (overrideBtn && root.contains(overrideBtn)) {
         event.preventDefault();
@@ -3497,7 +3555,7 @@ ${
         return;
       }
       if (event.target.closest(
-        "[data-order-edit-open], [data-order-edit-panel], .order-edit-panel, [data-order-cancel], [data-order-owner-delete], [data-order-owner-restore], [data-order-correction-request], [data-correction-text], [data-order-return-open], [data-order-return-form], .order-return-form, [data-order-return-submit], [data-order-return-cancel], [data-return-ttn], [data-return-error], [data-archive-pick], [data-archive-bar], .order-card-pick, [data-ttn-pdf-override], .order-pdf-hold"
+        "[data-order-edit-open], [data-order-edit-panel], .order-edit-panel, [data-order-cancel], [data-order-owner-delete], [data-order-owner-restore], [data-order-correction-request], [data-correction-text], [data-order-return-open], [data-order-return-form], .order-return-form, [data-order-return-submit], [data-order-return-cancel], [data-return-ttn], [data-return-error], [data-archive-pick], [data-archive-bar], .order-card-pick, [data-ttn-pdf-override], [data-ttn-pdf-open], .order-pdf-hold"
       )) {
         return;
       }
@@ -3782,6 +3840,19 @@ ${
                 ? "Можна замінити поточну накладну новим PDF"
                 : "Обовʼязково для власної ТТН · етикетка у форматі PDF 100×100"
             }</span>
+            ${
+              editMode === "owner" &&
+              orderNumericId(order) &&
+              (payload.ttn_pdf_name ||
+                payload.ttn_pdf_local_path ||
+                payload.ttn_pdf_drive_file_id)
+                ? `<button type="button" class="btn secondary" data-ttn-pdf-open="${escapeHtml(
+                    String(order.id)
+                  )}" data-dropper-chat="${escapeHtml(
+                    order.chat_id || ""
+                  )}">Відкрити PDF</button>`
+                : ""
+            }
           </div>
         </div>
         <input type="hidden" name="city_ref" value="${escapeHtml(delivery.city_ref || "")}" />
