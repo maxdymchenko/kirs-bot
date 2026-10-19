@@ -3269,7 +3269,7 @@ def create_web_app(
             raise HTTPException(
                 status_code=403,
                 detail=window.get("message")
-                or "Редагування тимчасово закрите (11:50–14:30). Подайте запит власнику.",
+                or "Редагування закрите після 14:00 (сб після 13:00). Подайте запит власнику.",
             )
         if not can_modify_unshipped_order(order):
             raise HTTPException(
@@ -3327,7 +3327,7 @@ def create_web_app(
             raise HTTPException(
                 status_code=403,
                 detail=window.get("message")
-                or "Скасування тимчасово закрите (11:50–14:30). Подайте запит власнику.",
+                or "Скасування закрите після 14:00 (сб після 13:00). Подайте запит власнику.",
             )
         if not can_modify_unshipped_order(order):
             raise HTTPException(
@@ -3475,7 +3475,7 @@ def create_web_app(
             f"chat_id: {dropper.chat_id}\n"
             f"Що потрібно: {note}\n"
             "\n"
-            "Зараз 11:50–14:30 — дроппер не може редагувати сам. "
+            "Після 14:00 (сб після 13:00) дроппер не може редагувати сам. "
             "Відкрийте замовлення в кабінеті власника і внесіть правки."
         )
         await _notify_owners(owner_text)

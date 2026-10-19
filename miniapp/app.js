@@ -3124,7 +3124,7 @@ ${
         <div class="order-edit-actions">
           <p class="hint">${escapeHtml(
             options.editWindow?.message ||
-              "Зараз 11:50–14:30 — редагування закрите. Можна подати запит власнику."
+              "Після 14:00 (сб після 13:00) редагування закрите. Можна подати запит власнику."
           )}</p>
           <label class="field">
             <span class="field-label">Що потрібно виправити</span>
@@ -4929,10 +4929,11 @@ ${
     const start = historyPage * ORDERS_PAGE_SIZE;
     const pageItems = filtered.slice(start, start + ORDERS_PAGE_SIZE);
     const lockedHint =
-      historyBucket === "awaiting" && dropperOrdersEditWindow?.locked
+      (historyBucket === "awaiting" || historyBucket === "next_ship") &&
+      dropperOrdersEditWindow?.locked
         ? `<div class="hint order-window-banner">${escapeHtml(
             dropperOrdersEditWindow.message ||
-              "11:50–14:30 — редагування закрите, можна лише запит власнику."
+              "Після 14:00 (сб після 13:00) редагування закрите, можна лише запит власнику."
           )}</div>`
         : "";
     const emptyByBucket = {
