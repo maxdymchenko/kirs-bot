@@ -325,8 +325,14 @@ def _looks_like_np_ttn(ttn: str) -> bool:
 def _np_ttn_digits(raw: str) -> str:
     """Канонічний номер НП для трекінгу: 14 цифр, зайві з PDF відкидаємо."""
     text = str(raw or "").strip()
-    if text.upper().startswith("RMP-"):
-        return ""
+    try:
+        from bot.ttn_pdf_verify import looks_like_rozetka_ttn
+
+        if looks_like_rozetka_ttn(text):
+            return ""
+    except Exception:
+        if text.upper().startswith(("RMP-", "PRM-")):
+            return ""
     try:
         from bot.rmp_tracking import is_rmp_trackable_number
 
@@ -346,8 +352,14 @@ def warehouse_delivery_carrier(order: dict[str, Any]) -> str:
     """Служба доставки для фільтра: np | rozetka | ukrposhta."""
     payload = order.get("payload") if isinstance(order.get("payload"), dict) else {}
     ttn = str(order.get("ttn_number") or payload.get("ttn_number") or "").strip()
-    if ttn.upper().startswith("RMP-"):
-        return "rozetka"
+    try:
+        from bot.ttn_pdf_verify import looks_like_rozetka_ttn
+
+        if looks_like_rozetka_ttn(ttn):
+            return "rozetka"
+    except Exception:
+        if ttn.upper().startswith(("RMP-", "PRM-")):
+            return "rozetka"
     try:
         from bot.rmp_tracking import is_rmp_trackable_number
 
@@ -908,8 +920,14 @@ def _drop_orders_left_via_sheet_n(
 def _is_rozetka_queue_order(order: dict[str, Any]) -> bool:
     payload = order.get("payload") or {}
     ttn = str(order.get("ttn_number") or payload.get("ttn_number") or "")
-    if ttn.upper().startswith("RMP-"):
-        return True
+    try:
+        from bot.ttn_pdf_verify import looks_like_rozetka_ttn
+
+        if looks_like_rozetka_ttn(ttn):
+            return True
+    except Exception:
+        if ttn.upper().startswith(("RMP-", "PRM-")):
+            return True
     try:
         from bot.rmp_tracking import is_rmp_trackable_number
 

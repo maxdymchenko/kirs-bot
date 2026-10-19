@@ -72,8 +72,16 @@ def _digits_phone(raw: str) -> str:
 def is_np_trackable_number(raw: str) -> bool:
     """Чи можна питати статус у API Нової Пошти (не Rozetka / не Укрпошта)."""
     text = str(raw or "").strip().upper()
-    if not text or text.startswith(("RMP-", "PRM-")):
+    if not text:
         return False
+    try:
+        from bot.ttn_pdf_verify import looks_like_rozetka_ttn
+
+        if looks_like_rozetka_ttn(text):
+            return False
+    except Exception:
+        if text.startswith(("RMP-", "PRM-")):
+            return False
     digits = re.sub(r"\D+", "", text)
     if not (11 <= len(digits) <= 14):
         return False

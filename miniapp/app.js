@@ -1249,12 +1249,22 @@
     );
   }
 
-  function normalizeRmpNumber(raw) {
-    let text = String(raw || "").trim().toUpperCase().replace(/\s+/g, "");
-    if (!text) return "";
-    text = text.replace(/^RMP-?/i, "");
-    text = text.replace(/\D/g, "");
-    return text ? `RMP-${text}` : "RMP-";
+  function sanitizeRozetkaWaybill(raw) {
+    let text = String(raw || "")
+      .trim()
+      .toUpperCase()
+      .replace(/\s+/g, "")
+      .replace(/[^A-Z0-9\-]/g, "")
+      .replace(/-{2,}/g, "-")
+      .replace(/^-|-$/g, "");
+    return text;
+  }
+
+  function isPlausibleRozetkaWaybill(raw) {
+    const text = sanitizeRozetkaWaybill(raw);
+    const digits = text.replace(/\D/g, "");
+    const alnum = text.replace(/[^A-Z0-9]/g, "");
+    return digits.length >= 6 && digits.length <= 20 && alnum.length >= 6 && alnum.length <= 28;
   }
 
   function syncOwnTtnCarrierUi() {
@@ -1626,7 +1636,7 @@
     const receiptFile = els.receiptPdf?.files?.[0] || null;
     const ownTtnNumber =
       selectedOwnTtnCarrier() === "rozetka"
-        ? normalizeRmpNumber(form.rmpNumber?.value || "")
+        ? sanitizeRozetkaWaybill(form.rmpNumber?.value || "")
         : (form.ttnNumber?.value || "").replace(/\D/g, "");
     return {
       firstName: form.firstName.value.trim(),
@@ -1650,7 +1660,7 @@
       ownTtnCarrier: selectedOwnTtnCarrier(),
       estimatedCost: form.estimatedCost?.value?.trim() || "",
       ttnNumber: ownTtnNumber,
-      rmpNumber: normalizeRmpNumber(form.rmpNumber?.value || ""),
+      rmpNumber: sanitizeRozetkaWaybill(form.rmpNumber?.value || ""),
       paymentMethod,
       codAmount: form.codAmount?.value?.trim() || "",
       prepay: form.prepay.value.trim(),
@@ -1708,12 +1718,12 @@
       }
       const carrier = data.ownTtnCarrier || "nova_poshta";
       if (carrier === "rozetka") {
-        const rmp = normalizeRmpNumber(data.rmpNumber || "");
-        if (!/^RMP-\d{6,20}$/i.test(rmp)) {
-          return "Вкажіть номер RMP у форматі RMP-XXXXXXXXX";
+        const rmp = sanitizeRozetkaWaybill(data.rmpNumber || "");
+        if (!isPlausibleRozetkaWaybill(rmp)) {
+          return "Вкажіть номер Розетки як на етикетці (RMP-…, PRM-…, 723-…)";
         }
-        data.rmpNumber = rmp.toUpperCase();
-        data.ttnNumber = data.rmpNumber;
+        data.rmpNumber = rmp;
+        data.ttnNumber = rmp;
         data.ownTtnCarrier = "rozetka";
       } else {
         if (!data.ttnNumber) return "Вкажіть номер ТТН";
@@ -2001,7 +2011,7 @@ ${escapeHtml(deliveryExtra)}</div>
         : "";
     const ttnLine = data.ownTtn
       ? data.ownTtnCarrier === "rozetka"
-        ? `Власний RMP: ${escapeHtml(data.ttnNumber || data.rmpNumber || "")}`
+        ? `Власна ТТН Розетки: ${escapeHtml(data.ttnNumber || data.rmpNumber || "")}`
         : `Власна ТТН НП: ${escapeHtml(data.ttnNumber || "")}`
       : "ТТН: створиться пізніше (НП)";
     els.confirmSummary.innerHTML = `
@@ -3057,12 +3067,12 @@ ${
         )}">
           <p class="hint" style="margin:0">
             Ручне повернення від клієнта після отримання. Вкажіть номер зворотної ТТН:
-            Нова Пошта (14+ цифр) або Rozetka (RMP-…). Відмова перевізника з’являється
+            Нова Пошта (14+ цифр) або Rozetka як на етикетці. Відмова перевізника з’являється
             у власника автоматично — цю форму для неї не використовуйте.
           </p>
           <label class="field">
             <span class="field-label">ТТН повернення <span class="req">*</span></span>
-            <input type="text" data-return-ttn placeholder="2045… або RMP-…" autocomplete="off" />
+            <input type="text" data-return-ttn placeholder="2045… / RMP-… / PRM-…" autocomplete="off" />
           </label>
           <div class="choice-list" role="radiogroup" aria-label="Тип повернення">
             <label class="choice-card">
@@ -3096,8 +3106,8 @@ ${
   function validateReturnTtn(raw) {
     const value = String(raw || "").trim().toUpperCase();
     if (!value) return { ok: false, message: "Вкажіть ТТН повернення" };
-    if (/^RMP-\d{6,20}$/i.test(value)) {
-      return { ok: true, ttn: value };
+    if (isPlausibleRozetkaWaybill(value) && /[A-Z\-]/.test(value)) {
+      return { ok: true, ttn: sanitizeRozetkaWaybill(value) };
     }
     const digits = value.replace(/\D/g, "");
     if (digits.length >= 10) {
@@ -3105,7 +3115,7 @@ ${
     }
     return {
       ok: false,
-      message: "ТТН: Нова Пошта (мінімум 10 цифр) або Rozetka у форматі RMP-XXXXXXXXX",
+      message: "ТТН: Нова Пошта (мінімум 10 цифр) або Rozetka як на етикетці (RMP-/PRM-/723-…)",
     };
   }
 
@@ -3798,7 +3808,7 @@ ${
             )}" />
           </label>
           <label class="field compact-field" data-edit-own-ttn-wrap>
-            <span class="field-label">Власна ТТН / RMP</span>
+            <span class="field-label">Власна ТТН</span>
             <input name="ttn_number" type="text" value="${escapeHtml(
               order.ttn_number || payload.ttn_number || ""
             )}" />
@@ -5217,7 +5227,7 @@ ${
   function orderDeliveryCarrier(order) {
     const payload = order.payload || {};
     const ttn = String(order.ttn_number || payload.ttn_number || "").trim();
-    if (ttn.toUpperCase().startsWith("RMP-")) return "rozetka";
+    if (/^(RMP-|PRM-)/i.test(ttn) || /^\d{2,4}-\d{5,}/.test(ttn)) return "rozetka";
     const own = String(payload.own_ttn_carrier || "")
       .trim()
       .toLowerCase()
@@ -6080,7 +6090,7 @@ ${
 
   if (els.rmpNumber) {
     els.rmpNumber.addEventListener("input", () => {
-      const next = normalizeRmpNumber(els.rmpNumber.value);
+      const next = sanitizeRozetkaWaybill(els.rmpNumber.value);
       if (els.rmpNumber.value !== next) {
         const pos = els.rmpNumber.selectionStart;
         els.rmpNumber.value = next;
@@ -6092,8 +6102,7 @@ ${
       }
     });
     els.rmpNumber.addEventListener("blur", () => {
-      const next = normalizeRmpNumber(els.rmpNumber.value);
-      els.rmpNumber.value = next === "RMP-" ? "" : next;
+      els.rmpNumber.value = sanitizeRozetkaWaybill(els.rmpNumber.value);
     });
   }
 

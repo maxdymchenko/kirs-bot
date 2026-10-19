@@ -14,7 +14,8 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _RMP_RE = re.compile(r"(RMP-\d{6,20})", re.IGNORECASE)
-_RMP_BARE12_RE = re.compile(r"(?<!\d)(\d{12})(?!\d)")
+_ROZETKA_PREFIXED_RE = re.compile(r"\b([A-Z]{2,5}-?\d{6,20})\b", re.IGNORECASE)
+_ROZETKA_NUMDASH_RE = re.compile(r"(?<!\d)(\d{2,4}-\d{5,20})(?!\d)")
 _NP_GROUPED_RE = re.compile(
     r"(?<!\d)(\d{4}(?:[\s\-]+\d{4}){2}[\s\-]+\d{2,4})(?!\d)"
 )
@@ -56,23 +57,81 @@ def decode_pdf_base64(raw: str) -> bytes:
     return data
 
 
-def _normalize_rozetka_waybill(value: str) -> str:
-    from bot.rmp_tracking import normalize_rmp_track_id
+def waybill_alnum(value: str) -> str:
+    """Лише літери й цифри, без пробілів і дефісів."""
+    return re.sub(r"[^A-Za-z0-9]", "", str(value or "")).upper()
 
-    raw = str(value or "").strip()
-    canon = normalize_rmp_track_id(raw)
-    if canon:
-        return canon
-    compact = raw.replace(" ", "").upper()
-    m = _RMP_RE.search(compact)
-    return m.group(1).upper() if m else ""
+
+def sanitize_rozetka_waybill(value: str) -> str:
+    """Як ввів дроппер: літери/цифри/дефіс, без примусового RMP-."""
+    compact = re.sub(r"\s+", "", str(value or "")).upper()
+    compact = re.sub(r"[^A-Z0-9\-]", "", compact)
+    compact = re.sub(r"-{2,}", "-", compact).strip("-")
+    return compact
+
+
+def is_plausible_rozetka_waybill(value: str) -> bool:
+    text = sanitize_rozetka_waybill(value)
+    digits = _digits_only(text)
+    alnum = waybill_alnum(text)
+    return 6 <= len(digits) <= 20 and 6 <= len(alnum) <= 28 and bool(text)
+
+
+def looks_like_rozetka_ttn(value: str) -> bool:
+    text = sanitize_rozetka_waybill(value)
+    if not text:
+        return False
+    if text.startswith(("RMP-", "PRM-")):
+        return True
+    if re.fullmatch(r"[A-Z]{2,5}-?\d{6,20}", text):
+        return True
+    if re.fullmatch(r"\d{2,4}-\d{5,20}", text):
+        return True
+    return False
+
+
+def waybills_match_exact(typed: str, found: str) -> bool:
+    """Кожна літера й цифра має збігатися (дефіси/пробіли ігноруємо)."""
+    a, b = waybill_alnum(typed), waybill_alnum(found)
+    return bool(a) and a == b
+
+
+def pdf_contains_exact_waybill(
+    pdf_bytes: bytes, typed: str, filename: str = ""
+) -> bool:
+    key = waybill_alnum(typed)
+    if len(key) < 6:
+        return False
+    pattern = r"[^A-Za-z0-9]*".join(re.escape(ch) for ch in key)
+    wrapped = re.compile(rf"(?<![A-Za-z0-9]){pattern}(?![A-Za-z0-9])", re.I)
+    blobs: list[str] = [str(filename or "")]
+    try:
+        from pypdf import PdfReader
+
+        reader = PdfReader(io.BytesIO(pdf_bytes))
+        for page in reader.pages:
+            try:
+                blobs.append(page.extract_text() or "")
+            except Exception:
+                logger.debug("pypdf exact-waybill page failed", exc_info=True)
+    except Exception:
+        logger.debug("pypdf exact-waybill read failed", exc_info=True)
+    try:
+        blobs.append(pdf_bytes.decode("latin-1", errors="ignore"))
+    except Exception:
+        pass
+    return any(wrapped.search(blob or "") for blob in blobs)
+
+
+def _normalize_rozetka_waybill(value: str) -> str:
+    return sanitize_rozetka_waybill(value)
 
 
 def normalize_waybill(value: str, carrier: str = "") -> str:
     raw = str(value or "").strip()
     carrier = str(carrier or "").strip().lower()
-    if carrier == "rozetka" or raw.upper().startswith("RMP-"):
-        return _normalize_rozetka_waybill(raw)
+    if carrier == "rozetka" or looks_like_rozetka_ttn(raw):
+        return sanitize_rozetka_waybill(raw)
     digits = _digits_only(raw)
     if len(digits) > 14 and digits.startswith(_NP_PREFIXES):
         return digits[:14]
@@ -216,8 +275,8 @@ def _order_looks_like_rozetka_label(order: dict[str, Any] | None) -> bool:
     row = order or {}
     payload = row.get("payload") if isinstance(row.get("payload"), dict) else {}
     carr = str(payload.get("own_ttn_carrier") or "").strip().lower()
-    ttn = str(row.get("ttn_number") or payload.get("ttn_number") or "").upper()
-    return carr == "rozetka" or ttn.startswith("RMP-")
+    ttn = str(row.get("ttn_number") or payload.get("ttn_number") or "")
+    return carr == "rozetka" or looks_like_rozetka_ttn(ttn)
 
 
 def maybe_backfill_meest_label(
@@ -282,8 +341,18 @@ def enrich_orders_meest_label(
     return out
 
 
+def _collect_rozetka_from_text(text: str, found: list[str], seen: set[str]) -> None:
+    blob = str(text or "")
+    for m in _ROZETKA_PREFIXED_RE.finditer(blob):
+        _add_unique(found, seen, sanitize_rozetka_waybill(m.group(1)))
+    for m in _ROZETKA_NUMDASH_RE.finditer(blob):
+        _add_unique(found, seen, sanitize_rozetka_waybill(m.group(1)))
+    for m in _RMP_RE.finditer(blob):
+        _add_unique(found, seen, sanitize_rozetka_waybill(m.group(1)))
+
+
 def extract_waybill_candidates(pdf_bytes: bytes, filename: str = "") -> list[str]:
-    """Номери НП (з пробілами на етикетці теж) та Rozetka (RMP-…)."""
+    """Номери НП та Rozetka (RMP-/PRM-/723-…), без «голих» 12 цифр (телефони)."""
     texts: list[str] = []
     try:
         from pypdf import PdfReader
@@ -300,27 +369,18 @@ def extract_waybill_candidates(pdf_bytes: bytes, filename: str = "") -> list[str
     blob = "\n".join(texts)
     found: list[str] = []
     seen: set[str] = set()
-    for m in _RMP_RE.finditer(blob):
-        _add_unique(found, seen, m.group(1).upper())
-    for m in _RMP_BARE12_RE.finditer(blob):
-        _add_unique(found, seen, m.group(1))
+    _collect_rozetka_from_text(blob, found, seen)
     _collect_np_from_text(blob, found, seen)
 
-    # Сирий PDF — лише номери з префіксом НП, без дат на кшталт 20260912…
     try:
         raw_blob = pdf_bytes.decode("latin-1", errors="ignore")
     except Exception:
         raw_blob = ""
     if raw_blob:
         _collect_np_from_text(raw_blob, found, seen)
-        for m in _RMP_RE.finditer(raw_blob):
-            _add_unique(found, seen, m.group(1).upper())
-        for m in _RMP_BARE12_RE.finditer(raw_blob):
-            _add_unique(found, seen, m.group(1))
+        _collect_rozetka_from_text(raw_blob, found, seen)
     _collect_np_from_filename(filename, found, seen)
-    digits = _digits_only(filename)
-    if len(digits) == 12:
-        _add_unique(found, seen, digits)
+    _collect_rozetka_from_text(filename, found, seen)
     return found
 
 
@@ -337,43 +397,38 @@ def verify_ttn_pdf(
     """
     carrier_l = str(carrier or "").strip().lower()
     typed_raw = str(ttn_number or "").strip()
-    if (
-        carrier_l == "rozetka"
-        or typed_raw.upper().startswith("RMP-")
-        or len(_digits_only(typed_raw)) == 12
-    ):
-        expected = normalize_waybill(typed_raw, "rozetka")
-        if not expected:
+    if carrier_l == "rozetka" or looks_like_rozetka_ttn(typed_raw):
+        expected = sanitize_rozetka_waybill(typed_raw)
+        if not is_plausible_rozetka_waybill(expected):
             return {
                 "ok": False,
-                "expected": "",
+                "expected": expected,
                 "found": [],
                 "message": "Вкажіть коректний номер накладної",
             }
         found = extract_waybill_candidates(pdf_bytes, filename=filename)
-        match = any(normalize_waybill(x, "rozetka") == expected for x in found)
-        if not match:
-            expected_digits = _digits_only(expected)
-            try:
-                raw_blob = pdf_bytes.decode("latin-1", errors="ignore")
-            except Exception:
-                raw_blob = ""
-            blob_digits = _digits_only(
-                " ".join(found) + " " + (filename or "") + " " + raw_blob
-            )
-            if expected_digits and expected_digits in blob_digits:
-                match = True
-                if expected not in found:
-                    found.append(expected)
+        rz_found = [
+            x
+            for x in found
+            if looks_like_rozetka_ttn(x) or waybills_match_exact(expected, x)
+        ]
+        match = any(waybills_match_exact(expected, x) for x in found)
+        if not match and pdf_contains_exact_waybill(
+            pdf_bytes, expected, filename=filename
+        ):
+            match = True
+            if expected not in found:
+                found.append(expected)
+                rz_found.append(expected)
         if match:
             return {
                 "ok": True,
                 "expected": expected,
                 "found": found or [expected],
-                "official": expected,
+                "official": "",
                 "message": "OK",
             }
-        if not found:
+        if not rz_found:
             return {
                 "ok": False,
                 "expected": expected,
@@ -383,15 +438,15 @@ def verify_ttn_pdf(
                     "Прикріпіть оригінальну етикетку 100×100 (текст/вектор), не скан-фото."
                 ),
             }
-        preview = ", ".join(found[:3])
+        preview = ", ".join(rz_found[:3])
         return {
             "ok": False,
             "expected": expected,
-            "found": found,
+            "found": rz_found,
             "official": "",
             "message": (
                 f"Номер у замовленні ({expected}) не збігається з номером у PDF "
-                f"({preview}). Перевірте ТТН і файл етикетки."
+                f"({preview}). Кожна літера й цифра має збігатися."
             ),
         }
 
@@ -758,22 +813,19 @@ def apply_ttn_pdf_check(
         "ttn_pdf_checked_at": now,
     }
     official = str(check.get("official") or "").strip()
-    if ok and official:
+    is_rmp = str(carr or "").strip().lower() == "rozetka" or looks_like_rozetka_ttn(
+        number
+    )
+    if ok and official and not is_rmp:
         patch["ttn_number"] = official
-    if pdf_bytes:
-        is_rmp = (
-            str(carr or "").strip().lower() == "rozetka"
-            or str(number or "").upper().startswith("RMP-")
-        )
-        if is_rmp:
-            patch["meest_label"] = pdf_has_meest_mark(pdf_bytes)
+    if pdf_bytes and is_rmp:
+        patch["meest_label"] = pdf_has_meest_mark(pdf_bytes)
     saved = storage.merge_order_payload(int(order["id"]), patch)
     if ok:
-        storage.update_order_flags(
-            int(order["id"]),
-            sheets_sync_status="pending",
-            ttn_number=official or None,
-        )
+        flags: dict[str, Any] = {"sheets_sync_status": "pending"}
+        if official and not is_rmp:
+            flags["ttn_number"] = official
+        storage.update_order_flags(int(order["id"]), **flags)
     else:
         storage.update_order_flags(int(order["id"]), sheets_sync_status="hold_pdf")
     latest = storage.get_order(int(order["id"])) or saved or order

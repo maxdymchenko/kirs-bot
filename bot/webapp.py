@@ -1664,16 +1664,19 @@ def create_web_app(
             carrier = (payload.own_ttn_carrier or "nova_poshta").strip().lower()
             raw_ttn = str(payload.ttn_number or "").strip()
             if carrier == "rozetka":
-                from bot.rmp_tracking import is_rmp_trackable_number
+                from bot.ttn_pdf_verify import (
+                    is_plausible_rozetka_waybill,
+                    sanitize_rozetka_waybill,
+                )
 
-                rmp = re.sub(r"\s+", "", raw_ttn).upper()
-                if not (
-                    is_rmp_trackable_number(rmp)
-                    or re.fullmatch(r"RMP-\d{6,20}", rmp)
-                ):
+                rmp = sanitize_rozetka_waybill(raw_ttn)
+                if not is_plausible_rozetka_waybill(rmp):
                     raise HTTPException(
                         status_code=400,
-                        detail="Вкажіть номер Rozetka: RMP-XXXXXXXXX або 12 цифр",
+                        detail=(
+                            "Вкажіть номер Розетки як на етикетці "
+                            "(RMP-…, PRM-…, 723-…)"
+                        ),
                     )
             else:
                 ttn = re.sub(r"\D", "", raw_ttn)
@@ -1838,7 +1841,9 @@ def create_web_app(
         own_ttn = bool(payload.own_ttn)
         carrier = (payload.own_ttn_carrier or "nova_poshta").strip().lower() if own_ttn else ""
         if own_ttn and carrier == "rozetka":
-            ttn_number = re.sub(r"\s+", "", payload.ttn_number or "").upper()
+            from bot.ttn_pdf_verify import sanitize_rozetka_waybill
+
+            ttn_number = sanitize_rozetka_waybill(payload.ttn_number or "")
         elif own_ttn:
             ttn_number = re.sub(r"\D", "", payload.ttn_number or "")
         else:
@@ -2619,7 +2624,9 @@ def create_web_app(
             else ""
         )
         if own_ttn and carrier == "rozetka":
-            ttn_number = re.sub(r"\s+", "", validate_payload.ttn_number or "").upper()
+            from bot.ttn_pdf_verify import sanitize_rozetka_waybill
+
+            ttn_number = sanitize_rozetka_waybill(validate_payload.ttn_number or "")
         elif own_ttn:
             ttn_number = re.sub(r"\D", "", validate_payload.ttn_number or "")
         else:
@@ -3555,12 +3562,18 @@ def create_web_app(
             )
         ttn_raw = str(payload.ttn_number or "").strip().upper()
         ttn_digits = re.sub(r"\D", "", ttn_raw)
-        if len(ttn_digits) < 10 and not re.match(r"^RMP-\d{6,20}$", ttn_raw, re.I):
+        from bot.ttn_pdf_verify import (
+            is_plausible_rozetka_waybill,
+            sanitize_rozetka_waybill,
+        )
+
+        rz_ttn = sanitize_rozetka_waybill(ttn_raw)
+        if len(ttn_digits) < 10 and not is_plausible_rozetka_waybill(rz_ttn):
             raise HTTPException(
                 status_code=400,
                 detail="Вкажіть коректний номер зворотної ТТН",
             )
-        return_ttn = ttn_raw if ttn_raw.startswith("RMP-") else ttn_digits
+        return_ttn = rz_ttn if is_plausible_rozetka_waybill(rz_ttn) else ttn_digits
         from bot.returns import (
             ORIGIN_MANUAL,
             STATUS_AWAITING_RECEIPT,
