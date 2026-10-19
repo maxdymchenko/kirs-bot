@@ -205,6 +205,25 @@ async def main() -> None:
         name="skip-sheet-k260912-once",
     )
 
+    async def requested_received_k261009_0002_once() -> None:
+        await asyncio.sleep(15)
+        try:
+            from bot.oneoff_received_k261009_0002 import (
+                run_mark_received_k261009_0002,
+            )
+
+            stats = await asyncio.to_thread(
+                run_mark_received_k261009_0002, app_storage
+            )
+            logger.info("Mark received K-261009-0002: %s", stats)
+        except Exception:
+            logger.exception("Mark received K-261009-0002 failed")
+
+    asyncio.create_task(
+        requested_received_k261009_0002_once(),
+        name="received-k261009-0002-once",
+    )
+
     stop_event = asyncio.Event()
 
     def request_stop(*_args) -> None:
