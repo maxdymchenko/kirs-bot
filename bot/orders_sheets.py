@@ -1002,6 +1002,14 @@ DAY_SEPARATOR_BLUE = {
 DAY_SEPARATOR_EMPTY_COLS = (2, 3, 5, 7, 8, 9, 10, 11, 12, 13)
 
 
+def _parse_sheet_date(raw: str):
+    text = str(raw or "").strip()
+    try:
+        return datetime.strptime(text, "%d.%m.%Y").date()
+    except ValueError:
+        return None
+
+
 def day_separator_exists(ws: gspread.Worksheet, date_s: str) -> bool:
     """Чи вже є синій роздільник з цією датою (не чіпати чужі рядки)."""
     wanted = str(date_s or "").strip()
@@ -1013,6 +1021,24 @@ def day_separator_exists(ws: gspread.Worksheet, date_s: str) -> bool:
         if a == wanted and b == wanted:
             return True
     return False
+
+
+def latest_day_separator_date(ws: gspread.Worksheet) -> str:
+    """Остання дата синього роздільника (A=B=дд.мм.рррр)."""
+    latest = ""
+    latest_d = None
+    for row in ws.get_all_values()[1:]:
+        a = str(row[0]).strip() if row else ""
+        b = str(row[1]).strip() if len(row) > 1 else ""
+        if not a or a != b:
+            continue
+        parsed = _parse_sheet_date(a)
+        if parsed is None:
+            continue
+        if latest_d is None or parsed > latest_d:
+            latest_d = parsed
+            latest = a
+    return latest
 
 
 def append_day_separator_row(ws: gspread.Worksheet, date_s: str) -> int:

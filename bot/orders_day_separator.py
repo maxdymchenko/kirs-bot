@@ -1,7 +1,10 @@
 """Синій рядок-роздільник днів відправки в листі «Заказы».
 
-Пн–пт о 14:01, сб о 13:01 Київ — дописати в кінець ряд з датою
-наступного дня. Нд не ставити. Без зсуву і без запису поверх замовлень.
+Пн–пт і нд о 14:01, сб о 13:01 Київ — дописати в кінець ряд з датою
+наступного дня. Без зсуву і без запису поверх замовлень.
+
+Неділя теж потрібна: інакше дата понеділка ніколи не з’являється
+(сб пише неділю, пн 14:01 вже пише вівторок).
 """
 
 from __future__ import annotations
@@ -20,6 +23,7 @@ KYIV = ZoneInfo("Europe/Kyiv")
 WEEKDAY_SLOT = time(14, 1)
 SATURDAY_SLOT = time(13, 1)
 SETTINGS_KEY = "orders_day_separator_state"
+LOOKBACK_DAYS = 8
 
 
 def now_kyiv(now: datetime | None = None) -> datetime:
@@ -30,11 +34,11 @@ def now_kyiv(now: datetime | None = None) -> datetime:
 
 
 def separator_slot_for(weekday: int) -> time | None:
-    """Пн–пт 14:01, сб 13:01, нд — немає."""
-    if 0 <= weekday <= 4:
-        return WEEKDAY_SLOT
+    """Пн–пт/нд 14:01, сб 13:01."""
     if weekday == 5:
         return SATURDAY_SLOT
+    if 0 <= weekday <= 6:
+        return WEEKDAY_SLOT
     return None
 
 
@@ -42,6 +46,26 @@ def next_ship_date_label(now: datetime | None = None) -> str:
     dt = now_kyiv(now)
     nxt = dt.date() + timedelta(days=1)
     return nxt.strftime("%d.%m.%Y")
+
+
+def due_separator_labels(now: datetime | None = None) -> list[str]:
+    """Дати, які вже мали з’явитися після минулих слотів (без майбутніх)."""
+    dt = now_kyiv(now)
+    labels: list[str] = []
+    seen: set[str] = set()
+    for offset in range(LOOKBACK_DAYS, -1, -1):
+        day = dt.date() - timedelta(days=offset)
+        slot = separator_slot_for(day.weekday())
+        if slot is None:
+            continue
+        target = datetime.combine(day, slot, tzinfo=KYIV)
+        if dt < target:
+            continue
+        label = (day + timedelta(days=1)).strftime("%d.%m.%Y")
+        if label not in seen:
+            seen.add(label)
+            labels.append(label)
+    return labels
 
 
 def seconds_until_next_separator_slot(
@@ -66,6 +90,8 @@ def seconds_until_next_separator_slot(
         target = datetime.combine(day, day_slot, tzinfo=KYIV)
         if target > dt:
             candidates.append(target)
+    if not candidates:
+        return 3600.0
     return max(30.0, (candidates[0] - dt).total_seconds())
 
 
@@ -110,46 +136,74 @@ def run_day_separator_pass(
 ) -> dict[str, Any]:
     dt = now_kyiv(now)
     day = dt.date().isoformat()
-    date_s = next_ship_date_label(dt)
-    state = _load_state(storage)
-    if not force:
-        slot = separator_slot_for(dt.weekday())
-        if slot is None:
-            return {"ok": True, "skipped": "sunday", "day": day}
-        if (dt.hour, dt.minute) < (slot.hour, slot.minute):
-            return {"ok": True, "skipped": "before_slot", "day": day}
-        if str(state.get("last_run_date") or "") == day:
-            return {"ok": True, "skipped": True, "day": day, "date": date_s}
+    due = due_separator_labels(dt)
+    if force:
+        label = next_ship_date_label(dt)
+        if label not in due:
+            due = [*due, label]
+    if not due:
+        return {"ok": True, "skipped": "before_slot", "day": day}
 
     from bot.orders_sheets import (
         _open_orders_worksheet,
+        _parse_sheet_date,
         append_day_separator_row,
         day_separator_exists,
+        latest_day_separator_date,
     )
 
     ws = _open_orders_worksheet(storage)
-    if day_separator_exists(ws, date_s):
+    last_sep = latest_day_separator_date(ws)
+    last_d = _parse_sheet_date(last_sep)
+    pending: list[str] = []
+    for date_s in due:
+        parsed = _parse_sheet_date(date_s)
+        if last_d and parsed and parsed <= last_d:
+            continue
+        pending.append(date_s)
+    if not pending:
         _save_state(
             storage,
             {
                 "last_run_date": day,
                 "last_at": dt.isoformat(timespec="seconds"),
-                "date": date_s,
-                "already": True,
-                "row": 0,
+                "due": due,
+                "added": [],
+                "already": due,
+                "last_separator": last_sep,
             },
         )
-        return {"ok": True, "already": True, "day": day, "date": date_s, "row": 0}
+        return {
+            "ok": True,
+            "skipped": "up_to_date",
+            "day": day,
+            "due": due,
+            "last_separator": last_sep,
+        }
 
-    row = append_day_separator_row(ws, date_s)
+    added: list[dict[str, Any]] = []
+    already: list[str] = []
+    for date_s in pending:
+        if day_separator_exists(ws, date_s):
+            already.append(date_s)
+            continue
+        row = append_day_separator_row(ws, date_s)
+        added.append({"date": date_s, "row": row})
+
     _save_state(
         storage,
         {
             "last_run_date": day,
             "last_at": dt.isoformat(timespec="seconds"),
-            "date": date_s,
-            "already": False,
-            "row": row,
+            "due": due,
+            "added": added,
+            "already": already,
         },
     )
-    return {"ok": True, "day": day, "date": date_s, "row": row}
+    return {
+        "ok": True,
+        "day": day,
+        "due": due,
+        "added": added,
+        "already": already,
+    }

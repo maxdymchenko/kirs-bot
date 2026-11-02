@@ -1,5 +1,5 @@
 ---
-description: Blue next-day separator row in Google Sheet «Заказы» (weekdays 14:01, Saturday 13:01 Kyiv)
+description: Blue next-day separator row in Google Sheet «Заказы» (14:01 Kyiv daily, Saturday 13:01)
 alwaysApply: true
 ---
 
@@ -7,9 +7,9 @@ alwaysApply: true
 
 Бот дописує **в кінець** листа синій рядок з **датою наступного дня** (заливка #4285F4):
 
-- **Пн–пт о 14:01** за Києвом
+- **Пн–пт і нд о 14:01** за Києвом
 - **Сб о 13:01** за Києвом
-- **Нд** не ставити
+- Пропущені слоти (рестарт Render) — дописати дати, які вже мали з’явитися, без зсуву рядків
 
 Дата в **A B E G O P Q R**. Порожні **C D F H I J K L M N**.
 

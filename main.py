@@ -653,7 +653,7 @@ async def main() -> None:
     )
 
     async def orders_day_separator_loop() -> None:
-        """Пн–пт 14:01 / сб 13:01 Київ — синій рядок наступного дня в «Заказы»."""
+        """Пн–нд 14:01 / сб 13:01 Київ — синій рядок наступного дня в «Заказы»."""
         from bot.orders_day_separator import (
             run_day_separator_pass,
             seconds_until_next_separator_slot,
@@ -662,22 +662,14 @@ async def main() -> None:
         await asyncio.sleep(65)
         while not stop_event.is_set():
             try:
-                delay = seconds_until_next_separator_slot(allow_current_slot=True)
-                if delay > 0:
-                    logger.info(
-                        "Orders day separator: next slot in %.0f min",
-                        delay / 60.0,
-                    )
-                    try:
-                        await asyncio.wait_for(stop_event.wait(), timeout=delay)
-                        break
-                    except asyncio.TimeoutError:
-                        pass
                 stats = await asyncio.to_thread(
                     run_day_separator_pass, app_storage
                 )
                 logger.info("Orders day separator: %s", stats)
                 delay = seconds_until_next_separator_slot(allow_current_slot=False)
+                logger.info(
+                    "Orders day separator: next slot in %.0f min", delay / 60.0
+                )
                 try:
                     await asyncio.wait_for(stop_event.wait(), timeout=delay)
                     break
