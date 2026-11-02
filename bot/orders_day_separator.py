@@ -150,6 +150,8 @@ def run_day_separator_pass(
         append_day_separator_row,
         day_separator_exists,
         latest_day_separator_date,
+        list_day_separator_rows,
+        paint_day_separator_rows,
     )
 
     ws = _open_orders_worksheet(storage)
@@ -162,6 +164,7 @@ def run_day_separator_pass(
             continue
         pending.append(date_s)
     if not pending:
+        painted = paint_day_separator_rows(ws, list_day_separator_rows(ws))
         _save_state(
             storage,
             {
@@ -171,6 +174,7 @@ def run_day_separator_pass(
                 "added": [],
                 "already": due,
                 "last_separator": last_sep,
+                "repainted": painted,
             },
         )
         return {
@@ -179,6 +183,7 @@ def run_day_separator_pass(
             "day": day,
             "due": due,
             "last_separator": last_sep,
+            "repainted": painted,
         }
 
     added: list[dict[str, Any]] = []
@@ -190,6 +195,7 @@ def run_day_separator_pass(
         row = append_day_separator_row(ws, date_s)
         added.append({"date": date_s, "row": row})
 
+    painted = paint_day_separator_rows(ws, list_day_separator_rows(ws))
     _save_state(
         storage,
         {
@@ -198,6 +204,7 @@ def run_day_separator_pass(
             "due": due,
             "added": added,
             "already": already,
+            "repainted": painted,
         },
     )
     return {
@@ -206,4 +213,5 @@ def run_day_separator_pass(
         "due": due,
         "added": added,
         "already": already,
+        "repainted": painted,
     }

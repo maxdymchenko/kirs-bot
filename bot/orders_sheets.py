@@ -1023,6 +1023,23 @@ def day_separator_exists(ws: gspread.Worksheet, date_s: str) -> bool:
     return False
 
 
+def is_day_separator_row_values(row: list[Any] | None) -> bool:
+    if not row:
+        return False
+    a = str(row[0]).strip() if row else ""
+    b = str(row[1]).strip() if len(row) > 1 else ""
+    return bool(a and a == b and _parse_sheet_date(a))
+
+
+def list_day_separator_rows(ws: gspread.Worksheet) -> list[int]:
+    """Рядки-роздільники (A=B=дата), 1-based."""
+    out: list[int] = []
+    for idx, row in enumerate(ws.get_all_values()[1:], start=2):
+        if is_day_separator_row_values(row):
+            out.append(idx)
+    return out
+
+
 def latest_day_separator_date(ws: gspread.Worksheet) -> str:
     """Остання дата синього роздільника (A=B=дд.мм.рррр)."""
     latest = ""
@@ -1041,6 +1058,47 @@ def latest_day_separator_date(ws: gspread.Worksheet) -> str:
     return latest
 
 
+def paint_day_separator_rows(ws: gspread.Worksheet, row_numbers: list[int]) -> int:
+    """Повернути синю заливку A:R на рядки-роздільники."""
+    nums = sorted({int(n) for n in row_numbers if n and int(n) >= 2})
+    if not nums:
+        return 0
+    requests = [
+        {
+            "repeatCell": {
+                "range": {
+                    "sheetId": ws.id,
+                    "startRowIndex": start - 1,
+                    "endRowIndex": end,
+                    "startColumnIndex": 0,
+                    "endColumnIndex": SHEET_COL_COUNT,
+                },
+                "cell": {
+                    "userEnteredFormat": {
+                        "backgroundColor": DAY_SEPARATOR_BLUE,
+                        "horizontalAlignment": "CENTER",
+                        "textFormat": {"bold": True},
+                    }
+                },
+                "fields": (
+                    "userEnteredFormat.backgroundColor,"
+                    "userEnteredFormat.horizontalAlignment,"
+                    "userEnteredFormat.textFormat.bold"
+                ),
+            }
+        }
+        for start, end in _consecutive_row_spans(nums)
+    ]
+    try:
+        chunk = 80
+        for i in range(0, len(requests), chunk):
+            ws.spreadsheet.batch_update({"requests": requests[i : i + chunk]})
+    except Exception:
+        logger.exception("failed to paint day separator rows %s", nums)
+        return 0
+    return len(nums)
+
+
 def append_day_separator_row(ws: gspread.Worksheet, date_s: str) -> int:
     """Дописати в кінець синій рядок-роздільник (без зсуву інших замовлень)."""
     wanted = str(date_s or "").strip()
@@ -1056,38 +1114,7 @@ def append_day_separator_row(ws: gspread.Worksheet, date_s: str) -> int:
         [{"range": f"A{start}:R{start}", "values": [values]}],
         value_input_option="USER_ENTERED",
     )
-    try:
-        ws.spreadsheet.batch_update(
-            {
-                "requests": [
-                    {
-                        "repeatCell": {
-                            "range": {
-                                "sheetId": ws.id,
-                                "startRowIndex": start - 1,
-                                "endRowIndex": start,
-                                "startColumnIndex": 0,
-                                "endColumnIndex": SHEET_COL_COUNT,
-                            },
-                            "cell": {
-                                "userEnteredFormat": {
-                                    "backgroundColor": DAY_SEPARATOR_BLUE,
-                                    "horizontalAlignment": "CENTER",
-                                    "textFormat": {"bold": True},
-                                }
-                            },
-                            "fields": (
-                                "userEnteredFormat.backgroundColor,"
-                                "userEnteredFormat.horizontalAlignment,"
-                                "userEnteredFormat.textFormat.bold"
-                            ),
-                        }
-                    }
-                ]
-            }
-        )
-    except Exception:
-        logger.exception("failed to paint day separator row %s", start)
+    paint_day_separator_rows(ws, [start])
     logger.info("orders sheet day separator row=%s date=%s", start, wanted)
     return start
 
@@ -1109,9 +1136,24 @@ def _consecutive_row_spans(row_numbers: list[int]) -> list[tuple[int, int]]:
     return spans
 
 
+def _exclude_separator_rows(
+    ws: gspread.Worksheet, row_numbers: list[int]
+) -> list[int]:
+    skip = set(list_day_separator_rows(ws))
+    out: list[int] = []
+    for raw in row_numbers or []:
+        try:
+            n = int(raw)
+        except (TypeError, ValueError):
+            continue
+        if n not in skip:
+            out.append(n)
+    return out
+
+
 def _paint_rows_white(ws: gspread.Worksheet, row_numbers: list[int]) -> None:
     """Нові рядки без заливки з рядка вище — завжди білий фон A:R."""
-    spans = _consecutive_row_spans(row_numbers)
+    spans = _consecutive_row_spans(_exclude_separator_rows(ws, row_numbers))
     if not spans:
         return
     requests = [
@@ -1284,7 +1326,7 @@ def restore_blanked_order_rows(
 
 def paint_return_picked_rows(ws: gspread.Worksheet, row_numbers: list[int]) -> None:
     """Червона заливка A:R для рядків «ПОВЕРНЕННЯ ЗАБРАЛИ». Чужі рядки не чіпає."""
-    spans = _consecutive_row_spans(row_numbers)
+    spans = _consecutive_row_spans(_exclude_separator_rows(ws, row_numbers))
     if not spans:
         return
     requests = [

@@ -410,16 +410,19 @@ def run_sheet_tracking_sync(storage: AppStorage) -> dict[str, Any]:
             skipped_terminal,
         )
 
-    if paint_pairs:
-        from bot.orders_sheets import (
-            paint_return_picked_rows_matching_note,
-            paint_status_n_cells,
-        )
+    from bot.orders_sheets import (
+        list_day_separator_rows,
+        paint_day_separator_rows,
+        paint_return_picked_rows_matching_note,
+        paint_status_n_cells,
+    )
 
+    if paint_pairs:
         paint_status_n_cells(ws, paint_pairs)
         paint_return_picked_rows_matching_note(
             ws, [row for row, _ in paint_pairs]
         )
+    paint_day_separator_rows(ws, list_day_separator_rows(ws))
 
     return {
         "ok": True,
