@@ -1394,43 +1394,8 @@ async def _track_ukrposhta_orders_async(
     notify: NotifyFn | None,
     owner_notify: OwnerNotifyFn | None,
 ) -> None:
-    from bot.ukrposhta_tracking import (
-        fetch_last_statuses,
-        order_ukrposhta_trackable,
-        sanitize_ukrposhta_barcode,
-        sheet_event_name,
-    )
-
-    pending = storage.list_ukrposhta_orders_for_tracking(limit=200)
-    by_code: dict[str, dict[str, Any]] = {}
-    for order in pending:
-        if not order_ukrposhta_trackable(order):
-            continue
-        code = sanitize_ukrposhta_barcode(str(order.get("ttn_number") or ""))
-        if code:
-            by_code.setdefault(code, order)
-    if not by_code:
-        return
-    try:
-        found = fetch_last_statuses(list(by_code))
-    except Exception:
-        stats["errors"] += 1
-        logger.exception("Ukrposhta tracking batch failed")
-        return
-    for code, event in found.items():
-        order = by_code.get(code)
-        if not order or not isinstance(event, dict):
-            continue
-        await _apply_track_result(
-            storage,
-            order,
-            stats,
-            status_code=event.get("event"),
-            status_text=sheet_event_name(event),
-            tracking_row=event,
-            notify=notify,
-            owner_notify=owner_notify,
-        )
+    """Трекінг Укрпошти вимкнено: статус «Отримано» ставиться одразу після PDF."""
+    del storage, stats, notify, owner_notify
 
 
 async def track_order_statuses_async(

@@ -390,19 +390,7 @@ def run_sheet_tracking_sync(storage: AppStorage) -> dict[str, Any]:
         except Exception:
             logger.exception("Rozetka tracking batch failed")
 
-    from bot.ukrposhta_tracking import fetch_last_statuses, sheet_event_name
-
-    up_barcodes = [
-        str(meta.get("up_barcode") or "")
-        for meta in rows_meta
-        if meta.get("is_up") and str(meta.get("up_barcode") or "")
-    ]
     up_statuses: dict[str, dict[str, Any]] = {}
-    if up_barcodes:
-        try:
-            up_statuses = fetch_last_statuses(up_barcodes)
-        except Exception:
-            logger.exception("Ukrposhta tracking batch failed")
 
     updates: list[dict[str, Any]] = []
     updated_count = 0
@@ -419,8 +407,7 @@ def run_sheet_tracking_sync(storage: AppStorage) -> dict[str, Any]:
         elif meta.get("is_rozetka"):
             new_status = str(rozetka_statuses.get(str(meta.get("order_no") or "")) or "").strip()
         elif meta.get("is_up"):
-            event = up_statuses.get(str(meta.get("up_barcode") or ""))
-            new_status = sheet_event_name(event)
+            new_status = ""
 
         if new_status and new_status != current_status:
             updates.append({"range": f"N{row_num}", "values": [[new_status]]})

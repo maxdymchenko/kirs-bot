@@ -1,7 +1,8 @@
-"""Трекінг Укрпошти: ШКІ дроппера і статуси з офіційного Status Tracking API.
+"""ШКІ Укрпошти і миттєве «Отримано» після звірки PDF.
 
-Bearer видає менеджер Укрпошти після договору (окремо від eCom).
-Змінна середовища: UKRPOSHTA_STATUS_BEARER.
+Статуси з API Укрпошти для замовлень не запитуємо: після вдалої накладної
+замовлення одразу в «Отримано» і списується з балансу, але лишається
+на пакуванні, поки комірник його не відправить.
 """
 
 from __future__ import annotations
@@ -232,3 +233,118 @@ def fetch_last_statuses(barcodes: list[str]) -> dict[str, dict[str, Any]]:
             continue
         out.update(_parse_found(payload))
     return out
+
+
+def _payload(order: dict[str, Any]) -> dict[str, Any]:
+    payload = order.get("payload")
+    return payload if isinstance(payload, dict) else {}
+
+
+def order_is_ukrposhta(order: dict[str, Any] | None) -> bool:
+    if not order:
+        return False
+    payload = _payload(order)
+    own = bool(order.get("own_ttn") or payload.get("own_ttn"))
+    carrier = str(payload.get("own_ttn_carrier") or payload.get("carrier") or "")
+    return own and is_ukrposhta_carrier(carrier)
+
+
+def ukrposhta_pdf_ready(order: dict[str, Any] | None) -> bool:
+    """Накладна збіглась або власник зняв hold. Інакше не «Отримано» і без списання."""
+    if not order:
+        return False
+    payload = _payload(order)
+    if payload.get("ttn_pdf_hold") is True:
+        return False
+    if str(order.get("sheets_sync_status") or "") == "hold_pdf":
+        return False
+    return payload.get("ttn_pdf_ok") is True
+
+
+def ukrposhta_still_packing(order: dict[str, Any] | None) -> bool:
+    """Уже «Отримано», але комірник ще не віддав посилку службі."""
+    if not order_is_ukrposhta(order):
+        return False
+    if str(order.get("status") or "") == "cancelled":
+        return False
+    if str(order.get("ttn_status") or "") != "received":
+        return False
+    payload = _payload(order)
+    if payload.get("warehouse_left_manually") or payload.get("warehouse_left_via_tracking"):
+        return False
+    stage = str(order.get("warehouse_stage") or payload.get("warehouse_stage") or "")
+    return stage != "shipped"
+
+
+def _undo_ukrposhta_instant(storage: Any, order: dict[str, Any]) -> None:
+    """Повернути списання і реферал, якщо Укрпошта більше не має миттєвого «Отримано»."""
+    oid = int(order.get("id") or 0)
+    if oid <= 0:
+        return
+    dropper_id = int(order.get("dropper_id") or 0)
+    order_number = str(order.get("order_number") or "").strip()
+    if dropper_id and order_number:
+        storage.delete_ledger_entry_for_order(
+            dropper_id=dropper_id,
+            entry_type="balance_payment",
+            related_order_id=order_number,
+        )
+        source = storage.get_dropper_by_id(dropper_id)
+        referrer_id = int(getattr(source, "referred_by_dropper_id", 0) or 0) if source else 0
+        if referrer_id:
+            storage.delete_ledger_entry_for_order(
+                dropper_id=referrer_id,
+                entry_type="referral_credit",
+                related_order_id=order_number,
+            )
+    if (
+        str(order.get("status") or "") != "cancelled"
+        and bool(order.get("own_ttn") or _payload(order).get("own_ttn"))
+        and str(order.get("ttn_status") or "") == "received"
+    ):
+        storage.update_order_flags(oid, ttn_status="provided")
+    storage.merge_order_payload(
+        oid,
+        {
+            "goods_debited": False,
+            "goods_debit_amount": 0,
+            "ukrposhta_instant_received": False,
+            "ever_received": False,
+            "referral_credited": False,
+            "referral_amount": 0,
+        },
+    )
+
+
+def sync_ukrposhta_settlement(storage: Any, order: dict[str, Any] | None) -> dict[str, Any] | None:
+    """Після звірки PDF: Укрпошта → «Отримано» і списання. Інакше відкотити миттєву проводку."""
+    if not order or not order.get("id"):
+        return order
+    latest = storage.get_order(int(order["id"])) or order
+    payload = _payload(latest)
+    instant = bool(payload.get("ukrposhta_instant_received"))
+    ready = (
+        order_is_ukrposhta(latest)
+        and ukrposhta_pdf_ready(latest)
+        and str(latest.get("status") or "") != "cancelled"
+    )
+    if ready:
+        if str(latest.get("ttn_status") or "") != "received" or not instant:
+            storage.update_order_flags(int(latest["id"]), ttn_status="received")
+            storage.merge_order_payload(
+                int(latest["id"]),
+                {
+                    "ukrposhta_instant_received": True,
+                    "ever_received": True,
+                    "np_status_text": "",
+                },
+            )
+            latest = storage.get_order(int(latest["id"])) or latest
+        from bot.balance_settle import settle_order_on_received
+
+        settle_order_on_received(storage, latest)
+        return storage.get_order(int(latest["id"])) or latest
+    if instant:
+        _undo_ukrposhta_instant(storage, latest)
+        return storage.get_order(int(latest["id"])) or latest
+    return latest

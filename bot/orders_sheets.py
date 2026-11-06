@@ -218,6 +218,10 @@ OWN_TTN_STATUS_LABEL = "ТТН створено дропером"
 
 
 def sheet_status_label(order: dict[str, Any]) -> str:
+    from bot.ukrposhta_tracking import ukrposhta_still_packing
+
+    if ukrposhta_still_packing(order):
+        return OWN_TTN_STATUS_LABEL
     payload = order.get("payload") or {}
     own_ttn = bool(order.get("own_ttn") or payload.get("own_ttn"))
     np_text = str(payload.get("np_status_text") or "").strip()

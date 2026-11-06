@@ -159,7 +159,9 @@ def is_packable_order(order: dict[str, Any]) -> bool:
         return False
     ttn = str(order.get("ttn_status") or "none").strip() or "none"
     if ttn in SHIPPED_OR_FINAL_STATUSES:
-        return False
+        from bot.ukrposhta_tracking import ukrposhta_still_packing
+
+        return ukrposhta_still_packing(order)
     if ttn not in PACKABLE_TTN_STATUSES:
         return False
     return True
@@ -817,6 +819,10 @@ def _persist_sqlite_left_warehouse(
         return
     if oid <= 0:
         return
+    from bot.ukrposhta_tracking import ukrposhta_still_packing
+
+    if ukrposhta_still_packing(order):
+        return
     status = mapped if mapped in SHIPPED_OR_FINAL_STATUSES else "in_transit"
     prev = str(order.get("ttn_status") or "").strip()
     if prev == status:
@@ -1022,60 +1028,9 @@ def _drop_orders_left_via_rozetka(
 def _drop_orders_left_via_ukrposhta(
     storage: AppStorage, orders: list[dict[str, Any]]
 ) -> list[dict[str, Any]]:
-    """Прибрати Укрпошту, яку вже прийняли або везуть."""
-    from bot.ukrposhta_tracking import (
-        fetch_last_statuses,
-        map_ukrposhta_status,
-        sanitize_ukrposhta_barcode,
-        sheet_event_name,
-    )
-
-    codes: list[str] = []
-    for order in orders:
-        if warehouse_delivery_carrier(order) != "ukrposhta":
-            continue
-        code = sanitize_ukrposhta_barcode(str(order.get("ttn_number") or ""))
-        if code:
-            codes.append(code)
-    if not codes:
-        return orders
-    try:
-        found = fetch_last_statuses(codes)
-    except Exception:
-        logger.exception("warehouse: Ukrposhta live status check failed")
-        return orders
-    if not found:
-        return orders
-    kept: list[dict[str, Any]] = []
-    left_sheet: list[str] = []
-    for order in orders:
-        code = sanitize_ukrposhta_barcode(str(order.get("ttn_number") or ""))
-        event = found.get(code) if code else None
-        if not event:
-            kept.append(order)
-            continue
-        name = sheet_event_name(event)
-        mapped = map_ukrposhta_status(
-            event.get("event"),
-            name,
-            reason_id=event.get("eventReason_id"),
-            reason=str(event.get("eventReason") or ""),
-        )
-        left = mapped in SHIPPED_OR_FINAL_STATUSES or (
-            bool(name) and not _is_sheet_row_still_packing(name)
-        )
-        if left and mapped != "created":
-            if is_sheet_queue_order(order):
-                no = str(order.get("order_number") or "").strip()
-                if no:
-                    left_sheet.append(no)
-            else:
-                _persist_sqlite_left_warehouse(storage, order, mapped or "in_transit")
-            continue
-        kept.append(order)
-    if left_sheet:
-        _mark_sheet_orders_shipped(storage, left_sheet)
-    return kept
+    """Укрпошту з черги не знімаємо за трекінгом: вона лишається до відправки комірником."""
+    del storage
+    return orders
 
 
 def list_sheet_warehouse_orders(storage: AppStorage) -> list[dict[str, Any]]:

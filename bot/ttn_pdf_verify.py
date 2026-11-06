@@ -958,6 +958,17 @@ def release_ttn_pdf_hold(
     except Exception:
         logger.exception("ttn pdf override log failed for %s", order.get("order_number"))
     try:
+        from bot.ukrposhta_tracking import sync_ukrposhta_settlement
+
+        settled = sync_ukrposhta_settlement(storage, latest)
+        if settled:
+            latest = settled
+    except Exception:
+        logger.exception(
+            "ukrposhta settlement after pdf override failed for %s",
+            latest.get("order_number"),
+        )
+    try:
         from bot.orders_sheets import sync_order_to_sheet
 
         synced = sync_order_to_sheet(storage, latest, full=True)

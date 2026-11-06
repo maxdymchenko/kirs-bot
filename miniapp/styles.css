@@ -1131,6 +1131,10 @@ textarea {
   margin-top: 10px;
 }
 
+.ukrposhta-notice p {
+  margin: 8px 0 0;
+}
+
 .field {
   display: block;
   margin-bottom: 12px;

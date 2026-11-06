@@ -2117,6 +2117,21 @@ def create_web_app(
                     order.get("order_number"),
                 )
 
+            try:
+                from bot.ukrposhta_tracking import sync_ukrposhta_settlement
+
+                order = (
+                    sync_ukrposhta_settlement(
+                        storage, storage.get_order(order["id"]) or order
+                    )
+                    or order
+                )
+            except Exception:
+                logger.exception(
+                    "ukrposhta settlement after order %s failed",
+                    order.get("order_number"),
+                )
+
         # Дзеркало в Google Sheet «Заказы» (не при hold_pdf)
         try:
             from bot.orders_sheets import sync_order_to_sheet
@@ -2855,6 +2870,20 @@ def create_web_app(
                     saved.get("order_number"),
                 )
             try:
+                from bot.ukrposhta_tracking import sync_ukrposhta_settlement
+
+                saved = (
+                    sync_ukrposhta_settlement(
+                        storage, storage.get_order(order_id) or saved
+                    )
+                    or saved
+                )
+            except Exception:
+                logger.exception(
+                    "ukrposhta settlement on pdf recheck %s failed",
+                    saved.get("order_number"),
+                )
+            try:
                 from bot.orders_sheets import sync_order_to_sheet
 
                 saved = (
@@ -2917,7 +2946,17 @@ def create_web_app(
         ttn_status = str(order.get("ttn_status") or "none")
         saved_ttn_number = ttn_number if own_ttn else str(order.get("ttn_number") or "")
         if own_ttn:
-            ttn_status = "provided"
+            from bot.ukrposhta_tracking import is_ukrposhta_carrier
+
+            new_pdf = bool(pdf_b64)
+            pdf_already_ok = (
+                old_payload.get("ttn_pdf_ok") is True
+                and not old_payload.get("ttn_pdf_hold")
+            )
+            if is_ukrposhta_carrier(carrier) and not new_pdf and pdf_already_ok:
+                ttn_status = "received"
+            else:
+                ttn_status = "provided"
             new_payload["ttn_number"] = ttn_number
         elif order.get("own_ttn") and not own_ttn:
             ttn_status = "pending_create"
@@ -3139,6 +3178,21 @@ def create_web_app(
                     logger.exception(
                         "ttn pdf check on edit %s failed", saved.get("order_number")
                     )
+
+        try:
+            from bot.ukrposhta_tracking import sync_ukrposhta_settlement
+
+            saved = (
+                sync_ukrposhta_settlement(
+                    storage, storage.get_order(order_id) or saved
+                )
+                or saved
+            )
+        except Exception:
+            logger.exception(
+                "ukrposhta settlement on edit %s failed",
+                saved.get("order_number"),
+            )
 
         try:
             from bot.orders_sheets import sync_order_to_sheet
