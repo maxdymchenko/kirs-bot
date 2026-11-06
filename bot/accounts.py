@@ -1881,6 +1881,32 @@ class AppStorage:
             ).fetchall()
         return [self._row_order(r) for r in rows]
 
+    def list_ukrposhta_orders_for_tracking(self, limit: int = 200) -> list[dict[str, Any]]:
+        """Власні ШКІ Укрпошти, включно зі статусом provided (ще не виїхали зі складу)."""
+        limit = max(1, min(int(limit or 200), 300))
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT * FROM orders
+                WHERE ttn_number IS NOT NULL AND ttn_number != ''
+                  AND ttn_status NOT IN (
+                    'received', 'returned', 'refused', 'failed', 'cancelled',
+                    'return_at_warehouse'
+                  )
+                  AND status != 'cancelled'
+                  AND (
+                    lower(payload_json) LIKE '%"own_ttn_carrier": "ukrposhta"%'
+                    OR lower(payload_json) LIKE '%"own_ttn_carrier":"ukrposhta"%'
+                    OR upper(replace(ttn_number, ' ', ''))
+                       GLOB '[A-Z][A-Z][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][A-Z][A-Z]'
+                  )
+                ORDER BY id DESC
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+        return [self._row_order(r) for r in rows]
+
     def list_orders_at_warehouse(self, limit: int = 500) -> list[dict[str, Any]]:
         """Замовлення, що зараз лежать на відділенні (для нагадувань 5/7 день)."""
         limit = max(1, min(int(limit or 500), 1000))

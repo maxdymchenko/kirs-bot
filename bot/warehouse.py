@@ -85,6 +85,10 @@ _LEFT_WAREHOUSE_STATUS = (
     "доставляється",
     "передано до служби",
     "очікує в пункті",
+    "прийняте у відділенні",
+    "надходжен",
+    "відправлено до",
+    "відправлення посилки",
     "видано одержувачу",
     "відправлено",
     "отправлено",
@@ -340,6 +344,13 @@ def _np_ttn_digits(raw: str) -> str:
             return ""
     except Exception:
         pass
+    try:
+        from bot.ukrposhta_tracking import is_s10_barcode
+
+        if is_s10_barcode(text):
+            return ""
+    except Exception:
+        pass
     digits = re.sub(r"\D+", "", text)
     if not _looks_like_np_ttn(text):
         return ""
@@ -365,6 +376,13 @@ def warehouse_delivery_carrier(order: dict[str, Any]) -> str:
 
         if is_rmp_trackable_number(ttn):
             return "rozetka"
+    except Exception:
+        pass
+    try:
+        from bot.ukrposhta_tracking import is_s10_barcode
+
+        if is_s10_barcode(ttn):
+            return "ukrposhta"
     except Exception:
         pass
     own = str(payload.get("own_ttn_carrier") or "").strip().lower().replace("-", "_")
@@ -852,6 +870,8 @@ def _drop_sheet_orders_left_via_np(
 
     ttns: list[str] = []
     for order in orders:
+        if warehouse_delivery_carrier(order) == "ukrposhta":
+            continue
         raw = str(order.get("ttn_number") or "")
         digits = _np_ttn_digits(raw)
         if digits:
@@ -866,6 +886,9 @@ def _drop_sheet_orders_left_via_np(
     kept: list[dict[str, Any]] = []
     left_sheet: list[str] = []
     for order in orders:
+        if warehouse_delivery_carrier(order) == "ukrposhta":
+            kept.append(order)
+            continue
         raw = str(order.get("ttn_number") or "")
         digits = _np_ttn_digits(raw)
         if not digits:
@@ -996,6 +1019,65 @@ def _drop_orders_left_via_rozetka(
     return kept
 
 
+def _drop_orders_left_via_ukrposhta(
+    storage: AppStorage, orders: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """Прибрати Укрпошту, яку вже прийняли або везуть."""
+    from bot.ukrposhta_tracking import (
+        fetch_last_statuses,
+        map_ukrposhta_status,
+        sanitize_ukrposhta_barcode,
+        sheet_event_name,
+    )
+
+    codes: list[str] = []
+    for order in orders:
+        if warehouse_delivery_carrier(order) != "ukrposhta":
+            continue
+        code = sanitize_ukrposhta_barcode(str(order.get("ttn_number") or ""))
+        if code:
+            codes.append(code)
+    if not codes:
+        return orders
+    try:
+        found = fetch_last_statuses(codes)
+    except Exception:
+        logger.exception("warehouse: Ukrposhta live status check failed")
+        return orders
+    if not found:
+        return orders
+    kept: list[dict[str, Any]] = []
+    left_sheet: list[str] = []
+    for order in orders:
+        code = sanitize_ukrposhta_barcode(str(order.get("ttn_number") or ""))
+        event = found.get(code) if code else None
+        if not event:
+            kept.append(order)
+            continue
+        name = sheet_event_name(event)
+        mapped = map_ukrposhta_status(
+            event.get("event"),
+            name,
+            reason_id=event.get("eventReason_id"),
+            reason=str(event.get("eventReason") or ""),
+        )
+        left = mapped in SHIPPED_OR_FINAL_STATUSES or (
+            bool(name) and not _is_sheet_row_still_packing(name)
+        )
+        if left and mapped != "created":
+            if is_sheet_queue_order(order):
+                no = str(order.get("order_number") or "").strip()
+                if no:
+                    left_sheet.append(no)
+            else:
+                _persist_sqlite_left_warehouse(storage, order, mapped or "in_transit")
+            continue
+        kept.append(order)
+    if left_sheet:
+        _mark_sheet_orders_shipped(storage, left_sheet)
+    return kept
+
+
 def list_sheet_warehouse_orders(storage: AppStorage) -> list[dict[str, Any]]:
     """Prom / Rozetka / ручні з листа «Заказы», які ще на складі (1 картка = 1 №)."""
     groups = _load_sheet_market_groups(storage, packing_only=True)
@@ -1109,6 +1191,7 @@ def list_warehouse_queue(
     out = _drop_orders_left_via_sheet_n(storage, out)
     out = _drop_sheet_orders_left_via_np(storage, out)
     out = _drop_orders_left_via_rozetka(storage, out)
+    out = _drop_orders_left_via_ukrposhta(storage, out)
     out.sort(key=_queue_sort_key, reverse=True)
     return out
 

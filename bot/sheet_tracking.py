@@ -1,7 +1,8 @@
 """Модуль відстеження статусів ТТН у Google Sheet «Закази» (10:00 та 21:00 Київ).
 
-Перевіряє всі активні (не фінальні) ТТН у таблиці через API перевізників (Нова Пошта, Розетка)
-і записує актуальний статус доставки безпосередньо у стовпець N («Статус»).
+Перевіряє всі активні (не фінальні) ТТН у таблиці через API перевізників
+(Нова Пошта, Розетка, Укрпошта) і записує актуальний статус доставки
+безпосередньо у стовпець N («Статус»).
 Замовлення зі статусами отримання або відмови повторно не опитуються.
 """
 
@@ -324,9 +325,19 @@ def run_sheet_tracking_sync(storage: AppStorage) -> dict[str, Any]:
         carrier_l = carrier.casefold()
         source_l = source.casefold()
         is_rmp = _is_rozetka_ttn(ttn_raw)
-        is_rozetka_row = is_rmp or any(
-            mark in carrier_l or mark in source_l
-            for mark in ("розет", "rozetka")
+        from bot.ukrposhta_tracking import (
+            is_plausible_ukrposhta_barcode,
+            sanitize_ukrposhta_barcode,
+            sheet_row_is_ukrposhta,
+        )
+
+        is_up_row = sheet_row_is_ukrposhta(carrier, ttn_raw)
+        is_rozetka_row = (not is_up_row) and (
+            is_rmp
+            or any(
+                mark in carrier_l or mark in source_l
+                for mark in ("розет", "rozetka")
+            )
         )
 
         if not ttn_raw and not is_rozetka_row:
@@ -339,7 +350,8 @@ def run_sheet_tracking_sync(storage: AppStorage) -> dict[str, Any]:
             continue
 
         digits_ttn = re.sub(r"\D+", "", ttn_raw)
-        is_np = (not is_rmp) and (
+        up_barcode = sanitize_ukrposhta_barcode(ttn_raw) if is_up_row else ""
+        is_np = (not is_rmp) and (not is_up_row) and (
             _is_np_ttn(ttn_raw)
             or carrier.upper() in {"НП", "НОВА ПОШТА", "NOVA POSHTA"}
         )
@@ -354,9 +366,11 @@ def run_sheet_tracking_sync(storage: AppStorage) -> dict[str, Any]:
                 "carrier": carrier,
                 "ttn_raw": ttn_raw,
                 "digits_ttn": digits_ttn,
+                "up_barcode": up_barcode if is_plausible_ukrposhta_barcode(up_barcode) else "",
                 "current_status": current_status,
                 "is_np": is_np,
                 "is_rozetka": is_rozetka_row,
+                "is_up": is_up_row,
             }
         )
 
@@ -376,6 +390,20 @@ def run_sheet_tracking_sync(storage: AppStorage) -> dict[str, Any]:
         except Exception:
             logger.exception("Rozetka tracking batch failed")
 
+    from bot.ukrposhta_tracking import fetch_last_statuses, sheet_event_name
+
+    up_barcodes = [
+        str(meta.get("up_barcode") or "")
+        for meta in rows_meta
+        if meta.get("is_up") and str(meta.get("up_barcode") or "")
+    ]
+    up_statuses: dict[str, dict[str, Any]] = {}
+    if up_barcodes:
+        try:
+            up_statuses = fetch_last_statuses(up_barcodes)
+        except Exception:
+            logger.exception("Ukrposhta tracking batch failed")
+
     updates: list[dict[str, Any]] = []
     updated_count = 0
     paint_pairs: list[tuple[int, str]] = []
@@ -390,6 +418,9 @@ def run_sheet_tracking_sync(storage: AppStorage) -> dict[str, Any]:
             new_status = str(info.get("status") or "").strip()
         elif meta.get("is_rozetka"):
             new_status = str(rozetka_statuses.get(str(meta.get("order_no") or "")) or "").strip()
+        elif meta.get("is_up"):
+            event = up_statuses.get(str(meta.get("up_barcode") or ""))
+            new_status = sheet_event_name(event)
 
         if new_status and new_status != current_status:
             updates.append({"range": f"N{row_num}", "values": [[new_status]]})
@@ -431,5 +462,6 @@ def run_sheet_tracking_sync(storage: AppStorage) -> dict[str, Any]:
         "skipped_terminal": skipped_terminal,
         "np_tracked": len(np_statuses),
         "rozetka_tracked": len(rozetka_statuses),
+        "ukrposhta_tracked": len(up_statuses),
         "updated_statuses": updated_count,
     }

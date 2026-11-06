@@ -1124,6 +1124,13 @@ textarea {
   margin-bottom: 14px;
 }
 
+.ukrposhta-notice {
+  background: #fff6e5;
+  color: #6b4a12;
+  border: 1px solid #f0d7a2;
+  margin-top: 10px;
+}
+
 .field {
   display: block;
   margin-bottom: 12px;

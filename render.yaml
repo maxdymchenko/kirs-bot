@@ -42,6 +42,8 @@ services:
         sync: false
       - key: NOVA_POSHTA_API_KEY
         sync: false
+      - key: UKRPOSHTA_STATUS_BEARER
+        sync: false
       - key: ORDERS_EXT_TOKEN
         sync: false
       - key: ROZETKA_API_TOKEN

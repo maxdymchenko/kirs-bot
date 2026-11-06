@@ -264,6 +264,10 @@ def sheet_carrier_label(order: dict[str, Any]) -> str:
     payload = order.get("payload") or {}
     if order.get("own_ttn") or payload.get("own_ttn"):
         carrier = str(payload.get("own_ttn_carrier") or "").strip().lower()
+        from bot.ukrposhta_tracking import is_ukrposhta_carrier
+
+        if is_ukrposhta_carrier(carrier):
+            return "Укрпошта"
         if carrier == "rozetka":
             return "Rozetka"
     return "НП"
@@ -1401,6 +1405,10 @@ _STATUS_N_GREEN_MARKERS = (
     "получен",
     "виконан",
     "вручен",
+    "прийняте у відділенні",
+    "надходжен",
+    "відправлено до",
+    "відправлення посилки",
 )
 
 

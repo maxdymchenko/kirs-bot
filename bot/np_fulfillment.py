@@ -26,6 +26,7 @@ from bot.rmp_tracking import (
     order_rmp_trackable,
     tracking_row_from_rmp,
 )
+from bot.ukrposhta_tracking import order_ukrposhta_trackable
 
 logger = logging.getLogger(__name__)
 
@@ -74,6 +75,13 @@ def is_np_trackable_number(raw: str) -> bool:
     text = str(raw or "").strip().upper()
     if not text:
         return False
+    try:
+        from bot.ukrposhta_tracking import is_s10_barcode
+
+        if is_s10_barcode(text):
+            return False
+    except Exception:
+        pass
     try:
         from bot.ttn_pdf_verify import looks_like_rozetka_ttn
 
@@ -909,20 +917,32 @@ async def apply_tracking_event(
         "mapped": "",
         "order": order,
     }
-    is_rmp = order_rmp_trackable(order)
-    is_np = order_np_trackable(order)
-    if not order or not (is_np or is_rmp):
+    is_up = order_ukrposhta_trackable(order)
+    is_rmp = (not is_up) and order_rmp_trackable(order)
+    is_np = (not is_up) and (not is_rmp) and order_np_trackable(order)
+    if not order or not (is_np or is_rmp or is_up):
         return result
     payload_guard = order.get("payload") if isinstance(order.get("payload"), dict) else {}
     if str(order.get("status") or "") == "cancelled" or payload_guard.get("owner_deleted"):
         return result
 
-    mapped = (
-        map_rmp_status(status_code, status_text)
-        if is_rmp
-        else map_np_status_code(status_code, status_text)
-    )
-    source_label = "Rozetka Delivery" if is_rmp else "Нова Пошта"
+    if is_up:
+        from bot.ukrposhta_tracking import map_ukrposhta_status
+
+        row = tracking_row if isinstance(tracking_row, dict) else {}
+        mapped = map_ukrposhta_status(
+            status_code,
+            status_text,
+            reason_id=row.get("eventReason_id"),
+            reason=str(row.get("eventReason") or ""),
+        )
+        source_label = "Укрпошта"
+    elif is_rmp:
+        mapped = map_rmp_status(status_code, status_text)
+        source_label = "Rozetka Delivery"
+    else:
+        mapped = map_np_status_code(status_code, status_text)
+        source_label = "Нова Пошта"
     prev = str(order.get("ttn_status") or "")
     payload_prev = order.get("payload") or {}
     ever_received = bool(
@@ -932,7 +952,7 @@ async def apply_tracking_event(
         or payload_prev.get("goods_debited")
     )
     ret_prev = payload_prev.get("dropper_return")
-    is_redirect = (not is_rmp) and (
+    is_redirect = is_np and (
         np_tracking_is_redirect(tracking_row)
         or np_payload_looks_like_redirect(payload_prev)
     )
@@ -1368,6 +1388,51 @@ async def _track_rmp_orders_async(
         )
 
 
+async def _track_ukrposhta_orders_async(
+    storage: AppStorage,
+    stats: dict[str, int],
+    notify: NotifyFn | None,
+    owner_notify: OwnerNotifyFn | None,
+) -> None:
+    from bot.ukrposhta_tracking import (
+        fetch_last_statuses,
+        order_ukrposhta_trackable,
+        sanitize_ukrposhta_barcode,
+        sheet_event_name,
+    )
+
+    pending = storage.list_ukrposhta_orders_for_tracking(limit=200)
+    by_code: dict[str, dict[str, Any]] = {}
+    for order in pending:
+        if not order_ukrposhta_trackable(order):
+            continue
+        code = sanitize_ukrposhta_barcode(str(order.get("ttn_number") or ""))
+        if code:
+            by_code.setdefault(code, order)
+    if not by_code:
+        return
+    try:
+        found = fetch_last_statuses(list(by_code))
+    except Exception:
+        stats["errors"] += 1
+        logger.exception("Ukrposhta tracking batch failed")
+        return
+    for code, event in found.items():
+        order = by_code.get(code)
+        if not order or not isinstance(event, dict):
+            continue
+        await _apply_track_result(
+            storage,
+            order,
+            stats,
+            status_code=event.get("event"),
+            status_text=sheet_event_name(event),
+            tracking_row=event,
+            notify=notify,
+            owner_notify=owner_notify,
+        )
+
+
 async def track_order_statuses_async(
     storage: AppStorage,
     notify: NotifyFn | None = None,
@@ -1436,6 +1501,7 @@ async def track_order_statuses_async(
     await _track_rmp_orders_async(
         storage, orders, stats, notify, owner_notify
     )
+    await _track_ukrposhta_orders_async(storage, stats, notify, owner_notify)
     return stats
 
 

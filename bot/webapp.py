@@ -33,6 +33,31 @@ def _norm_tg_username(raw: str) -> str:
     return value.strip()
 
 
+def _own_ttn_carrier_and_number(carrier_raw: str, ttn_raw: str) -> tuple[str, str]:
+    """Канонічний перевізник і номер власної ТТН. ValueError — текст для дроппера."""
+    from bot.ukrposhta_tracking import is_ukrposhta_carrier, take_ukrposhta_number
+
+    carrier = str(carrier_raw or "nova_poshta").strip().lower()
+    if is_ukrposhta_carrier(carrier):
+        return "ukrposhta", take_ukrposhta_number(ttn_raw)
+    if carrier == "rozetka":
+        from bot.ttn_pdf_verify import (
+            is_plausible_rozetka_waybill,
+            sanitize_rozetka_waybill,
+        )
+
+        rmp = sanitize_rozetka_waybill(ttn_raw)
+        if not is_plausible_rozetka_waybill(rmp):
+            raise ValueError(
+                "Вкажіть номер Розетки як на етикетці (RMP-…, PRM-…, 723-…)"
+            )
+        return "rozetka", rmp
+    ttn = re.sub(r"\D", "", str(ttn_raw or ""))
+    if len(ttn) < 10:
+        raise ValueError("Вкажіть повний номер ТТН")
+    return "nova_poshta", ttn
+
+
 async def _resolve_telegram_staff_identity(
     settings: Settings, raw: str
 ) -> tuple[str, str]:
@@ -1661,27 +1686,13 @@ def create_web_app(
                     status_code=400,
                     detail="При власній ТТН доступна оплата на реквізити або з балансу",
                 )
-            carrier = (payload.own_ttn_carrier or "nova_poshta").strip().lower()
-            raw_ttn = str(payload.ttn_number or "").strip()
-            if carrier == "rozetka":
-                from bot.ttn_pdf_verify import (
-                    is_plausible_rozetka_waybill,
-                    sanitize_rozetka_waybill,
+            try:
+                _own_ttn_carrier_and_number(
+                    payload.own_ttn_carrier or "nova_poshta",
+                    payload.ttn_number or "",
                 )
-
-                rmp = sanitize_rozetka_waybill(raw_ttn)
-                if not is_plausible_rozetka_waybill(rmp):
-                    raise HTTPException(
-                        status_code=400,
-                        detail=(
-                            "Вкажіть номер Розетки як на етикетці "
-                            "(RMP-…, PRM-…, 723-…)"
-                        ),
-                    )
-            else:
-                ttn = re.sub(r"\D", "", raw_ttn)
-                if len(ttn) < 10:
-                    raise HTTPException(status_code=400, detail="Вкажіть повний номер ТТН")
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
             if not for_owner_edit:
                 if not str(payload.ttn_pdf_name or "").strip():
                     raise HTTPException(
@@ -1812,6 +1823,8 @@ def create_web_app(
             carrier = ((order.get("payload") or {}).get("own_ttn_carrier") or "").strip()
             if carrier == "rozetka":
                 lines.append(f"Ваш RMP: {order.get('ttn_number')}")
+            elif carrier == "ukrposhta":
+                lines.append(f"Ваш ШКІ Укрпошти: {order.get('ttn_number')}")
             else:
                 lines.append(f"Ваша ТТН: {order.get('ttn_number')}")
         elif order.get("ttn_number"):
@@ -1839,14 +1852,16 @@ def create_web_app(
         total, prepay, debit, cod_amount = _validate_order_payload(payload, dropper)
 
         own_ttn = bool(payload.own_ttn)
-        carrier = (payload.own_ttn_carrier or "nova_poshta").strip().lower() if own_ttn else ""
-        if own_ttn and carrier == "rozetka":
-            from bot.ttn_pdf_verify import sanitize_rozetka_waybill
-
-            ttn_number = sanitize_rozetka_waybill(payload.ttn_number or "")
-        elif own_ttn:
-            ttn_number = re.sub(r"\D", "", payload.ttn_number or "")
+        if own_ttn:
+            try:
+                carrier, ttn_number = _own_ttn_carrier_and_number(
+                    payload.own_ttn_carrier or "nova_poshta",
+                    payload.ttn_number or "",
+                )
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
         else:
+            carrier = ""
             ttn_number = ""
         if own_ttn:
             ttn_status = "provided"
@@ -2618,18 +2633,16 @@ def create_web_app(
             )
 
         own_ttn = bool(validate_payload.own_ttn)
-        carrier = (
-            (validate_payload.own_ttn_carrier or "nova_poshta").strip().lower()
-            if own_ttn
-            else ""
-        )
-        if own_ttn and carrier == "rozetka":
-            from bot.ttn_pdf_verify import sanitize_rozetka_waybill
-
-            ttn_number = sanitize_rozetka_waybill(validate_payload.ttn_number or "")
-        elif own_ttn:
-            ttn_number = re.sub(r"\D", "", validate_payload.ttn_number or "")
+        if own_ttn:
+            try:
+                carrier, ttn_number = _own_ttn_carrier_and_number(
+                    validate_payload.own_ttn_carrier or "nova_poshta",
+                    validate_payload.ttn_number or "",
+                )
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
         else:
+            carrier = ""
             ttn_number = str(order.get("ttn_number") or "").strip()
 
         safe_cart = []

@@ -130,6 +130,16 @@ def _normalize_rozetka_waybill(value: str) -> str:
 def normalize_waybill(value: str, carrier: str = "") -> str:
     raw = str(value or "").strip()
     carrier = str(carrier or "").strip().lower()
+    from bot.ukrposhta_tracking import (
+        is_s10_barcode,
+        is_ukrposhta_carrier,
+        sanitize_ukrposhta_barcode,
+    )
+
+    if is_ukrposhta_carrier(carrier) or (
+        is_s10_barcode(raw) and carrier not in {"rozetka", "nova_poshta", "np"}
+    ):
+        return sanitize_ukrposhta_barcode(raw)
     if carrier == "rozetka" or looks_like_rozetka_ttn(raw):
         return sanitize_rozetka_waybill(raw)
     digits = _digits_only(raw)
@@ -450,6 +460,46 @@ def verify_ttn_pdf(
             ),
         }
 
+    from bot.ukrposhta_tracking import (
+        is_plausible_ukrposhta_barcode,
+        is_s10_barcode,
+        is_ukrposhta_carrier,
+        sanitize_ukrposhta_barcode,
+    )
+
+    if is_ukrposhta_carrier(carrier_l) or (
+        is_s10_barcode(typed_raw) and carrier_l not in {"nova_poshta", "np"}
+    ):
+        expected = sanitize_ukrposhta_barcode(typed_raw)
+        if not is_plausible_ukrposhta_barcode(expected):
+            return {
+                "ok": False,
+                "expected": expected,
+                "found": [],
+                "message": (
+                    "Вкажіть ШКІ Укрпошти: 13 цифр або міжнародний номер "
+                    "на кшталт RA123456785UA"
+                ),
+            }
+        if pdf_contains_exact_waybill(pdf_bytes, expected, filename=filename):
+            return {
+                "ok": True,
+                "expected": expected,
+                "found": [expected],
+                "official": "",
+                "message": "OK",
+            }
+        return {
+            "ok": False,
+            "expected": expected,
+            "found": [],
+            "official": "",
+            "message": (
+                f"Номер у замовленні ({expected}) не знайдено в PDF. "
+                "Кожна літера й цифра має збігатися з етикеткою."
+            ),
+        }
+
     typed = _digits_only(ttn_number)
     if len(typed) < 13:
         return {
@@ -701,7 +751,9 @@ def fill_own_ttn_recipient(
 
     full = ""
     carrier = str(payload.get("own_ttn_carrier") or "").strip().lower()
-    if carrier != "rozetka":
+    from bot.ukrposhta_tracking import is_ukrposhta_carrier
+
+    if carrier != "rozetka" and not is_ukrposhta_carrier(carrier):
         try:
             from bot.sheet_tracking import lookup_ttn_details
 

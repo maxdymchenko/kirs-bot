@@ -230,8 +230,11 @@
     ttnFields: document.getElementById("ttnFields"),
     ttnNpBlock: document.getElementById("ttnNpBlock"),
     ttnRmpBlock: document.getElementById("ttnRmpBlock"),
+    ttnUpBlock: document.getElementById("ttnUpBlock"),
+    ukrposhtaNotice: document.getElementById("ukrposhtaNotice"),
     ttnNumber: document.getElementById("ttnNumber"),
     rmpNumber: document.getElementById("rmpNumber"),
+    upNumber: document.getElementById("upNumber"),
     recipientNameFields: document.getElementById("recipientNameFields"),
     deliverySection: document.getElementById("deliverySection"),
     phoneFieldLabel: document.getElementById("phoneFieldLabel"),
@@ -1267,6 +1270,18 @@
     return digits.length >= 6 && digits.length <= 20 && alnum.length >= 6 && alnum.length <= 28;
   }
 
+  function sanitizeUkrposhtaBarcode(raw) {
+    return String(raw || "")
+      .trim()
+      .toUpperCase()
+      .replace(/[^A-Z0-9]/g, "");
+  }
+
+  function isPlausibleUkrposhtaBarcode(raw) {
+    const text = sanitizeUkrposhtaBarcode(raw);
+    return /^\d{13}$/.test(text) || /^[A-Z]{2}\d{9}[A-Z]{2}$/.test(text);
+  }
+
   function syncOwnTtnCarrierUi() {
     const ownTtn = Boolean(els.ownTtn?.checked);
     if (els.ttnFields) els.ttnFields.classList.toggle("hidden", !ownTtn);
@@ -1275,11 +1290,17 @@
     if (els.phoneFieldLabel) {
       els.phoneFieldLabel.textContent = ownTtn ? "Номер телефону клієнта" : "Телефон";
     }
-    if (!ownTtn) return;
+    if (!ownTtn) {
+      if (els.ukrposhtaNotice) els.ukrposhtaNotice.classList.add("hidden");
+      return;
+    }
     const carrier = selectedOwnTtnCarrier();
-    const isNp = carrier === "nova_poshta";
-    if (els.ttnNpBlock) els.ttnNpBlock.classList.toggle("hidden", !isNp);
-    if (els.ttnRmpBlock) els.ttnRmpBlock.classList.toggle("hidden", isNp);
+    if (els.ttnNpBlock) els.ttnNpBlock.classList.toggle("hidden", carrier !== "nova_poshta");
+    if (els.ttnRmpBlock) els.ttnRmpBlock.classList.toggle("hidden", carrier !== "rozetka");
+    if (els.ttnUpBlock) els.ttnUpBlock.classList.toggle("hidden", carrier !== "ukrposhta");
+    if (els.ukrposhtaNotice) {
+      els.ukrposhtaNotice.classList.toggle("hidden", carrier !== "ukrposhta");
+    }
   }
 
   function syncPaymentAndTtn() {
@@ -1634,10 +1655,13 @@
       form.querySelector('input[name="paymentMethod"]:checked')?.value || "";
     const ttnPdfFile = els.ttnPdf?.files?.[0] || null;
     const receiptFile = els.receiptPdf?.files?.[0] || null;
+    const ownCarrierNow = selectedOwnTtnCarrier();
     const ownTtnNumber =
-      selectedOwnTtnCarrier() === "rozetka"
+      ownCarrierNow === "rozetka"
         ? sanitizeRozetkaWaybill(form.rmpNumber?.value || "")
-        : (form.ttnNumber?.value || "").replace(/\D/g, "");
+        : ownCarrierNow === "ukrposhta"
+          ? sanitizeUkrposhtaBarcode(form.upNumber?.value || "")
+          : (form.ttnNumber?.value || "").replace(/\D/g, "");
     return {
       firstName: form.firstName.value.trim(),
       patronymic: form.patronymic.value.trim(),
@@ -1725,6 +1749,13 @@
         data.rmpNumber = rmp;
         data.ttnNumber = rmp;
         data.ownTtnCarrier = "rozetka";
+      } else if (carrier === "ukrposhta") {
+        const up = sanitizeUkrposhtaBarcode(data.ttnNumber || "");
+        if (!isPlausibleUkrposhtaBarcode(up)) {
+          return "Вкажіть ШКІ Укрпошти: 13 цифр або міжнародний номер на кшталт RA123456785UA";
+        }
+        data.ttnNumber = up;
+        data.ownTtnCarrier = "ukrposhta";
       } else {
         if (!data.ttnNumber) return "Вкажіть номер ТТН";
         if (!/^\d+$/.test(data.ttnNumber)) {
@@ -2012,7 +2043,9 @@ ${escapeHtml(deliveryExtra)}</div>
     const ttnLine = data.ownTtn
       ? data.ownTtnCarrier === "rozetka"
         ? `Власна ТТН Розетки: ${escapeHtml(data.ttnNumber || data.rmpNumber || "")}`
-        : `Власна ТТН НП: ${escapeHtml(data.ttnNumber || "")}`
+        : data.ownTtnCarrier === "ukrposhta"
+          ? `Власна ТТН Укрпошти: ${escapeHtml(data.ttnNumber || "")}`
+          : `Власна ТТН НП: ${escapeHtml(data.ttnNumber || "")}`
       : "ТТН: створиться пізніше (НП)";
     els.confirmSummary.innerHTML = `
       ${recipientBlock}
@@ -2991,7 +3024,9 @@ ${
   ownTtn
     ? ownCarrier === "rozetka"
       ? `Власний RMP: ${escapeHtml(order.ttn_number || payload.ttn_number || "")}`
-      : `Власна ТТН НП: ${escapeHtml(order.ttn_number || payload.ttn_number || "")}`
+      : ownCarrier === "ukrposhta"
+        ? `Власна ТТН Укрпошти: ${escapeHtml(order.ttn_number || payload.ttn_number || "")}`
+        : `Власна ТТН НП: ${escapeHtml(order.ttn_number || payload.ttn_number || "")}`
     : escapeHtml(ttnStatusLabel(order))
 }</div>
         </div>
@@ -3822,8 +3857,20 @@ ${
               <option value="rozetka" ${
                 payload.own_ttn_carrier === "rozetka" ? "selected" : ""
               }>Rozetka</option>
+              <option value="ukrposhta" ${
+                payload.own_ttn_carrier === "ukrposhta" ? "selected" : ""
+              }>Укрпошта</option>
             </select>
           </label>
+          <div
+            class="info-box ukrposhta-notice${
+              payload.own_ttn_carrier === "ukrposhta" ? "" : " hidden"
+            }"
+            data-edit-up-notice
+            style="grid-column:1/-1"
+          >
+            <strong>Увага!</strong> Укрпоштою працюємо тільки на відправку посилок. Повернення посилки Укрпоштою не передбачено. Щоб повернути посилку Укрпоштою - клієнт повинен отримати посилку і відправити обратно Новою Поштою. Будь ласка, враховуйте це. Подаючи замовлення Укрпоштою Ви автоматично приймаєте цю умову.
+          </div>
           <div class="field compact-field" data-edit-own-ttn-wrap data-edit-ttn-pdf-wrap style="grid-column:1/-1">
             <span class="field-label">Файл PDF 100×100</span>
             <label class="file-picker">
@@ -3982,6 +4029,12 @@ ${
     const apt = form.apartment?.closest(".field");
     if (house) house.classList.toggle("hidden", !isCourier || isOwn);
     if (apt) apt.classList.toggle("hidden", !isCourier || isOwn);
+    const upNotice = form.querySelector("[data-edit-up-notice]");
+    if (upNotice) {
+      const showUp =
+        isOwn && (form.own_ttn_carrier?.value || "") === "ukrposhta";
+      upNotice.classList.toggle("hidden", !showUp);
+    }
   }
 
   function bindOrderEditReceiptPicker(form) {
@@ -4368,6 +4421,7 @@ ${
     });
 
     form.delivery_method?.addEventListener("change", () => syncOrderEditDeliveryFields(form));
+    form.own_ttn_carrier?.addEventListener("change", () => syncOrderEditDeliveryFields(form));
     syncOrderEditDeliveryFields(form);
   }
 
@@ -5227,6 +5281,8 @@ ${
   function orderDeliveryCarrier(order) {
     const payload = order.payload || {};
     const ttn = String(order.ttn_number || payload.ttn_number || "").trim();
+    const compactTtn = ttn.replace(/\s+/g, "").toUpperCase();
+    if (/^[A-Z]{2}\d{9}[A-Z]{2}$/.test(compactTtn)) return "ukrposhta";
     if (/^(RMP-|PRM-)/i.test(ttn) || /^\d{2,4}-\d{5,}/.test(ttn)) return "rozetka";
     const own = String(payload.own_ttn_carrier || "")
       .trim()
