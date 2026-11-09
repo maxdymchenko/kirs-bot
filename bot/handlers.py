@@ -586,20 +586,42 @@ def _webapp_url_with_context(
     )
 
 
-def _webapp_button(
-    text: str,
+def _menu_link(
     webapp_url: str,
-    chat_type: str,
+    *,
     chat_id: int | str | None = None,
     user_id: int | str | None = None,
     view: str | None = None,
+) -> str:
+    return _webapp_url_with_context(
+        webapp_url, chat_id=chat_id, user_id=user_id, view=view
+    )
+
+
+def _webapp_button_from_url(
+    text: str, url: str, chat_type: str
 ) -> InlineKeyboardButton:
-    # У private чатах Telegram відкриває справжній Mini App (є initData).
-    url = _webapp_url_with_context(webapp_url, chat_id=chat_id, user_id=user_id, view=view)
-    if chat_type == "private":
+    # У private — Mini App. У групі web_app заборонений, лише url.
+    if str(chat_type or "") == "private":
         return InlineKeyboardButton(text=text, web_app=WebAppInfo(url=url))
-    # У групах web_app-кнопки заборонені → звичайне посилання з chat_id/user_id.
     return InlineKeyboardButton(text=text, url=url)
+
+
+def _inline_from_links(
+    links: list[tuple[str, str]], chat_type: str
+) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [[_webapp_button_from_url(label, url, chat_type)] for label, url in links]
+    )
+
+
+def _html_open_links(text: str, links: list[tuple[str, str]]) -> str:
+    lines = [html.escape(text), ""]
+    for label, url in links:
+        lines.append(
+            f'👉 <a href="{html.escape(url, quote=True)}">{html.escape(label)}</a>'
+        )
+    return "\n".join(lines)
 
 
 async def _reply_menu_and_inline(
@@ -607,16 +629,44 @@ async def _reply_menu_and_inline(
     *,
     text: str,
     reply_kb: ReplyKeyboardMarkup,
-    inline: InlineKeyboardMarkup | None = None,
-    parse_mode: str | None = None,
+    chat_type: str,
+    links: list[tuple[str, str]],
 ) -> None:
-    """Спочатку reply-клавіатура, потім (за потреби) inline-кнопки Mini App."""
-    kwargs: dict = {"reply_markup": reply_kb}
+    """Reply-клавіатура + відкриття Mini App.
+
+    У групі Telegram часто не показує кнопку «Відкрити» (web_app / url Mini App).
+    Тому в групі посилання дублюємо синім текстом — його можна натиснути завжди.
+    """
+    is_private = str(chat_type or "") == "private"
+    body = text
+    parse_mode: str | None = None
+    if not is_private and links:
+        body = _html_open_links(text, links)
+        parse_mode = ParseMode.HTML
+    kwargs: dict = {
+        "reply_markup": reply_kb,
+        "disable_web_page_preview": True,
+    }
     if parse_mode:
         kwargs["parse_mode"] = parse_mode
-    await message.reply_text(text, **kwargs)
-    if inline is not None:
-        await message.reply_text("Відкрити:", reply_markup=inline)
+    await message.reply_text(body, **kwargs)
+    if not links:
+        return
+    try:
+        await message.reply_text(
+            "Відкрити:",
+            reply_markup=_inline_from_links(links, chat_type),
+            disable_web_page_preview=True,
+        )
+    except Exception:
+        logger.exception("кнопки Відкрити не надіслано chat_type=%s", chat_type)
+        if is_private:
+            await message.reply_text(
+                _html_open_links("Відкрити:", links),
+                parse_mode=ParseMode.HTML,
+                disable_web_page_preview=True,
+                reply_markup=reply_kb,
+            )
 
 
 async def chat_id_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -800,25 +850,18 @@ async def dropper_quick_view(
         )
         return
 
-    inline = InlineKeyboardMarkup(
-        [
-            [
-                _webapp_button(
-                    title,
-                    webapp_url,
-                    chat_type,
-                    chat_id=chat_id,
-                    user_id=user_id,
-                    view=view,
-                )
-            ]
-        ]
-    )
+    links = [
+        (
+            title,
+            _menu_link(webapp_url, chat_id=chat_id, user_id=user_id, view=view),
+        )
+    ]
     await _reply_menu_and_inline(
         update.message,
         text=f"{title}:",
         reply_kb=reply_kb,
-        inline=inline,
+        chat_type=chat_type,
+        links=links,
     )
 
 
@@ -857,46 +900,34 @@ async def order_menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
         return
 
     if role == "owner":
-        inline = InlineKeyboardMarkup(
-            [
-                [
-                    _webapp_button(
-                        "Кабінет власника",
-                        webapp_url,
-                        chat_type,
-                        chat_id=chat_id,
-                        user_id=user_id,
-                    )
-                ],
-            ]
-        )
+        links = [
+            (
+                "Кабінет власника",
+                _menu_link(webapp_url, chat_id=chat_id, user_id=user_id),
+            )
+        ]
         await _reply_menu_and_inline(
             update.message,
             text="Меню власника:\n\nКерування дропперами та співробітниками.",
             reply_kb=reply_kb,
-            inline=inline,
+            chat_type=chat_type,
+            links=links,
         )
         return
 
     if role == "warehouse":
-        inline = InlineKeyboardMarkup(
-            [
-                [
-                    _webapp_button(
-                        "Кабінет комірника",
-                        webapp_url,
-                        chat_type,
-                        chat_id=chat_id,
-                        user_id=user_id,
-                    )
-                ]
-            ]
-        )
+        links = [
+            (
+                "Кабінет комірника",
+                _menu_link(webapp_url, chat_id=chat_id, user_id=user_id),
+            )
+        ]
         await _reply_menu_and_inline(
             update.message,
             text="Меню комірника:\n\nКаталог, пакування та друк накладних.",
             reply_kb=reply_kb,
-            inline=inline,
+            chat_type=chat_type,
+            links=links,
         )
         return
 
@@ -908,44 +939,30 @@ async def order_menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
         return
 
     if role == "dropper":
-        inline = InlineKeyboardMarkup(
-            [
-                [
-                    _webapp_button(
-                        "Зробити замовлення",
-                        webapp_url,
-                        chat_type,
-                        chat_id=chat_id,
-                        user_id=user_id,
-                    )
-                ],
-                [
-                    _webapp_button(
-                        "Мій баланс",
-                        webapp_url,
-                        chat_type,
-                        chat_id=chat_id,
-                        user_id=user_id,
-                        view="balance",
-                    )
-                ],
-                [
-                    _webapp_button(
-                        "Історія замовлень",
-                        webapp_url,
-                        chat_type,
-                        chat_id=chat_id,
-                        user_id=user_id,
-                        view="history",
-                    )
-                ],
-            ]
-        )
+        links = [
+            (
+                "Зробити замовлення",
+                _menu_link(webapp_url, chat_id=chat_id, user_id=user_id),
+            ),
+            (
+                "Мій баланс",
+                _menu_link(
+                    webapp_url, chat_id=chat_id, user_id=user_id, view="balance"
+                ),
+            ),
+            (
+                "Історія замовлень",
+                _menu_link(
+                    webapp_url, chat_id=chat_id, user_id=user_id, view="history"
+                ),
+            ),
+        ]
         await _reply_menu_and_inline(
             update.message,
             text="Меню:",
             reply_kb=reply_kb,
-            inline=inline,
+            chat_type=chat_type,
+            links=links,
         )
         return
 
@@ -958,27 +975,21 @@ async def order_menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
         return
 
     if need_registration:
-        inline = InlineKeyboardMarkup(
-            [
-                [
-                    _webapp_button(
-                        "Зареєструвати дроппера",
-                        webapp_url,
-                        chat_type,
-                        chat_id=chat_id,
-                        user_id=user_id,
-                    )
-                ]
-            ]
-        )
+        links = [
+            (
+                "Зареєструвати дроппера",
+                _menu_link(webapp_url, chat_id=chat_id, user_id=user_id),
+            )
+        ]
         await _reply_menu_and_inline(
             update.message,
             text=(
                 "Цю групу ще не зареєстровано як дроппера.\n"
-                "Натисніть кнопку нижче, щоб пройти реєстрацію один раз."
+                "Натисніть посилання нижче, щоб пройти реєстрацію один раз."
             ),
             reply_kb=reply_kb,
-            inline=inline,
+            chat_type=chat_type,
+            links=links,
         )
         return
 
