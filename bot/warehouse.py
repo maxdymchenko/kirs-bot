@@ -825,6 +825,9 @@ def _persist_sqlite_left_warehouse(
         return
     status = mapped if mapped in SHIPPED_OR_FINAL_STATUSES else "in_transit"
     prev = str(order.get("ttn_status") or "").strip()
+    payload = order.get("payload") if isinstance(order.get("payload"), dict) else {}
+    if payload.get("owner_marked_received") and prev == "received":
+        return
     if prev == status:
         return
     try:

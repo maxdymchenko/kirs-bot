@@ -2893,7 +2893,17 @@ ${ttnLine}</div>
       ownerManage && oid && !payload.owner_deleted && !payload.sheet_order;
     const canRestore = ownerManage && oid && payload.owner_deleted;
     const canEdit = Boolean(options.editable) && !payload.owner_deleted && oid;
-    if (!canDelete && !canRestore && !canEdit) return "";
+    const ttnNow = String(order.ttn_status || "");
+    const retOpen = payload.dropper_return;
+    const canMarkReceived =
+      ownerManage &&
+      oid &&
+      !payload.owner_deleted &&
+      !payload.sheet_order &&
+      String(order.status || "") !== "cancelled" &&
+      (ttnNow === "in_transit" || ttnNow === "at_warehouse") &&
+      !(retOpen && typeof retOpen === "object" && retOpen.status);
+    if (!canDelete && !canRestore && !canEdit && !canMarkReceived) return "";
     const id = escapeHtml(String(order.id || ""));
     if (canRestore) {
       return `
@@ -2915,6 +2925,11 @@ ${ttnLine}</div>
               ? `<button type="button" class="btn primary" data-order-edit-open="${id}" data-order-edit-mode="${escapeHtml(
                   options.editMode || "owner"
                 )}">Редагувати</button>`
+              : ""
+          }
+          ${
+            canMarkReceived
+              ? `<button type="button" class="btn secondary" data-order-owner-received="${id}">Отримано</button>`
               : ""
           }
           ${
@@ -3600,7 +3615,7 @@ ${
         return;
       }
       if (event.target.closest(
-        "[data-order-edit-open], [data-order-edit-panel], .order-edit-panel, [data-order-cancel], [data-order-owner-delete], [data-order-owner-restore], [data-order-correction-request], [data-correction-text], [data-order-return-open], [data-order-return-form], .order-return-form, [data-order-return-submit], [data-order-return-cancel], [data-return-ttn], [data-return-error], [data-archive-pick], [data-archive-bar], .order-card-pick, [data-ttn-pdf-override], [data-ttn-pdf-open], .order-pdf-hold"
+        "[data-order-edit-open], [data-order-edit-panel], .order-edit-panel, [data-order-cancel], [data-order-owner-delete], [data-order-owner-restore], [data-order-owner-received], [data-order-correction-request], [data-correction-text], [data-order-return-open], [data-order-return-form], .order-return-form, [data-order-return-submit], [data-order-return-cancel], [data-return-ttn], [data-return-error], [data-archive-pick], [data-archive-bar], .order-card-pick, [data-ttn-pdf-override], [data-ttn-pdf-open], .order-pdf-hold"
       )) {
         return;
       }
@@ -4740,6 +4755,13 @@ ${
       if (orderId) ownerDeleteOrder(orderId);
       return;
     }
+    const ownerReceivedBtn = event.target.closest("[data-order-owner-received]");
+    if (ownerReceivedBtn) {
+      event.preventDefault();
+      const orderId = ownerReceivedBtn.getAttribute("data-order-owner-received");
+      if (orderId) ownerMarkClientReceived(orderId);
+      return;
+    }
     const ownerRestoreBtn = event.target.closest("[data-order-owner-restore]");
     if (ownerRestoreBtn) {
       event.preventDefault();
@@ -4825,6 +4847,37 @@ ${
     if (els.historyBuckets) {
       syncHistoryBucketTabs();
       paintOrdersHistoryList();
+    }
+  }
+
+  async function ownerMarkClientReceived(orderId) {
+    if (
+      !window.confirm(
+        "Позначити замовлення отриманим? Воно перейде у вкладку «Отримано», з балансу дроппера спишеться дроп-ціна, рефералу нарахується відсоток."
+      )
+    ) {
+      return;
+    }
+    try {
+      const response = await fetch(
+        `/api/owner/orders/${encodeURIComponent(orderId)}/mark-client-received`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(ownerAuthBody()),
+        }
+      );
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(
+          typeof data.detail === "string" ? data.detail : "Помилка"
+        );
+      }
+      const order = data.order;
+      showToast("Замовлення в «Отримано»");
+      refreshOrdersAfterOwnerAction(order, order?.chat_id || "");
+    } catch (error) {
+      showToast(error.message || "Помилка");
     }
   }
 

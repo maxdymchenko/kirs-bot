@@ -993,6 +993,13 @@ async def apply_tracking_event(
         payload_prev = order.get("payload") or {}
         result["order"] = order
 
+    # Власник уже позначив «Отримано». Відсталий трекінг («в дорозі») не
+    # повертає статус і не проводить гроші вдруге. Відмова/повернення лишаються.
+    if payload_prev.get("owner_marked_received") and prev == "received":
+        if mapped not in {"received", "returned", "refused", "return_at_warehouse"}:
+            result["mapped"] = "received"
+            return result
+
     patch = {
         "np_status_code": str(status_code or ""),
         "np_status_text": str(status_text or "").strip(),

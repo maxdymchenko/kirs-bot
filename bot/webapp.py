@@ -3356,6 +3356,124 @@ def create_web_app(
         items = enrich_orders_with_changes(storage, [saved or order])
         return {"ok": True, "restored": True, "order": items[0] if items else saved}
 
+    @app.post("/api/owner/orders/{order_id}/mark-client-received")
+    async def owner_mark_client_received(
+        order_id: int,
+        payload: OwnerOrderDeleteRequest,
+    ) -> dict:
+        """Власник вручну переводить посилку з «В дорозі» в «Отримано»."""
+        from datetime import datetime
+
+        from bot.balance_settle import settle_order_on_received
+        from bot.np_fulfillment import _maybe_eval_buyout
+        from bot.order_edit import enrich_orders_with_changes
+        from bot.warehouse import STAGE_SHIPPED
+
+        _require_owner(payload.owner_chat_id, payload.owner_user_id)
+        order = storage.get_order(order_id)
+        if not order:
+            raise HTTPException(status_code=404, detail="Замовлення не знайдено")
+        body = order.get("payload") if isinstance(order.get("payload"), dict) else {}
+        if body.get("owner_deleted") or str(order.get("status") or "") == "cancelled":
+            raise HTTPException(status_code=400, detail="Замовлення скасовано або видалено")
+        if body.get("sheet_order"):
+            raise HTTPException(status_code=400, detail="Це рядок таблиці, не замовлення дроппера")
+        ret = body.get("dropper_return")
+        if isinstance(ret, dict) and ret.get("status"):
+            raise HTTPException(
+                status_code=400,
+                detail="По замовленню вже є заявка на повернення",
+            )
+        prev_ttn = str(order.get("ttn_status") or "").strip()
+        if prev_ttn == "received" or body.get("owner_marked_received"):
+            raise HTTPException(status_code=400, detail="Замовлення вже в «Отримано»")
+        if prev_ttn not in {"in_transit", "at_warehouse"}:
+            raise HTTPException(
+                status_code=400,
+                detail="Позначити отриманим можна лише замовлення «В дорозі» або «Прибуло до відділення»",
+            )
+
+        now = datetime.now().isoformat(timespec="seconds")
+        storage.update_order_flags(
+            order_id, ttn_status="received", warehouse_stage=STAGE_SHIPPED
+        )
+        storage.merge_order_payload(
+            order_id,
+            {
+                "ever_received": True,
+                "warehouse_stage": STAGE_SHIPPED,
+                "owner_marked_received": True,
+                "owner_marked_received_at": now,
+                "owner_marked_received_by": str(payload.owner_user_id or "").strip(),
+                "np_status_text": "Позначено власником: отримано",
+            },
+        )
+        order = storage.get_order(order_id) or order
+        try:
+            storage.add_order_change(
+                order_id=order_id,
+                order_number=str(order.get("order_number") or ""),
+                actor_role="owner",
+                actor_user_id=str(payload.owner_user_id or "").strip(),
+                actor_label="Власник",
+                change_type="status",
+                summary="Власник позначив посилку отриманою",
+                diff=[{"field": "ttn_status", "old": prev_ttn, "new": "received"}],
+            )
+        except Exception:
+            logger.exception("order_change owner mark received failed")
+
+        settled = settle_order_on_received(storage, order)
+        order = storage.get_order(order_id) or order
+        try:
+            from bot.orders_sheets import sync_order_to_sheet
+
+            order = sync_order_to_sheet(storage, order, full=False) or order
+        except Exception:
+            logger.exception(
+                "orders sheet sync on owner mark received %s failed",
+                order.get("order_number"),
+            )
+        try:
+            await _maybe_eval_buyout(storage, order, _notify)
+        except Exception:
+            logger.exception("buyout eval after owner mark received failed")
+
+        dropper = storage.get_dropper_by_id(int(order.get("dropper_id") or 0))
+        lines = [
+            "✅ Замовлення переміщено в «Отримано»",
+            f"Дроппер: {dropper.company_name if dropper else '—'}",
+            f"Номер: {order.get('order_number')}",
+            f"ТТН: {order.get('ttn_number') or '—'}",
+            "Власник позначив посилку отриманою.",
+        ]
+        goods = settled.get("goods_entry") or {}
+        profit = settled.get("profit_entry") or {}
+        overage = settled.get("overage_entry") or {}
+        referral = settled.get("referral_entry") or {}
+        if goods:
+            amount = round(abs(float(goods.get("amount") or 0)), 2)
+            lines.append(f"З балансу списано «Дроп ціна»: −{amount} ₴")
+        if profit:
+            amount = round(float(profit.get("amount") or 0), 2)
+            lines.append(f"Прибуток нараховано на баланс: +{amount} ₴")
+        if overage:
+            amount = round(abs(float(overage.get("amount") or 0)), 2)
+            lines.append(f"Передплата понад дроп списана: −{amount} ₴")
+        if referral:
+            amount = round(float(referral.get("amount") or 0), 2)
+            lines.append(f"Рефералу нараховано: +{amount} ₴")
+        text = "\n".join(lines)
+        await _notify_owners(text)
+        if dropper:
+            try:
+                await _notify(str(order.get("chat_id") or dropper.chat_id), text)
+            except Exception:
+                logger.exception("notify owner mark-received to dropper failed")
+
+        items = enrich_orders_with_changes(storage, [order])
+        return {"ok": True, "order": items[0] if items else order}
+
     @app.patch("/api/dropper/orders/{order_id}")
     async def dropper_update_order(
         order_id: int,
