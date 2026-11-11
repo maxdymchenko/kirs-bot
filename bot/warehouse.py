@@ -787,6 +787,140 @@ def _sheet_order_from_lines(
     }
 
 
+def list_sheet_return_orders(storage: AppStorage) -> list[dict[str, Any]]:
+    """Усі повернення з листа «Заказы», яких ще немає як заявка Mini App."""
+    from bot.orders_sheets import _open_orders_worksheet, is_day_separator_row_values
+    from bot.returns import sheet_return_status, sheet_text_is_return
+
+    try:
+        ws = _open_orders_worksheet(storage)
+        rows = ws.get_all_values()
+    except Exception:
+        logger.exception("returns: failed to read sheet rows")
+        return []
+
+    groups: dict[str, list[dict[str, Any]]] = {}
+    for idx, row in enumerate(rows[1:], start=2):
+        if is_day_separator_row_values(row):
+            continue
+        while len(row) < 18:
+            row.append("")
+        order_no = str(row[1] or "").strip()
+        if not order_no:
+            continue
+        groups.setdefault(order_no, []).append(
+            {
+                "row_idx": idx,
+                "created_raw": row[0],
+                "payment": str(row[2] or "").strip(),
+                "carrier": str(row[3] or "").strip(),
+                "name": str(row[4] or "").strip(),
+                "code": str(row[5] or "").strip(),
+                "color": str(row[6] or "").strip(),
+                "qty": _sheet_qty(row[7]),
+                "retail": _sheet_money(row[8]),
+                "drop": _sheet_money(row[9]),
+                "source": str(row[10] or "").strip(),
+                "client": str(row[11] or "").strip(),
+                "ttn": str(row[12] or "").strip(),
+                "status": str(row[13] or "").strip(),
+                "note": str(row[14] or "").strip(),
+                "location": _clean_location(row[17] if len(row) > 17 else ""),
+            }
+        )
+
+    by_name: dict[str, Any] = {}
+    try:
+        for dropper in storage.list_droppers():
+            name = str(dropper.company_name or "").strip().casefold()
+            if name and name not in by_name:
+                by_name[name] = dropper
+    except Exception:
+        logger.exception("returns: dropper name index failed")
+
+    out: list[dict[str, Any]] = []
+    for order_no, lines in groups.items():
+        lines = sorted(lines, key=lambda item: int(item.get("row_idx") or 0))
+        return_lines = [
+            line
+            for line in lines
+            if sheet_text_is_return(str(line.get("status") or ""), str(line.get("note") or ""))
+        ]
+        if not return_lines:
+            continue
+        latest = return_lines[-1]
+        status_text = str(latest.get("status") or "").strip()
+        note_text = str(latest.get("note") or "").strip()
+        ret_status = sheet_return_status(status_text, note_text)
+        ttn = next((str(line.get("ttn") or "").strip() for line in lines if line.get("ttn")), "")
+        source = next(
+            (str(line.get("source") or "").strip() for line in reversed(lines) if line.get("source")),
+            "",
+        )
+        carrier = next(
+            (str(line.get("carrier") or "").strip() for line in reversed(lines) if line.get("carrier")),
+            "",
+        )
+        client = next(
+            (str(line.get("client") or "").strip() for line in lines if line.get("client")),
+            "",
+        )
+        created_at = _sheet_created_at(latest.get("created_raw"), latest.get("row_idx") or 0)
+        drop_total = round(sum(float(line.get("drop") or 0) for line in lines), 2)
+        if drop_total <= 0:
+            drop_total = round(
+                sum(float(line.get("retail") or 0) for line in lines),
+                2,
+            )
+        dropper = by_name.get(source.casefold()) if source else None
+        out.append(
+            {
+                "id": sheet_order_id(order_no),
+                "order_number": order_no,
+                "dropper_id": int(dropper.id) if dropper else 0,
+                "dropper_chat_id": dropper.chat_id if dropper else "",
+                "dropper_name": (
+                    dropper.company_name if dropper else (source or "Таблиця")
+                ),
+                "ttn_number": ttn,
+                "created_at": created_at,
+                "status": "accepted",
+                "ttn_status": "returned",
+                "total": drop_total,
+                "sheet_return": True,
+                "payload": {
+                    "sheet_order": True,
+                    "sheet_return": True,
+                    "carrier": carrier,
+                    "market_source": source,
+                    "ttn_number": ttn,
+                    "recipient": {"first_name": client, "last_name": "", "phone": ""},
+                    "cart": [
+                        {
+                            "name": str(line.get("name") or ""),
+                            "code": str(line.get("code") or ""),
+                            "color": str(line.get("color") or ""),
+                            "qty": int(line.get("qty") or 1),
+                            "location": str(line.get("location") or ""),
+                        }
+                        for line in lines
+                    ],
+                },
+                "dropper_return": {
+                    "type": "sheet",
+                    "origin": "sheet",
+                    "type_label": status_text or "Повернення з таблиці",
+                    "ttn_number": ttn,
+                    "status": ret_status,
+                    "sheet_status": status_text,
+                    "created_at": created_at,
+                    "accepted_at": created_at if ret_status == "accepted" else "",
+                },
+            }
+        )
+    return out
+
+
 def _mark_sheet_orders_shipped(storage: AppStorage, order_numbers: list[str]) -> None:
     nos = [str(n or "").strip() for n in order_numbers if str(n or "").strip()]
     if not nos:

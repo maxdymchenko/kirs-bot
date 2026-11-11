@@ -7296,20 +7296,29 @@ ${
                 ? "return_pending"
                 : "return_pending";
           let actionHtml = "";
-          if (st === "awaiting_receipt") {
+          const fromSheet = Boolean(
+            row.sheet_return || (row.payload && row.payload.sheet_return)
+          );
+          if (!fromSheet && st === "awaiting_receipt") {
             actionHtml = `<button type="button" class="btn secondary" data-owner-return-received="${escapeHtml(
               String(row.id || "")
             )}">Позначити отриманим</button>`;
-          } else if (st === "awaiting_confirm") {
+          } else if (!fromSheet && st === "awaiting_confirm") {
             actionHtml = `<button type="button" class="btn primary" data-owner-return-accept="${escapeHtml(
               String(row.id || "")
             )}">Прийнято</button>`;
-          } else if (ret.accepted_at) {
+          } else if (!fromSheet && ret.accepted_at) {
             actionHtml = `<div class="meta-soft">Підтверджено: ${escapeHtml(
               formatOrderDate(ret.accepted_at) || ret.accepted_at
             )}${
               ret.refund_amount
                 ? ` · товар +${escapeHtml(formatMoney(ret.refund_amount))}`
+                : ""
+            }</div>`;
+          } else if (fromSheet) {
+            actionHtml = `<div class="meta-soft">З таблиці «Заказы»${
+              ret.sheet_status
+                ? `: ${escapeHtml(ret.sheet_status)}`
                 : ""
             }</div>`;
           }

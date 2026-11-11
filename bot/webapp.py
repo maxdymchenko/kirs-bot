@@ -3854,6 +3854,25 @@ def create_web_app(
         items = storage.list_dropper_return_requests(
             dropper_id=dropper_id, limit=500
         )
+        known_numbers = {
+            str(row.get("order_number") or "").strip()
+            for row in items
+            if str(row.get("order_number") or "").strip()
+        }
+        try:
+            from bot.warehouse import list_sheet_return_orders
+
+            for row in list_sheet_return_orders(storage):
+                number = str(row.get("order_number") or "").strip()
+                if not number or number in known_numbers:
+                    continue
+                if dropper_id is not None and int(row.get("dropper_id") or 0) != int(dropper_id):
+                    continue
+                items.append(row)
+                known_numbers.add(number)
+        except Exception:
+            logger.exception("owner returns sheet merge failed")
+        merged = list(items)
         bucket_key = str(bucket or "").strip().lower()
         query = str(q or "").strip()
         carrier_key = str(carrier or "").strip().lower().replace("-", "_")
@@ -3884,10 +3903,7 @@ def create_web_app(
             BUCKET_AWAITING_CONFIRM: 0,
             BUCKET_CLOSED: 0,
         }
-        # counts across all (окремий ліміт, щоб бейджі не залежали від limit списку)
-        all_items = storage.list_dropper_return_requests(
-            dropper_id=dropper_id, limit=500
-        )
+        all_items = merged
         if carrier_key in {"np", "rozetka", "ukrposhta"}:
             all_items = [
                 x for x in all_items if warehouse_delivery_carrier(x) == carrier_key

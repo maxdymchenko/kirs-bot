@@ -64,6 +64,41 @@ def return_bucket(ret: dict[str, Any] | None) -> str:
     return BUCKET_AWAITING_RECEIPT
 
 
+_SHEET_RETURN_WORDS = ("відмов", "отказ", "повернен", "повернут", "возврат")
+_SHEET_CANCEL_WORDS = ("скасован", "отменен", "видален", "удален")
+
+
+def sheet_text_is_return(status: str, note: str = "") -> bool:
+    """Колонка «Статус» або примітка «ПОВЕРНЕННЯ ЗАБРАЛИ» в листі «Заказы»."""
+    folded = str(status or "").casefold()
+    note_folded = str(note or "").casefold()
+    if any(word in folded for word in _SHEET_CANCEL_WORDS):
+        return False
+    if any(word in folded for word in _SHEET_RETURN_WORDS):
+        return True
+    return "повернен" in note_folded and "забрали" in note_folded
+
+
+def sheet_return_status(status: str, note: str = "") -> str:
+    """Вкладка власника за текстом статусу в таблиці."""
+    folded = str(status or "").casefold()
+    note_folded = str(note or "").casefold()
+    if "забрали" in note_folded or (
+        ("підтвердж" in folded or "подтвержд" in folded)
+        and "очікує" not in folded
+        and "ожидает" not in folded
+    ):
+        return STATUS_ACCEPTED
+    if (
+        "очікує підтвердж" in folded
+        or "ожидает подтвержд" in folded
+        or "на складі" in folded
+        or "на складе" in folded
+    ):
+        return STATUS_AWAITING_CONFIRM
+    return STATUS_AWAITING_RECEIPT
+
+
 def status_label_uk(status: str | None) -> str:
     st = normalize_return_status(status)
     if st == STATUS_ACCEPTED:
@@ -93,6 +128,9 @@ def is_auto_return(ret: dict[str, Any] | None) -> bool:
 
 
 def return_type_label(ret: dict[str, Any] | None) -> str:
+    if str((ret or {}).get("origin") or "").strip().lower() == "sheet":
+        label = str((ret or {}).get("type_label") or "").strip()
+        return label or "Повернення з таблиці"
     if is_auto_return(ret):
         return RETURN_TYPE_LABELS[TYPE_AUTO_CARRIER]
     rtype = str((ret or {}).get("type") or "").strip().lower()
