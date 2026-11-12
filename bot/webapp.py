@@ -330,6 +330,12 @@ class OwnerReturnAcceptRequest(BaseModel):
     owner_user_id: str = Field("", max_length=64)
 
 
+class OwnerSheetReturnArchiveRequest(BaseModel):
+    owner_chat_id: str = Field("", max_length=64)
+    owner_user_id: str = Field("", max_length=64)
+    order_number: str = Field(..., min_length=1, max_length=64)
+
+
 class GeneralSettingsUpdateRequest(BaseModel):
     owner_chat_id: str = Field("", max_length=64)
     owner_user_id: str = Field("", max_length=64)
@@ -3948,6 +3954,18 @@ def create_web_app(
             "bucket": bucket_key or "all",
             "carrier": carrier_key or "all",
         }
+
+    @app.post("/api/owner/returns/sheet-archive")
+    async def owner_archive_sheet_return(payload: OwnerSheetReturnArchiveRequest) -> dict:
+        """Рядок таблиці → «ПОВЕРНЕННЯ ЗАБРАЛИ». Баланс і склад не змінює."""
+        from bot.orders_sheets import mark_sheet_return_picked
+
+        _require_owner(payload.owner_chat_id, payload.owner_user_id)
+        order_no = str(payload.order_number or "").strip()
+        written = mark_sheet_return_picked(storage, order_no)
+        if not written:
+            raise HTTPException(status_code=404, detail="Рядок у таблиці не знайдено")
+        return {"ok": True, "order_number": order_no, "rows": written}
 
     @app.post("/api/owner/returns/{order_id}/mark-received")
     async def owner_mark_return_received(

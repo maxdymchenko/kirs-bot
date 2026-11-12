@@ -1874,6 +1874,35 @@ def sync_archived_settlements_batch(
         return 0
 
 
+def mark_sheet_return_picked(storage: AppStorage, order_number: str) -> int:
+    """O = «ПОВЕРНЕННЯ ЗАБРАЛИ» для рядка таблиці. Баланс і склад не чіпає."""
+    order_no = str(order_number or "").strip()
+    if not order_no or len(order_no) > 64:
+        return 0
+    try:
+        ws = _open_orders_worksheet(storage)
+        row_numbers = find_sheet_rows_by_order_number(ws, order_no)
+        if not row_numbers:
+            return 0
+        ws.batch_update(
+            [
+                {"range": f"O{n}", "values": [[RETURN_PICKED_NOTE]]}
+                for n in row_numbers
+            ],
+            value_input_option="USER_ENTERED",
+        )
+        paint_return_picked_rows(ws, row_numbers)
+        logger.info(
+            "orders sheet archive return order=%s rows=%s",
+            order_no,
+            row_numbers,
+        )
+        return len(row_numbers)
+    except Exception:
+        logger.exception("orders sheet archive return failed order=%s", order_no)
+        return 0
+
+
 def sync_return_picked_to_sheet(
     storage: AppStorage,
     order: dict[str, Any] | None,

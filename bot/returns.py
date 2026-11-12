@@ -66,6 +66,19 @@ def return_bucket(ret: dict[str, Any] | None) -> str:
 
 _SHEET_RETURN_WORDS = ("відмов", "отказ", "повернен", "повернут", "возврат")
 _SHEET_CANCEL_WORDS = ("скасован", "отменен", "видален", "удален")
+_SHEET_PICKED_NOTE_STEMS = ("забра", "отримали", "получил")
+_SHEET_LIVE_STATUS_WORDS = (
+    "на складі",
+    "на складе",
+    "очікує",
+    "ожидает",
+    "в дорозі",
+    "в дороге",
+    "прямує",
+    "прямуе",
+)
+# Відмова в таблиці лишається назавжди. Старші за цей строк уже забрані.
+SHEET_RETURN_OPEN_DAYS = 30
 
 
 def sheet_text_is_return(status: str, note: str = "") -> bool:
@@ -79,11 +92,16 @@ def sheet_text_is_return(status: str, note: str = "") -> bool:
     return "повернен" in note_folded and "забрали" in note_folded
 
 
+def sheet_note_is_picked(note: str) -> bool:
+    """Примітка, що повернення вже забрали: ЗАБРАЛИ, ЗАБРАН, ОТРИМАЛИ."""
+    folded = str(note or "").casefold()
+    return any(stem in folded for stem in _SHEET_PICKED_NOTE_STEMS)
+
+
 def sheet_return_status(status: str, note: str = "") -> str:
     """Вкладка власника за текстом статусу в таблиці."""
     folded = str(status or "").casefold()
-    note_folded = str(note or "").casefold()
-    if "забрали" in note_folded or (
+    if sheet_note_is_picked(note) or (
         ("підтвердж" in folded or "подтвержд" in folded)
         and "очікує" not in folded
         and "ожидает" not in folded
@@ -97,6 +115,43 @@ def sheet_return_status(status: str, note: str = "") -> str:
     ):
         return STATUS_AWAITING_CONFIRM
     return STATUS_AWAITING_RECEIPT
+
+
+def _parse_sheet_return_dt(raw: str) -> datetime | None:
+    text = str(raw or "").strip()
+    if not text:
+        return None
+    for fmt, size in (
+        ("%Y-%m-%d %H:%M:%S", 19),
+        ("%Y-%m-%d %H:%M", 16),
+        ("%d.%m.%Y", 10),
+        ("%Y-%m-%d", 10),
+    ):
+        try:
+            return datetime.strptime(text[:size], fmt)
+        except ValueError:
+            continue
+    return None
+
+
+def sheet_return_is_current(
+    created_at: str,
+    status: str,
+    note: str = "",
+    *,
+    now: datetime | None = None,
+) -> bool:
+    """У вкладці лише свіжі незабрані рядки таблиці, не вся історія."""
+    if sheet_note_is_picked(note) or sheet_return_status(status, note) == STATUS_ACCEPTED:
+        return False
+    moment = now or datetime.now()
+    dt = _parse_sheet_return_dt(created_at)
+    if dt is None:
+        return True
+    if (moment - dt).days <= SHEET_RETURN_OPEN_DAYS:
+        return True
+    folded = str(status or "").casefold()
+    return any(word in folded for word in _SHEET_LIVE_STATUS_WORDS)
 
 
 def status_label_uk(status: str | None) -> str:

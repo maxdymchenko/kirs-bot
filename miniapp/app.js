@@ -7320,7 +7320,9 @@ ${
               ret.sheet_status
                 ? `: ${escapeHtml(ret.sheet_status)}`
                 : ""
-            }</div>`;
+            }</div><button type="button" class="btn secondary" data-owner-return-sheet-archive="${escapeHtml(
+              String(row.order_number || "")
+            )}">В архів</button>`;
           }
           const ttnStatus = ret.ttn_status
             ? `<div class="meta-soft">Статус зворотної ТТН: ${escapeHtml(
@@ -7439,6 +7441,30 @@ ${
       }
       showToast("Повернення позначено отриманим");
       ownerReturnsState.bucket = "awaiting_confirm";
+      await renderOwnerReturns();
+    } catch (error) {
+      showToast(error.message || "Помилка");
+    }
+  }
+
+  async function archiveSheetReturn(orderNumber) {
+    const number = String(orderNumber || "").trim();
+    if (!number) return;
+    const ok = window.confirm(
+      "Позначити в таблиці «ПОВЕРНЕННЯ ЗАБРАЛИ» і прибрати з цієї вкладки? Баланс не зміниться."
+    );
+    if (!ok) return;
+    try {
+      const response = await fetch("/api/owner/returns/sheet-archive", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ...ownerAuthBody(), order_number: number }),
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(typeof data.detail === "string" ? data.detail : "Помилка");
+      }
+      showToast("Прибрано в архів");
       await renderOwnerReturns();
     } catch (error) {
       showToast(error.message || "Помилка");
@@ -9436,6 +9462,13 @@ ${
       event.preventDefault();
       const orderId = receivedBtn.getAttribute("data-owner-return-received");
       if (orderId) markOwnerReturnReceived(orderId);
+      return;
+    }
+    const sheetArchiveBtn = event.target.closest("[data-owner-return-sheet-archive]");
+    if (sheetArchiveBtn) {
+      event.preventDefault();
+      const orderNumber = sheetArchiveBtn.getAttribute("data-owner-return-sheet-archive");
+      if (orderNumber) archiveSheetReturn(orderNumber);
     }
   });
 

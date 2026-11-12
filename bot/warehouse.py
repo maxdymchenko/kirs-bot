@@ -790,7 +790,11 @@ def _sheet_order_from_lines(
 def list_sheet_return_orders(storage: AppStorage) -> list[dict[str, Any]]:
     """Усі повернення з листа «Заказы», яких ще немає як заявка Mini App."""
     from bot.orders_sheets import _open_orders_worksheet, is_day_separator_row_values
-    from bot.returns import sheet_return_status, sheet_text_is_return
+    from bot.returns import (
+        sheet_return_is_current,
+        sheet_return_status,
+        sheet_text_is_return,
+    )
 
     try:
         ws = _open_orders_worksheet(storage)
@@ -852,6 +856,9 @@ def list_sheet_return_orders(storage: AppStorage) -> list[dict[str, Any]]:
         status_text = str(latest.get("status") or "").strip()
         note_text = str(latest.get("note") or "").strip()
         ret_status = sheet_return_status(status_text, note_text)
+        created_at = _sheet_created_at(latest.get("created_raw"), latest.get("row_idx") or 0)
+        if not sheet_return_is_current(created_at, status_text, note_text):
+            continue
         ttn = next((str(line.get("ttn") or "").strip() for line in lines if line.get("ttn")), "")
         source = next(
             (str(line.get("source") or "").strip() for line in reversed(lines) if line.get("source")),
@@ -865,7 +872,6 @@ def list_sheet_return_orders(storage: AppStorage) -> list[dict[str, Any]]:
             (str(line.get("client") or "").strip() for line in lines if line.get("client")),
             "",
         )
-        created_at = _sheet_created_at(latest.get("created_raw"), latest.get("row_idx") or 0)
         drop_total = round(sum(float(line.get("drop") or 0) for line in lines), 2)
         if drop_total <= 0:
             drop_total = round(
