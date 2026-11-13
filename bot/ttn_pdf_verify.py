@@ -361,6 +361,149 @@ def _collect_rozetka_from_text(text: str, found: list[str], seen: set[str]) -> N
         _add_unique(found, seen, sanitize_rozetka_waybill(m.group(1)))
 
 
+_UA_PHONE_RE = re.compile(
+    r"(?<!\d)(?:\+?\s*38[\s\-()]*)?"
+    r"(0[\s\-()]*\d{2}[\s\-()]*\d{3}[\s\-()]*\d{2}[\s\-()]*\d{2})(?!\d)"
+)
+
+
+def _normalize_ua_phone(raw: str) -> str:
+    """Телефон клієнта → 380XXXXXXXXX або порожньо."""
+    digits = re.sub(r"\D", "", str(raw or ""))
+    if not digits:
+        return ""
+    if digits.startswith("380"):
+        body = digits[3:]
+        if len(body) >= 9:
+            return "380" + body[-9:]
+        return ""
+    if digits.startswith("0") and len(digits) >= 10:
+        return "380" + digits[1:10]
+    if len(digits) >= 9:
+        return "380" + digits[-9:]
+    return ""
+
+
+def _phones_in_text(text: str) -> list[str]:
+    found: list[str] = []
+    seen: set[str] = set()
+    for match in _UA_PHONE_RE.finditer(str(text or "")):
+        normalized = _normalize_ua_phone(match.group(0))
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        found.append(normalized)
+    return found
+
+
+def extract_recipient_phones(text: str) -> list[str]:
+    """Телефони одержувача з текстового шару етикетки.
+
+    Якщо на етикетці є блок «Одержувач», беремо лише його — телефон
+    відправника не підтверджує замовлення. Без заголовка залишаються
+    всі телефони, які вдалося прочитати.
+    """
+    blob = str(text or "")
+    headers = list(_RECIPIENT_HEADER_RE.finditer(blob))
+    if not headers:
+        return _phones_in_text(blob)
+    start = headers[0].end()
+    end = len(blob)
+    for sender in _SENDER_HEADER_RE.finditer(blob):
+        if sender.start() > headers[0].start():
+            end = sender.start()
+            break
+    return _phones_in_text(blob[start:end])
+
+
+def _label_text_has_waybill(text: str, typed: str) -> bool:
+    key = waybill_alnum(typed)
+    if len(key) < 6:
+        return False
+    pattern = r"[^A-Za-z0-9]*".join(re.escape(ch) for ch in key)
+    wrapped = re.compile(rf"(?<![A-Za-z0-9]){pattern}(?![A-Za-z0-9])", re.I)
+    return bool(wrapped.search(str(text or "")))
+
+
+def _candidates_from_label_text(text: str) -> list[str]:
+    """Номери тільки з тексту етикетки, без імені файлу і сирих байтів PDF."""
+    found: list[str] = []
+    seen: set[str] = set()
+    blob = str(text or "")
+    _collect_rozetka_from_text(blob, found, seen)
+    _collect_np_from_text(blob, found, seen)
+    return found
+
+
+def _format_ua_phone(digits: str) -> str:
+    raw = str(digits or "").strip()
+    if len(raw) == 12 and raw.startswith("380"):
+        return "+" + raw
+    return raw or "—"
+
+
+def _check_label_phone(text: str, phone: str) -> dict[str, Any]:
+    expected = _normalize_ua_phone(phone)
+    found = extract_recipient_phones(text)
+    if not expected:
+        return {
+            "ok": False,
+            "expected": "",
+            "found": found,
+            "message": "Вкажіть номер телефону клієнта",
+        }
+    if not found:
+        return {
+            "ok": False,
+            "expected": expected,
+            "found": [],
+            "message": (
+                "Не вдалося прочитати телефон одержувача з етикетки. "
+                "Прикріпіть оригінальну етикетку 100×100 (текст/вектор), не скан-фото."
+            ),
+        }
+    if expected in found:
+        return {
+            "ok": True,
+            "expected": expected,
+            "found": found,
+            "message": "OK",
+        }
+    preview = ", ".join(_format_ua_phone(item) for item in found[:3])
+    return {
+        "ok": False,
+        "expected": expected,
+        "found": found,
+        "message": (
+            f"Телефон клієнта у замовленні ({_format_ua_phone(expected)}) "
+            f"не збігається з телефоном одержувача на етикетці ({preview})."
+        ),
+    }
+
+
+def _finish_label_check(
+    result: dict[str, Any], text: str, phone: str
+) -> dict[str, Any]:
+    phone_check = _check_label_phone(text, phone)
+    done = dict(result)
+    done["ttn_ok"] = bool(result.get("ok"))
+    done["phone_ok"] = bool(phone_check.get("ok"))
+    done["phone_expected"] = str(phone_check.get("expected") or "")
+    done["phone_found"] = list(phone_check.get("found") or [])
+    if done["ttn_ok"] and done["phone_ok"]:
+        done["ok"] = True
+        done["message"] = "OK"
+        return done
+    parts = []
+    if not done["ttn_ok"]:
+        parts.append(str(result.get("message") or "").strip())
+    if not done["phone_ok"]:
+        parts.append(str(phone_check.get("message") or "").strip())
+    done["ok"] = False
+    done["message"] = "\n".join(part for part in parts if part)
+    return done
+
+
 def extract_waybill_candidates(pdf_bytes: bytes, filename: str = "") -> list[str]:
     """Номери НП та Rozetka (RMP-/PRM-/723-…), без «голих» 12 цифр (телефони)."""
     texts: list[str] = []
@@ -400,13 +543,29 @@ def verify_ttn_pdf(
     ttn_number: str,
     carrier: str = "",
     filename: str = "",
+    phone: str = "",
 ) -> dict[str, Any]:
     """
-    Повертає {ok, expected, found, message}.
-    ok=False якщо номер не знайдено в PDF або не збігається.
+    Звіряє номер ТТН і телефон одержувача з текстом самої етикетки.
+
+    Ім'я файлу і сирі байти PDF не підтверджують номер: інакше чужа етикетка
+    з правильною назвою файлу проходить перевірку.
     """
+    del filename  # назва файлу навмисно не використовується
     carrier_l = str(carrier or "").strip().lower()
     typed_raw = str(ttn_number or "").strip()
+    label_text = extract_pdf_plaintext(pdf_bytes)
+    unread = {
+        "ok": False,
+        "expected": "",
+        "found": [],
+        "official": "",
+        "message": (
+            "Не вдалося прочитати етикетку. Прикріпіть оригінальний PDF 100×100 "
+            "(текст/вектор), не скан-фото. Номер ТТН і телефон клієнта мають бути "
+            "в самому файлі."
+        ),
+    }
     if carrier_l == "rozetka" or looks_like_rozetka_ttn(typed_raw):
         expected = sanitize_rozetka_waybill(typed_raw)
         if not is_plausible_rozetka_waybill(expected):
@@ -416,49 +575,62 @@ def verify_ttn_pdf(
                 "found": [],
                 "message": "Вкажіть коректний номер накладної",
             }
-        found = extract_waybill_candidates(pdf_bytes, filename=filename)
+        if not str(label_text or "").strip():
+            unread["expected"] = expected
+            return _finish_label_check(unread, label_text, phone)
+        found = _candidates_from_label_text(label_text)
         rz_found = [
             x
             for x in found
             if looks_like_rozetka_ttn(x) or waybills_match_exact(expected, x)
         ]
         match = any(waybills_match_exact(expected, x) for x in found)
-        if not match and pdf_contains_exact_waybill(
-            pdf_bytes, expected, filename=filename
-        ):
+        if not match and _label_text_has_waybill(label_text, expected):
             match = True
             if expected not in found:
                 found.append(expected)
                 rz_found.append(expected)
         if match:
-            return {
-                "ok": True,
-                "expected": expected,
-                "found": found or [expected],
-                "official": "",
-                "message": "OK",
-            }
+            return _finish_label_check(
+                {
+                    "ok": True,
+                    "expected": expected,
+                    "found": found or [expected],
+                    "official": "",
+                    "message": "OK",
+                },
+                label_text,
+                phone,
+            )
         if not rz_found:
-            return {
+            return _finish_label_check(
+                {
+                    "ok": False,
+                    "expected": expected,
+                    "found": [],
+                    "message": (
+                        "Не вдалося прочитати номер накладної з етикетки. "
+                        "Прикріпіть оригінальну етикетку 100×100 (текст/вектор), не скан-фото."
+                    ),
+                },
+                label_text,
+                phone,
+            )
+        preview = ", ".join(rz_found[:3])
+        return _finish_label_check(
+            {
                 "ok": False,
                 "expected": expected,
-                "found": [],
+                "found": rz_found,
+                "official": "",
                 "message": (
-                    "Не вдалося прочитати номер накладної з PDF. "
-                    "Прикріпіть оригінальну етикетку 100×100 (текст/вектор), не скан-фото."
+                    f"Номер у замовленні ({expected}) не збігається з номером на етикетці "
+                    f"({preview}). Кожна літера й цифра має збігатися."
                 ),
-            }
-        preview = ", ".join(rz_found[:3])
-        return {
-            "ok": False,
-            "expected": expected,
-            "found": rz_found,
-            "official": "",
-            "message": (
-                f"Номер у замовленні ({expected}) не збігається з номером у PDF "
-                f"({preview}). Кожна літера й цифра має збігатися."
-            ),
-        }
+            },
+            label_text,
+            phone,
+        )
 
     from bot.ukrposhta_tracking import (
         is_plausible_ukrposhta_barcode,
@@ -481,24 +653,35 @@ def verify_ttn_pdf(
                     "на кшталт RA123456785UA"
                 ),
             }
-        if pdf_contains_exact_waybill(pdf_bytes, expected, filename=filename):
-            return {
-                "ok": True,
+        if not str(label_text or "").strip():
+            unread["expected"] = expected
+            return _finish_label_check(unread, label_text, phone)
+        if _label_text_has_waybill(label_text, expected):
+            return _finish_label_check(
+                {
+                    "ok": True,
+                    "expected": expected,
+                    "found": [expected],
+                    "official": "",
+                    "message": "OK",
+                },
+                label_text,
+                phone,
+            )
+        return _finish_label_check(
+            {
+                "ok": False,
                 "expected": expected,
-                "found": [expected],
+                "found": [],
                 "official": "",
-                "message": "OK",
-            }
-        return {
-            "ok": False,
-            "expected": expected,
-            "found": [],
-            "official": "",
-            "message": (
-                f"Номер у замовленні ({expected}) не знайдено в PDF. "
-                "Кожна літера й цифра має збігатися з етикеткою."
-            ),
-        }
+                "message": (
+                    f"Номер у замовленні ({expected}) не знайдено на етикетці. "
+                    "Кожна літера й цифра має збігатися з етикеткою."
+                ),
+            },
+            label_text,
+            phone,
+        )
 
     typed = _digits_only(ttn_number)
     if len(typed) < 13:
@@ -509,42 +692,61 @@ def verify_ttn_pdf(
             "official": "",
             "message": "Вкажіть коректний номер накладної",
         }
+    if not str(label_text or "").strip():
+        unread["expected"] = typed
+        return _finish_label_check(unread, label_text, phone)
 
-    found = extract_waybill_candidates(pdf_bytes, filename=filename)
+    found = _candidates_from_label_text(label_text)
     if not found:
-        return {
-            "ok": False,
-            "expected": typed,
-            "found": [],
-            "official": "",
-            "message": (
-                "Не вдалося прочитати номер накладної з PDF. "
-                "Прикріпіть оригінальну етикетку 100×100 (текст/вектор), не скан-фото."
-            ),
-        }
+        return _finish_label_check(
+            {
+                "ok": False,
+                "expected": typed,
+                "found": [],
+                "official": "",
+                "message": (
+                    "Не вдалося прочитати номер накладної з етикетки. "
+                    "Прикріпіть оригінальну етикетку 100×100 (текст/вектор), не скан-фото."
+                ),
+            },
+            label_text,
+            phone,
+        )
 
     match = any(_np_numbers_match(typed, x) for x in found)
+    if not match and _label_text_has_waybill(label_text, typed):
+        match = True
+        if typed not in found:
+            found.append(typed)
     if not match:
         preview = ", ".join(found[:3])
-        return {
-            "ok": False,
-            "expected": typed,
-            "found": found,
-            "official": "",
-            "message": (
-                f"Номер у замовленні ({typed}) не збігається з номером у PDF "
-                f"({preview}). Перевірте ТТН і файл етикетки."
-            ),
-        }
+        return _finish_label_check(
+            {
+                "ok": False,
+                "expected": typed,
+                "found": found,
+                "official": "",
+                "message": (
+                    f"Номер у замовленні ({typed}) не збігається з номером на етикетці "
+                    f"({preview}). Перевірте ТТН і файл етикетки."
+                ),
+            },
+            label_text,
+            phone,
+        )
 
     official = _pick_official_np(typed, found)
-    return {
-        "ok": True,
-        "expected": official or typed,
-        "found": found,
-        "official": official,
-        "message": "OK",
-    }
+    return _finish_label_check(
+        {
+            "ok": True,
+            "expected": official or typed,
+            "found": found,
+            "official": official,
+            "message": "OK",
+        },
+        label_text,
+        phone,
+    )
 
 
 _RECIPIENT_HEADER_RE = re.compile(
@@ -793,6 +995,7 @@ def verify_ttn_pdf_base64(
     ttn_number: str,
     carrier: str = "",
     filename: str = "",
+    phone: str = "",
 ) -> dict[str, Any]:
     try:
         pdf_bytes = decode_pdf_base64(pdf_b64)
@@ -808,6 +1011,7 @@ def verify_ttn_pdf_base64(
         ttn_number=ttn_number,
         carrier=carrier,
         filename=filename,
+        phone=phone,
     )
 
 
@@ -819,9 +1023,10 @@ def apply_ttn_pdf_check(
     ttn_number: str | None = None,
     carrier: str | None = None,
     filename: str | None = None,
+    phone: str | None = None,
 ) -> dict[str, Any]:
     """
-    Звірити PDF з номером, записати результат у payload.
+    Звірити текст етикетки з номером ТТН і телефоном клієнта.
     При розбіжності — hold (не в упаковку/sheets), поки не виправлять.
     """
     from datetime import datetime, timezone
@@ -838,6 +1043,10 @@ def apply_ttn_pdf_check(
         if filename is not None
         else (payload.get("ttn_pdf_name") or "")
     )
+    recipient = payload.get("recipient") if isinstance(payload.get("recipient"), dict) else {}
+    client_phone = str(
+        phone if phone is not None else (recipient.get("phone") or "")
+    )
     pdf_bytes: bytes | None = None
     try:
         pdf_bytes = decode_pdf_base64(pdf_b64)
@@ -846,6 +1055,7 @@ def apply_ttn_pdf_check(
             ttn_number=number,
             carrier=carr,
             filename=pdf_name,
+            phone=client_phone,
         )
     except ValueError as exc:
         check = {
@@ -862,6 +1072,8 @@ def apply_ttn_pdf_check(
         "ttn_pdf_check_message": str(check.get("message") or ""),
         "ttn_pdf_expected": str(check.get("expected") or ""),
         "ttn_pdf_found": list(check.get("found") or [])[:5],
+        "ttn_pdf_phone_expected": str(check.get("phone_expected") or ""),
+        "ttn_pdf_phone_found": list(check.get("phone_found") or [])[:5],
         "ttn_pdf_checked_at": now,
     }
     official = str(check.get("official") or "").strip()
@@ -894,18 +1106,41 @@ def apply_ttn_pdf_check(
 
 def format_ttn_pdf_mismatch_message(order: dict[str, Any], check: dict[str, Any]) -> str:
     order_no = str(order.get("order_number") or "")
-    expected = str(check.get("expected") or order.get("ttn_number") or "—")
-    found = check.get("found") or []
-    found_s = ", ".join(str(x) for x in found[:3]) if found else "не знайдено в PDF"
-    detail = str(check.get("message") or "")
-    return (
-        f"⚠️ Перевірте накладну · {order_no}\n\n"
-        f"Номер у замовленні: {expected}\n"
-        f"У PDF: {found_s}\n\n"
-        f"{detail}\n\n"
-        "Виправте номер ТТН або прикріпіть правильний PDF у «Історії». "
+    lines = [f"⚠️ Перевірте накладну · {order_no}", ""]
+    if check.get("ttn_ok") is False:
+        expected = str(check.get("expected") or order.get("ttn_number") or "—")
+        found = check.get("found") or []
+        found_s = ", ".join(str(x) for x in found[:3]) if found else "не знайдено на етикетці"
+        lines.append(f"Номер у замовленні: {expected}")
+        lines.append(f"На етикетці: {found_s}")
+        lines.append("")
+    if check.get("phone_ok") is False:
+        expected_phone = _format_ua_phone(str(check.get("phone_expected") or ""))
+        phones = check.get("phone_found") or []
+        found_phone = (
+            ", ".join(_format_ua_phone(str(x)) for x in phones[:3])
+            if phones
+            else "не знайдено на етикетці"
+        )
+        lines.append(f"Телефон у замовленні: {expected_phone}")
+        lines.append(f"Телефон одержувача на етикетці: {found_phone}")
+        lines.append("")
+    if check.get("ttn_ok") is not False and check.get("phone_ok") is not False:
+        expected = str(check.get("expected") or order.get("ttn_number") or "—")
+        found = check.get("found") or []
+        found_s = ", ".join(str(x) for x in found[:3]) if found else "не знайдено в PDF"
+        lines.append(f"Номер у замовленні: {expected}")
+        lines.append(f"У PDF: {found_s}")
+        lines.append("")
+    detail = str(check.get("message") or "").strip()
+    if detail:
+        lines.append(detail)
+        lines.append("")
+    lines.append(
+        "Виправте номер ТТН, телефон або прикріпіть правильний PDF у «Історії». "
         "Поки це не виправлено, замовлення не піде кладовщику на упаковку."
     )
+    return "\n".join(lines)
 
 
 def release_ttn_pdf_hold(
