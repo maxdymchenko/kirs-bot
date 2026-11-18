@@ -482,11 +482,26 @@ def _check_label_phone(text: str, phone: str) -> dict[str, Any]:
 
 
 def _finish_label_check(
-    result: dict[str, Any], text: str, phone: str
+    result: dict[str, Any],
+    text: str,
+    phone: str,
+    *,
+    skip_phone: bool = False,
 ) -> dict[str, Any]:
-    phone_check = _check_label_phone(text, phone)
     done = dict(result)
     done["ttn_ok"] = bool(result.get("ok"))
+    if skip_phone:
+        # Rozetka: звіряємо лише номер накладної, телефон на етикетці не читаємо.
+        done["phone_ok"] = True
+        done["phone_expected"] = ""
+        done["phone_found"] = []
+        done["ok"] = done["ttn_ok"]
+        if done["ok"]:
+            done["message"] = "OK"
+        else:
+            done["message"] = str(result.get("message") or "").strip()
+        return done
+    phone_check = _check_label_phone(text, phone)
     done["phone_ok"] = bool(phone_check.get("ok"))
     done["phone_expected"] = str(phone_check.get("expected") or "")
     done["phone_found"] = list(phone_check.get("found") or [])
@@ -546,7 +561,8 @@ def verify_ttn_pdf(
     phone: str = "",
 ) -> dict[str, Any]:
     """
-    Звіряє номер ТТН і телефон одержувача з текстом самої етикетки.
+    Звіряє номер ТТН з текстом самої етикетки. Телефон одержувача теж,
+    крім Rozetka: там звіряється лише номер накладної.
 
     Ім'я файлу і сирі байти PDF не підтверджують номер: інакше чужа етикетка
     з правильною назвою файлу проходить перевірку.
@@ -577,7 +593,11 @@ def verify_ttn_pdf(
             }
         if not str(label_text or "").strip():
             unread["expected"] = expected
-            return _finish_label_check(unread, label_text, phone)
+            unread["message"] = (
+                "Не вдалося прочитати етикетку. Прикріпіть оригінальний PDF 100×100 "
+                "(текст/вектор), не скан-фото. Номер накладної має бути в самому файлі."
+            )
+            return _finish_label_check(unread, label_text, phone, skip_phone=True)
         found = _candidates_from_label_text(label_text)
         rz_found = [
             x
@@ -601,6 +621,7 @@ def verify_ttn_pdf(
                 },
                 label_text,
                 phone,
+                skip_phone=True,
             )
         if not rz_found:
             return _finish_label_check(
@@ -615,6 +636,7 @@ def verify_ttn_pdf(
                 },
                 label_text,
                 phone,
+                skip_phone=True,
             )
         preview = ", ".join(rz_found[:3])
         return _finish_label_check(
@@ -630,6 +652,7 @@ def verify_ttn_pdf(
             },
             label_text,
             phone,
+            skip_phone=True,
         )
 
     from bot.ukrposhta_tracking import (

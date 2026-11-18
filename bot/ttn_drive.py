@@ -280,7 +280,7 @@ def persist_order_ttn_pdf(
             payload = order.get("payload") if isinstance(order.get("payload"), dict) else {}
             carr = str(payload.get("own_ttn_carrier") or "").strip().lower()
             ttn_raw = str(ttn or "").upper()
-            if carr == "rozetka" or ttn_raw.startswith("RMP-"):
+            if carr == "rozetka" or ttn_raw.startswith(("RMP-", "PRM-")):
                 patch["meest_label"] = pdf_has_meest_mark(pdf_bytes)
         except Exception:
             logger.debug("meest label detect on persist failed", exc_info=True)

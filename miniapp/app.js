@@ -4547,7 +4547,9 @@ ${
         if (oldTtn !== newTtn || Boolean((order.payload || {}).ttn_pdf_hold)) {
           if (errEl) {
             errEl.textContent =
-              "Прикріпіть PDF етикетки ще раз — для звірки номера ТТН і телефону клієнта";
+              (form.own_ttn_carrier?.value || "") === "rozetka"
+                ? "Прикріпіть PDF етикетки ще раз — для звірки номера накладної"
+                : "Прикріпіть PDF етикетки ще раз — для звірки номера ТТН і телефону клієнта";
             errEl.classList.remove("hidden");
           }
           return;

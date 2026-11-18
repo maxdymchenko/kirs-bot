@@ -1,4 +1,4 @@
-"""Публічний трекінг Rozetka Delivery (RMP-…)."""
+"""Публічний трекінг Rozetka Delivery (RMP-… і PRM-…)."""
 
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 RMP_API_BASE = "https://rz-delivery.rozetka.ua/api/"
 RMP_PUBLIC_TRACK_URL = RMP_API_BASE + "track/public/{track_id}"
 
-_RMP_ID_RE = re.compile(r"^RMP-?(\d{6,20})$", re.IGNORECASE)
+_RMP_ID_RE = re.compile(r"^(RMP|PRM)-?(\d{6,20})$", re.IGNORECASE)
 
 _RMP_RECEIVED = frozenset({60025, 60030})
 _RMP_WAREHOUSE = frozenset({40030, 40040, 40080})
@@ -64,18 +64,22 @@ class RmpTrackingError(Exception):
 
 
 def normalize_rmp_track_id(raw: str) -> str:
-    """Офіційний формат: RMP- + 9 цифр або 12 цифр без префікса."""
+    """RMP-/PRM- + цифри, або 12 цифр без префікса.
+
+    PRM- не переписуємо на RMP-: для Rozetka Delivery це різні номери.
+    """
     text = str(raw or "").strip().upper().replace(" ", "")
     if not text:
         return ""
     match = _RMP_ID_RE.fullmatch(text)
     if match:
-        digits = match.group(1)
+        prefix = match.group(1).upper()
+        digits = match.group(2)
         if len(digits) <= 9:
-            return f"RMP-{digits.zfill(9)}"
-        if len(digits) == 12:
+            return f"{prefix}-{digits.zfill(9)}"
+        if len(digits) == 12 and prefix == "RMP":
             return digits
-        return f"RMP-{digits}"
+        return f"{prefix}-{digits}"
     digits = re.sub(r"\D+", "", text)
     if len(digits) == 12:
         return digits
