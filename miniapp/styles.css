@@ -166,6 +166,13 @@ body {
   font-size: 14px;
 }
 
+.owner-debt-summary {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
+  margin: 0 0 12px;
+}
+
 .back-link {
   border: 0;
   background: transparent;

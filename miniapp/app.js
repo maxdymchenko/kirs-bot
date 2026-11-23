@@ -94,6 +94,7 @@
     ownerBroadcastCancel: document.getElementById("ownerBroadcastCancel"),
     ownerStaff: document.getElementById("ownerStaff"),
     ownerBalances: document.getElementById("ownerBalances"),
+    ownerDebtSummary: document.getElementById("ownerDebtSummary"),
     ownerReferralHistory: document.getElementById("ownerReferralHistory"),
     ownerReferralHistoryWrap: document.getElementById("ownerReferralHistoryWrap"),
     generalSettingsForm: document.getElementById("generalSettingsForm"),
@@ -7516,9 +7517,43 @@ ${
     }
   }
 
+  function dropperShortName(d) {
+    if (!d) return "";
+    return String(d.owner_title || d.company_name || d.chat_id || "").trim();
+  }
+
+  function ownerOrdersBalance(row) {
+    if (!row) return 0;
+    if (row.orders_balance != null) return Number(row.orders_balance);
+    return Number(row.balance || 0) - Number(row.referral_earned_total || 0);
+  }
+
+  function renderOwnerDebtSummary(items) {
+    if (!els.ownerDebtSummary) return;
+    const debts = (items || [])
+      .map((row) => ({
+        name: dropperShortName(row.dropper || {}),
+        amount: ownerOrdersBalance(row),
+      }))
+      .filter((row) => row.name && row.amount < -0.009)
+      .sort((a, b) => a.amount - b.amount);
+    if (!debts.length) {
+      els.ownerDebtSummary.textContent = "Немає боргів за балансом замовлень.";
+      return;
+    }
+    const total = debts.reduce((sum, row) => sum + row.amount, 0);
+    els.ownerDebtSummary.innerHTML = `${debts
+      .map(
+        (row) =>
+          `${escapeHtml(row.name)}: ${escapeHtml(formatMoney(row.amount))}`
+      )
+      .join("<br>")}<br><b>Разом борг: ${escapeHtml(formatMoney(total))}</b>`;
+  }
+
   async function renderOwnerBalances() {
     if (!els.ownerBalances) return;
     els.ownerBalances.innerHTML = `<div class="ac-loading">Завантаження...</div>`;
+    if (els.ownerDebtSummary) els.ownerDebtSummary.textContent = "";
     if (els.ownerReferralHistory) {
       els.ownerReferralHistory.innerHTML = "";
     }
@@ -7530,16 +7565,12 @@ ${
       const data = await response.json();
       if (!response.ok) throw new Error(data.detail || "Помилка");
       const items = data.items || [];
+      renderOwnerDebtSummary(items);
       els.ownerBalances.innerHTML = items.length
         ? items
             .map((row) => {
               const d = row.dropper || {};
-              const ordersBal = Number(
-                row.orders_balance != null
-                  ? row.orders_balance
-                  : Number(row.balance || 0) -
-                    Number(row.referral_earned_total || 0)
-              );
+              const ordersBal = ownerOrdersBalance(row);
               const ordersDelta = Number(row.conditional_delta || 0);
               const ordersCond = Number(
                 row.orders_conditional_balance != null
@@ -7656,6 +7687,7 @@ ${
           : "";
       }
     } catch (error) {
+      if (els.ownerDebtSummary) els.ownerDebtSummary.textContent = "";
       els.ownerBalances.innerHTML = `<div class="form-error">${escapeHtml(
         error.message || "Помилка"
       )}</div>`;
